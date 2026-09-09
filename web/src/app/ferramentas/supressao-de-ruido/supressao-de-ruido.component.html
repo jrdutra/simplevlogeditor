@@ -1,0 +1,494 @@
+<div class="container">
+
+  <!-- ------------------------------------------------------------- source -->
+  <section class="painel painel-fonte">
+    <h2>The recording</h2>
+
+    <div class="fonte" [class.fonte-vazia]="!fileName">
+      <button mat-stroked-button type="button" (click)="picker.click()" [disabled]="busy">
+        <span class="btn-conteudo"><mat-icon>upload_file</mat-icon> Choose a video or audio file</span>
+      </button>
+      <input #picker type="file" class="oculto" accept="video/*,audio/*" [disabled]="busy" (change)="onFile($event)">
+
+      @if (fileName) {
+        <span class="arquivo" [title]="fileName">{{ fileName }}</span>
+        <span class="nota">{{ formatSize(fileSize) }}</span>
+        @if (!busy) { <button class="link-acao" type="button" (click)="clearFile()">Remove</button> }
+      }
+    </div>
+
+    <p class="nota">
+      Nothing is uploaded: the recording is decoded, cleaned and written back inside this tab. Any container the
+      browser can open, up to {{ maxMinutes }} minutes. A video keeps its picture exactly as it is — only the sound
+      is replaced.
+    </p>
+
+    <div class="acoes acoes-principal">
+      @if (!working) {
+        <button mat-flat-button color="primary" class="btn-iniciar-processo" type="button"
+          [disabled]="!file || busy" (click)="run()">
+          <span class="btn-conteudo"><mat-icon>auto_fix_high</mat-icon> Clean the recording</span>
+        </button>
+      } @else {
+        <button mat-stroked-button type="button" (click)="stop()">
+          <span class="btn-conteudo"><mat-spinner diameter="18"></mat-spinner> Stop</span>
+        </button>
+      }
+    </div>
+  </section>
+
+  <section class="painel painel-analise" aria-labelledby="noise-analysis-heading">
+    <h2 id="noise-analysis-heading">Check for background noise</h2>
+    <p class="nota">Analyse the original recording before deciding whether to clean it. Defaults are ready for speech,
+      including conversations with several speakers. Nothing is uploaded or changed.</p>
+    <details>
+      <summary>Analysis settings · speech, balanced sensitivity by default</summary>
+      <div class="grade">
+        <label class="campo"><span>What should be preserved?</span>
+          <select [(ngModel)]="analysisContent" [disabled]="busy">
+            <option value="speech">Speech · one or several speakers</option>
+            <option value="speech-music">Speech and intentional music</option>
+          </select>
+        </label>
+        <label class="campo"><span>Sensitivity</span>
+          <select [(ngModel)]="analysisSensitivity" [disabled]="busy">
+            <option value="low">Low · stronger interference</option>
+            <option value="balanced">Balanced · recommended</option>
+            <option value="high">High · quieter background</option>
+          </select>
+        </label>
+      </div>
+      <label class="check"><input type="checkbox" [(ngModel)]="useBackgroundReference" [disabled]="busy">
+        <span>I can identify a section with background only</span></label>
+      @if (useBackgroundReference) {
+        <div class="grade">
+          <label class="campo"><span>Background start (seconds)</span><input type="number" min="0" step="0.1" [(ngModel)]="backgroundStart" [disabled]="busy"></label>
+          <label class="campo"><span>Background end (seconds)</span><input type="number" min="0" step="0.1" [(ngModel)]="backgroundEnd" [disabled]="busy"></label>
+        </div>
+      }
+      <label class="check"><input type="checkbox" [(ngModel)]="useVoiceReference" [disabled]="busy">
+        <span>I can identify a section with a clean voice</span></label>
+      @if (useVoiceReference) {
+        <div class="grade">
+          <label class="campo"><span>Voice start (seconds)</span><input type="number" min="0" step="0.1" [(ngModel)]="voiceStart" [disabled]="busy"></label>
+          <label class="campo"><span>Voice end (seconds)</span><input type="number" min="0" step="0.1" [(ngModel)]="voiceEnd" [disabled]="busy"></label>
+        </div>
+      }
+      <p class="nota">References are optional, must be at least 0.5 seconds long and must not overlap.
+        Music and overlapping voices cannot reliably be classified as unwanted sound.</p>
+      <button class="link-acao" type="button" [disabled]="busy" (click)="resetAnalysisSettings()">Restore defaults</button>
+    </details>
+    <div class="acoes">
+      <button mat-stroked-button class="btn-iniciar-processo" type="button" [disabled]="!file || busy" (click)="analyse()">
+        <span class="btn-conteudo"><mat-icon>hearing</mat-icon>{{ noiseReport ? 'Analyse again' : 'Analyse background' }}</span>
+      </button>
+      @if (analysing) { <button mat-stroked-button type="button" (click)="stop()">Stop analysis</button> }
+    </div>
+    <p class="nota">Runs locally on CPU. First use loads about 3.5 MB of analysis models plus the CPU runtime if it is not cached.</p>
+    @if (noiseReport; as report) {
+      <div class="analysis-result" aria-live="polite">
+        <h3>{{ report.status }}</h3>
+        @if (analysisChanged) { <p class="nota aviso">Settings changed. This report describes the previous analysis; analyse again to apply them.</p> }
+        <dl class="resumo">
+          <div><dt>Speech, including margins</dt><dd>{{ time(report.speechSeconds) }}</dd></div>
+          <div><dt>Detected pauses</dt><dd>{{ time(report.pauseSeconds) }}</dd></div>
+          <div><dt>Background level</dt><dd>{{ report.backgroundDb === null ? 'Unavailable' : report.backgroundDb.toFixed(1) + ' dBFS' }}</dd></div>
+          @if (report.quality; as quality) {
+            <div><dt>Background quality</dt><dd>{{ quality.background.toFixed(2) }} / 5</dd></div>
+            <div><dt>Speech quality</dt><dd>{{ quality.speech.toFixed(2) }} / 5</dd></div>
+            <div><dt>Overall quality</dt><dd>{{ quality.overall.toFixed(2) }} / 5</dd></div>
+          }
+        </dl>
+        <p class="nota">Estimated DNSMOS P.835 scores: higher is better. These are not probabilities or proof that audio is noise-free.
+          Diagnostic thresholds are practical defaults, not universal perceptual boundaries.</p>
+        @for (item of report.evidence; track $index) { <p class="nota">{{ item }}</p> }
+        @for (warning of report.warnings; track $index) { <p class="nota aviso">{{ warning }}</p> }
+        @if (report.intervals.length) {
+          <h4>Sections worth listening to · {{ report.intervals.length }}</h4>
+          <p class="nota">Overlapping windows locate approximate problem areas, not exact noise boundaries.</p>
+          <div class="analysis-intervals">
+            @for (interval of report.intervals; track $index) {
+              <button mat-stroked-button type="button" [disabled]="busy" (click)="listenToAnalysis(interval.start)">
+                {{ time(interval.start) }}–{{ time(interval.end) }} · background {{ interval.background.toFixed(2) }}/5 · Listen
+              </button>
+            }
+          </div>
+        }
+      </div>
+    }
+    <p class="nota">Models: <a href="https://github.com/snakers4/silero-vad" target="_blank" rel="noopener noreferrer">Silero VAD</a>
+      and <a href="https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS" target="_blank" rel="noopener noreferrer">Microsoft DNSMOS</a>.
+      <a href="/assets/models/noise-analysis/NOTICE.txt" target="_blank" rel="noopener noreferrer">Model attribution and licences</a>.</p>
+  </section>
+
+  <!-- ----------------------------------------------------------- settings -->
+  <div class="paineis">
+    <section class="painel">
+      <h2>Engine</h2>
+
+      <div class="escolhas">
+        @for (option of engines; track option.id) {
+          <label class="escolha" [class.ativa]="engineId === option.id">
+            <input type="radio" name="engine" [value]="option.id" [(ngModel)]="engineId" [disabled]="working">
+            <span>
+              <strong>{{ option.label }}</strong>
+              @if (option.megabytes) { <em>{{ device === 'webgpu' ? 23.6 : option.megabytes }} MB runtime on first use</em> }
+              @else { <em>already in the page</em> }
+              <small>{{ option.note }}</small>
+            </span>
+          </label>
+        }
+      </div>
+      @if (engineId === 'gtcrn') {
+        <label class="campo">
+          <span>Processing device</span>
+          <select [(ngModel)]="device" [disabled]="busy">
+            <option value="cpu">CPU · WebAssembly</option>
+            <option value="webgpu" [disabled]="!webgpuAvailable">GPU · WebGPU</option>
+          </select>
+        </label>
+        <p class="nota">
+          GPU uses a separate runtime (23.6 MB in this version); the same 0.5 MB voice model is used on both devices.
+          Speed depends on your hardware. CPU can be faster for this small model.
+          @if (!webgpuAvailable) { WebGPU is unavailable here; use HTTPS and a compatible browser to enable it. }
+        </p>
+      }
+    </section>
+
+    <section class="painel">
+      <h2>Strength</h2>
+
+      <div class="escolhas">
+        @for (option of strengths; track option.label; let index = $index) {
+          <label class="escolha" [class.ativa]="strengthIndex === index">
+            <input type="radio" name="strength" [value]="index" [(ngModel)]="strengthIndex" [disabled]="working">
+            <span>
+              <strong>{{ option.label }}</strong>
+              <em>up to {{ option.attenuationDb }} dB down</em>
+              <small>{{ option.note }}</small>
+            </span>
+          </label>
+        }
+      </div>
+
+      <label class="check">
+        <input type="checkbox" [checked]="preserveHighs" [disabled]="working"
+          (change)="preserveHighs = $any($event.target).checked">
+        <span>Leave the brightness alone</span>
+      </label>
+      <p class="nota">
+        The engines hear up to 8 kHz, and above that this follows what they heard below it. Switch it on for a
+        recording whose interest lives up there — music, a room with air in it, a cymbal — and that band comes back
+        untouched.
+      </p>
+    </section>
+  </div>
+
+  <!-- --------------------------------------------------------- levelling -->
+  <section class="painel painel-volume">
+    <div class="nivel-linha">
+      <h2>Volume</h2>
+      <button type="button" class="engrenagem" [class.aberto]="loudnessOpen" [disabled]="working"
+        [attr.aria-expanded]="loudnessOpen" aria-label="Volume levelling settings" title="Volume levelling settings"
+        (click)="loudnessOpen = !loudnessOpen">
+        <mat-icon>tune</mat-icon>
+      </button>
+    </div>
+
+    <label class="check">
+      <input type="checkbox" [checked]="loudness.enabled" [disabled]="working"
+        (change)="patchLoudness({ enabled: $any($event.target).checked })">
+      <span>Even out the volume of the recording</span>
+    </label>
+
+    <p class="nota">
+      @if (loudness.enabled) {
+        {{ levellingNote }}
+      } @else {
+        Brings the speech to a set level and, if you want, follows the speaker as they drift — leaning in, turning
+        away, trailing off at the end of a sentence. Runs after the noise is removed.
+      }
+    </p>
+
+    @if (loudnessOpen) {
+      <div class="grade">
+        <label class="campo">
+          <span>What to correct</span>
+          <select [value]="loudness.mode" [disabled]="working || !loudness.enabled"
+            (change)="onLoudnessMode($any($event.target).value)">
+            <option value="match">Only the overall level</option>
+            <option value="level">Also the drift while they speak</option>
+          </select>
+          <small>
+            {{ loudness.mode === 'match'
+              ? 'One correction for the whole recording. The dynamics inside it are left exactly as they were.'
+              : 'A slow curve that follows the speaker as well, lifting the sentences they trailed off on and holding back the ones they leaned into.' }}
+          </small>
+        </label>
+
+        <label class="campo">
+          <span>Bring speech to · {{ loudness.targetDb }} dBFS</span>
+          <input type="range" [min]="loudnessLimits.targetDb.min" [max]="loudnessLimits.targetDb.max"
+            [step]="loudnessLimits.targetDb.step" [value]="loudness.targetDb" [disabled]="working || !loudness.enabled"
+            (input)="onLoudnessNumber('targetDb', $any($event.target).value)">
+          <small>Around −20 is comfortable for speech and leaves room for anything louder.</small>
+        </label>
+
+        <label class="campo">
+          <span>Lift by at most · {{ loudness.maxBoostDb }} dB</span>
+          <input type="range" [min]="loudnessLimits.maxBoostDb.min" [max]="loudnessLimits.maxBoostDb.max"
+            [step]="loudnessLimits.maxBoostDb.step" [value]="loudness.maxBoostDb"
+            [disabled]="working || !loudness.enabled"
+            (input)="onLoudnessNumber('maxBoostDb', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Hold back by at most · {{ loudness.maxCutDb }} dB</span>
+          <input type="range" [min]="loudnessLimits.maxCutDb.min" [max]="loudnessLimits.maxCutDb.max"
+            [step]="loudnessLimits.maxCutDb.step" [value]="loudness.maxCutDb" [disabled]="working || !loudness.enabled"
+            (input)="onLoudnessNumber('maxCutDb', $any($event.target).value)">
+        </label>
+
+        @if (loudness.mode === 'level') {
+          <label class="campo">
+            <span>Change no faster than · {{ loudness.smoothingSeconds.toFixed(1) }} s</span>
+            <input type="range" [min]="loudnessLimits.smoothingSeconds.min" [max]="loudnessLimits.smoothingSeconds.max"
+              [step]="loudnessLimits.smoothingSeconds.step" [value]="loudness.smoothingSeconds"
+              [disabled]="working || !loudness.enabled"
+              (input)="onLoudnessNumber('smoothingSeconds', $any($event.target).value)">
+            <small>Shorter follows the speaker more closely; too short and the volume audibly breathes.</small>
+          </label>
+        }
+
+        <label class="campo">
+          <span>Never lift below · {{ loudness.noiseFloorDb }} dBFS</span>
+          <input type="range" [min]="loudnessLimits.noiseFloorDb.min" [max]="loudnessLimits.noiseFloorDb.max"
+            [step]="loudnessLimits.noiseFloorDb.step" [value]="loudness.noiseFloorDb"
+            [disabled]="working || !loudness.enabled"
+            (input)="onLoudnessNumber('noiseFloorDb', $any($event.target).value)">
+          <small>Anything quieter is treated as room tone and never amplified.</small>
+        </label>
+      </div>
+
+      <label class="check">
+        <input type="checkbox" [checked]="loudness.limiter" [disabled]="working || !loudness.enabled"
+          (change)="patchLoudness({ limiter: $any($event.target).checked })">
+        <span>Round off anything that would clip</span>
+      </label>
+    }
+
+  </section>
+
+  <!-- ----------------------------------------------------------- progress -->
+  @if (progress && busy) {
+    <div class="progresso">
+      <div class="progresso-topo">
+        <span>{{ stageLabel }}@if (progress.detail) {<span class="detalhe"> · {{ progress.detail }}</span>}</span>
+        @if (!indeterminate) { <span>{{ percent }}%</span> }
+      </div>
+      <mat-progress-bar [mode]="indeterminate ? 'indeterminate' : 'determinate'" [value]="percent"></mat-progress-bar>
+    </div>
+  }
+
+  @if (message && !errorMessage) {
+    <div class="mensagem"><mat-icon>check_circle</mat-icon><span>{{ message }}</span></div>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro">
+      <mat-icon>error_outline</mat-icon>
+      <span>
+        {{ errorMessage }}
+        @if (errorHint) { <small class="dica">{{ errorHint }}</small> }
+      </span>
+    </div>
+  }
+
+  <!-- ------------------------------------------------------- listen and A/B -->
+  @if (originalUrl) {
+    <section class="painel comparador">
+      <h2>Listen</h2>
+
+      <!-- Always on screen, whichever side is being heard: on the original side
+           it is the soundtrack, and on the cleaned side it is muted and driven
+           from the cleaned audio's clock so the picture still plays. -->
+      <video #before [src]="originalUrl" [class.sem-imagem]="audioOnly"
+        preload="metadata" playsinline (loadedmetadata)="onMediaLoaded()"
+        (play)="onPlay('before')" (pause)="onPause('before')" (timeupdate)="onTime('before')"
+        aria-label="The recording as it arrived"></video>
+
+      @if (cleanedUrl) {
+        <audio #after [src]="cleanedUrl" preload="metadata"
+          (play)="onPlay('after')" (pause)="onPause('after')" (timeupdate)="onTime('after')"
+          aria-label="The recording with the noise removed"></audio>
+      }
+
+      @if (ready) {
+        <div class="lados" role="group" aria-label="Compare before and after">
+          <button type="button" class="lado" [class.ativa]="compare === 'before'" (click)="choose('before')">Original</button>
+          <button type="button" class="lado" [class.ativa]="compare === 'after'" (click)="choose('after')">Cleaned</button>
+        </div>
+      }
+
+      <div class="transporte">
+        <button mat-icon-button type="button" (click)="toggle()" [attr.aria-label]="playing ? 'Pause' : 'Play'">
+          <mat-icon>{{ playing ? 'pause' : 'play_arrow' }}</mat-icon>
+        </button>
+        <input class="scrub" type="range" min="0" [max]="duration || 0" step="0.05" [value]="position"
+          (input)="seek($any($event.target).value)" aria-label="Position in the recording">
+        <span class="tempo">{{ time(position) }} / {{ time(duration) }}</span>
+      </div>
+
+      @if (ready) {
+        <p class="nota">
+          Switching sides keeps the same instant, so you hear the same words either way. Listen for the voice first:
+          if it has gone dull or started to flutter, drop back to a gentler strength.
+        </p>
+      } @else {
+        <p class="nota">This is the recording as it arrived. Remove the noise to get something to compare it with.</p>
+      }
+    </section>
+  }
+
+  <!-- ------------------------------------------------------------- result -->
+  @if (ready) {
+    <section class="painel">
+      <h2>Save it</h2>
+
+      @if (settingsChanged) {
+        <p class="nota aviso">
+          The settings above have changed since this file was made. Clean the recording again to hear them:
+          {{ needsEngine
+            ? 'the analysis must run again for this engine and device.'
+            : 'these only re-apply what the engine already heard, so it takes a moment.' }}
+        </p>
+      }
+
+      <dl class="resumo">
+        <div><dt>Engine</dt><dd>{{ appliedEngine }}</dd></div>
+        <div><dt>Strength</dt><dd>{{ appliedStrength }}</dd></div>
+        <div><dt>Device</dt><dd>{{ applied?.device === 'webgpu' ? 'GPU · WebGPU' : 'CPU' }}</dd></div>
+        <div><dt>Quiet-region change</dt><dd>{{ reduction > 0 ? '+' : '' }}{{ reduction.toFixed(1) }} dB</dd></div>
+        @if (levelling) {
+          <div>
+            <dt>Volume</dt>
+            <dd>{{ levelling.staticGainDb >= 0 ? '+' : '' }}{{ levelling.staticGainDb.toFixed(1) }} dB</dd>
+          </div>
+        }
+        <div><dt>Length</dt><dd>{{ time(duration) }}</dd></div>
+      </dl>
+      <p class="nota">Quiet-region change compares the same quietest 20% of the original recording before volume levelling.
+        Negative means lower; positive means higher. It is a level measurement, not a measure of speech quality.</p>
+
+      <div class="grade">
+        <label class="campo">
+          <span>What to save</span>
+          <select [(ngModel)]="outputKind" name="kind" [disabled]="busy">
+            @if (canKeepPicture) { <option value="media">The video, with the cleaned sound</option> }
+            <option value="audio">The cleaned audio only</option>
+          </select>
+          <small>
+            @if (outputKind === 'media' && canKeepPicture) {
+              The picture is copied across untouched — not re-encoded — so the video loses no quality at all.
+            } @else {
+              {{ format.note }}
+            }
+          </small>
+        </label>
+
+        @if (outputKind === 'audio') {
+          <label class="campo">
+            <span>Audio format</span>
+            <select [(ngModel)]="formatId" name="format" [disabled]="busy">
+              @for (option of formats; track option.id) {
+                <option [value]="option.id">{{ option.label }} (.{{ option.extension }})</option>
+              }
+            </select>
+          </label>
+        }
+      </div>
+
+      <div class="acoes">
+        <button mat-flat-button color="primary" type="button" [disabled]="busy" (click)="download()">
+          <span class="btn-conteudo">
+            @if (exporting) { <mat-spinner diameter="18"></mat-spinner> } @else { <mat-icon>download</mat-icon> }
+            Download {{ downloadName }}
+          </span>
+        </button>
+      </div>
+    </section>
+  }
+</div>
+
+<app-help-panel label="How the Noise Remover works">
+  <div class="instrucoes">
+    <section class="seo-intro" aria-labelledby="noise-seo-title">
+      <h1 id="noise-seo-title">Free Background Noise Remover for Video and Audio</h1>
+      <p>Remove background noise from a recording and keep the voice: fans, traffic, keyboards, air conditioning, room
+        hiss, a second conversation across the room. A speech model decides, moment by moment and band by band, what is
+        a voice and what is not — the same idea behind the noise suppression in Microsoft Teams — and it all runs inside
+        your browser, so the recording never leaves your computer.</p>
+      <p>Works with any video or audio file the browser can open. A video keeps its picture untouched and gets its
+        sound replaced; audio comes back as WAV, M4A, MP3 or OGG.</p>
+    </section>
+
+    <h2>Instructions</h2>
+
+    <h4 class="sublinhado">Choose the engine</h4>
+    <p><strong>Voice model</strong> is the one to use. It is GTCRN, published at ICASSP 2024: a network of forty-eight
+      thousand parameters that scores alongside models thirty times its size, which is why half a megabyte of weights can
+      be served with this page. It looks at the whole spectrum at once and recognises speech, so it removes the noise that
+      a simple filter cannot — a keyboard, a door, someone else talking. The first run fetches the runtime it needs, about
+      about 13 MB for CPU or 23.6 MB for WebGPU in this version, and your browser then keeps it.</p>
+    <p><strong>Classic</strong> is RNNoise, from 2018. It is already inside the page, so there is nothing to fetch and it
+      is roughly twice as fast. On constant noise — a fan, hiss, mains hum — the two are close. On anything that starts and
+      stops it is clearly behind.</p>
+
+    <h4 class="sublinhado">Choose the strength</h4>
+    <p>The strength is not how much of the noise is removed but how far any part of the recording may be turned down.
+      A limit rather than a switch, because a gate that closes completely sounds like a gate: the room falls silent between
+      words and every breath cuts off. Leaving a defined floor of the original underneath is what makes the result sound
+      like a good recording instead of a processed one.</p>
+    <p><strong>Balanced</strong> suits almost everything. <strong>Gentle</strong> is for a recording that was nearly
+      clean already. <strong>Maximum</strong> is for a difficult one, and is the setting to listen to carefully before you
+      save.</p>
+
+    <h4 class="sublinhado">Evening out the volume</h4>
+    <p>Separate from the noise removal, and off unless you ask for it. It measures how loud the speech actually is and
+      brings it to a target — around −20 dBFS by default — so a recording made too quietly comes back at a normal level
+      instead of needing the volume turned up. The same levelling is in the Video Editor, and it is literally the same
+      code, so a file cleaned here and a clip levelled there arrive at the same place.</p>
+    <p><strong>Only the overall level</strong> applies one correction to the whole recording and leaves everything
+      inside it alone. <strong>Also the drift while they speak</strong> adds a slow curve that follows the speaker,
+      lifting the sentences they trailed off on and holding back the ones they leaned into. The curve is deliberately
+      slow — it changes over seconds, not syllables — because a fast one is heard as the volume breathing.</p>
+    <p>It never boosts silence. Room tone, breath and microphone hiss all sit under the noise floor, and lifting them to
+      speech level is the most recognisable way to make a recording sound processed. It also runs <em>after</em> the
+      noise is removed, which is the only order that measures the voice rather than the voice plus the background.</p>
+
+    <h4 class="sublinhado">How the voice survives</h4>
+    <p>The engines are trained at 16 kHz, and using their audio directly would hand back a voice with a telephone's
+      bandwidth. This tool never does that. It takes only the decision they made — how much to keep, in each band, at each
+      moment — and applies it to your recording at its own sample rate, with its own phase. The band above the model's
+      reach, where sibilance and breath live, follows the top of the band it can see. Nothing is resampled, and a passage
+      the engine leaves alone comes back sample for sample as it went in.</p>
+
+    <h4 class="sublinhado">Listen before you save</h4>
+    <p>The two buttons under the player switch between the recording as it arrived and the cleaned one at the same
+      instant. Judge the voice, not the silence: any setting makes the pauses quieter, and the question that matters is
+      whether the words still sound like the person who said them. If consonants have gone dull, or the voice flutters at
+      the start of a word, use a gentler strength.</p>
+
+    <h4 class="sublinhado">What it cannot do</h4>
+    <p>It removes noise, not echo: a room with hard walls still sounds like a room with hard walls. It cannot separate two
+      people talking at once — both are voices, and it keeps voices. Music behind speech is treated as noise and will be
+      damaged. And nothing here recovers detail that the noise destroyed; the quieter the voice was against the
+      background, the less there is to work with.</p>
+
+    <h4 class="sublinhado">Time and memory</h4>
+    <p>Recordings up to {{ maxMinutes }} minutes are accepted. The whole soundtrack is held uncompressed while it is
+      worked on, which is what sets that limit; longer files should be split first. Expect the voice model to take
+      somewhere near a fifth of the recording's length on a current laptop, and the classic engine about half of that.
+      Stop cancels immediately and keeps nothing.</p>
+  </div>
+</app-help-panel>

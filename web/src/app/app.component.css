@@ -1,0 +1,592 @@
+:host {
+  display: block;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+/* A maximized frame; the tool stage owns scrolling. */
+.chassis {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line-hard);
+  border-radius: 0;
+  background: linear-gradient(165deg, rgba(42, 43, 58, 0.86), rgba(24, 24, 35, 0.92));
+  box-shadow:
+    0 30px 70px rgba(0, 0, 0, 0.6),
+    0 0 40px rgba(209, 96, 255, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  overflow: clip;
+}
+
+/* ------------------------------------------------------------------ chrome */
+
+.chrome {
+  flex: none;
+  position: relative;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.85rem 1.1rem;
+  border-bottom: 1px solid var(--line-grey);
+  background: linear-gradient(180deg, rgba(48, 49, 66, 0.75), rgba(30, 30, 43, 0.6));
+}
+
+.chrome__spacer {
+  flex: 1;
+  min-width: 0;
+}
+
+/* The open tool's name, beside the site's. Grey and regular against a white
+   semibold brand: two things on one line, one of which is the name of the
+   place and the other the name of the room. */
+.chrome__tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.85rem;
+  flex: none;
+  min-width: 0;
+  color: var(--text-muted);
+  font-size: 0.95rem;
+  font-weight: 400;
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A hairline rather than a bullet or a slash: it separates without being read
+   as punctuation between two names. */
+.chrome__tool::before {
+  content: "";
+  flex: none;
+  width: 1px;
+  height: 1.1em;
+  background: var(--line-grey);
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  text-decoration: none;
+  color: var(--text-main);
+  flex: none;
+}
+
+.brand__mark {
+  width: 34px;
+  height: 34px;
+  filter: drop-shadow(0 0 10px rgba(209, 96, 255, 0.55));
+}
+
+.brand__name {
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+/* ------------------------------------------------------- chrome buttons */
+
+/*
+ * Tools and Help are the same button in two costumes.
+ *
+ * They sit side by side and do the same kind of thing — open something over the
+ * page — so anything that differs between them would read as an accident. One
+ * rule, one lit state, and each keeps only its own glyph.
+ */
+.chrome-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex: none;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(160deg, #323345, #2a2b3a);
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.92rem;
+  font-weight: 500;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.chrome-btn:hover {
+  color: var(--text-main);
+  border-color: var(--line-soft);
+}
+
+.chrome-btn--on {
+  color: #fff;
+  border-color: var(--neon);
+  background: linear-gradient(160deg, rgba(209, 96, 255, 0.4), rgba(164, 53, 224, 0.24));
+  box-shadow: var(--glow-soft), var(--inset);
+}
+
+.chrome-btn__label {
+  line-height: 1;
+}
+
+/* The Help button's mark: a lit disc, so the pair is not two identical slabs. */
+/*
+ * The glyph, in the button's own ink.
+ *
+ * It used to be a lit magenta disc, which made two of the three buttons on
+ * this bar shout while the third — the hamburger, three plain grey bars —
+ * spoke normally. They do the same kind of thing and sit side by side, so the
+ * mark is drawn the way the bars are: `currentcolor`, on nothing, going white
+ * with the rest of the button when it is lit. The 20px box stays, so nothing
+ * moves.
+ */
+.chrome-btn__mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /*
+   * The same box the hamburger's bars occupy, and for the same reason: three
+   * buttons in a row take their height from whatever is tallest inside them,
+   * so a mark that measured 20px made Help and Online stand taller than Tools.
+   * The glyph is drawn a little larger than the box and centred in it, which
+   * costs nothing — the box is what the row measures.
+   */
+  width: 18px;
+  height: 14px;
+  flex: none;
+  overflow: visible;
+  color: inherit;
+  font-size: 1rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+/*
+ * The download and the way back out, in the Help button's clothes.
+ *
+ * They sit beside Help and do the same *kind* of thing — one press, something
+ * arrives — so they are the same button with a different glyph on the disc.
+ * Anything else about them that differed would read as an accident, which is
+ * why nothing else does.
+ */
+.chrome-btn--get,
+.chrome-btn--away {
+  text-decoration: none;
+}
+
+/*
+ * A button in the bar with a panel under it.
+ *
+ * The tools menu hangs from the right edge of the whole bar; these hang from
+ * their own button, in the middle of a row of them. Wrapping the button makes
+ * it the thing the panel is positioned against, so the two stay together
+ * whatever else the bar is holding.
+ *
+ * Download and Help share every rule below. They sit a centimetre apart and do
+ * the same thing — one press, a short list of choices — so anything that
+ * differed between them would read as an accident.
+ */
+.download-menu,
+.chrome-menu {
+  position: relative;
+  flex: none;
+}
+
+.download-menu__chevron {
+  width: 10px;
+  height: 7px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: transform 150ms ease;
+}
+
+.chrome-btn--on .download-menu__chevron {
+  transform: rotate(180deg);
+}
+
+.download-menu__panel,
+.chrome-menu__panel {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 0.45rem);
+  right: 0;
+  width: min(18rem, calc(100vw - 2rem));
+  padding: 0.45rem;
+  border: 1px solid var(--line-hard);
+  border-radius: var(--radius);
+  background: linear-gradient(165deg, #32334a, #22222f);
+  box-shadow: 0 20px 45px rgba(0, 0, 0, 0.62), var(--glow-soft), var(--inset);
+  animation: menu-in 150ms ease-out;
+}
+
+.download-menu__item,
+.chrome-menu__item {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  color: inherit;
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.download-menu__item:hover,
+.download-menu__item:focus-visible,
+.chrome-menu__item:hover,
+.chrome-menu__item:focus-visible {
+  background: rgba(209, 96, 255, 0.12);
+  border-color: var(--line-soft);
+  outline: none;
+}
+
+.download-menu__name,
+.chrome-menu__name {
+  color: var(--text-main);
+  font-size: 0.92rem;
+  font-weight: 600;
+}
+
+.download-menu__detail,
+.chrome-menu__detail {
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+/* The help rows are buttons, because they do something here rather than going
+   somewhere. A button brings its own type, alignment and background, and a
+   menu row wants none of it. */
+.chrome-menu__item {
+  width: 100%;
+  font: inherit;
+  text-align: left;
+  background: none;
+  cursor: pointer;
+}
+
+/* Nothing to explain on a page that has no instructions — the row says so by
+   being unavailable rather than by disappearing and moving the one below it. */
+.chrome-menu__item:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.chrome-menu__item:disabled:hover {
+  background: none;
+  border-color: transparent;
+}
+
+.chrome-btn--get .chrome-btn__mark svg,
+.chrome-btn--away .chrome-btn__mark svg {
+  /* Without a disc behind it the glyph carries itself, so it is drawn at the
+     weight of the hamburger's bars rather than the weight of a badge. */
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentcolor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/*
+ * Three bars that become a cross.
+ *
+ * Drawn rather than set in an icon font: this is a control that must be on
+ * screen and correct before anything else has loaded, and a webfont is the
+ * slowest thing on the page. The bars are absolutely placed inside a fixed box
+ * so the two states occupy exactly the same space and the button cannot change
+ * width when it is pressed.
+ */
+.burger__bars {
+  position: relative;
+  display: block;
+  width: 18px;
+  height: 14px;
+  flex: none;
+}
+
+.burger__bars span {
+  position: absolute;
+  left: 0;
+  width: 100%;
+  height: 2px;
+  border-radius: 2px;
+  background: currentcolor;
+  transition: transform 180ms ease, opacity 140ms ease, top 180ms ease;
+}
+
+.burger__bars span:nth-child(1) { top: 0; }
+.burger__bars span:nth-child(2) { top: 6px; }
+.burger__bars span:nth-child(3) { top: 12px; }
+
+.chrome-btn--on .burger__bars span:nth-child(1) {
+  top: 6px;
+  transform: rotate(45deg);
+}
+
+.chrome-btn--on .burger__bars span:nth-child(2) {
+  opacity: 0;
+}
+
+.chrome-btn--on .burger__bars span:nth-child(3) {
+  top: 6px;
+  transform: rotate(-45deg);
+}
+
+/* ------------------------------------------------------------------- menu */
+
+.menu-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: rgba(9, 8, 16, 0.5);
+}
+
+/*
+ * The panel hangs from the chrome, aligned to the button that opened it.
+ *
+ * It is positioned against the chassis rather than the viewport so it moves
+ * with the frame and is clipped by it — the menu belongs to this machine, not
+ * to the browser window.
+ */
+.menu {
+  position: absolute;
+  z-index: 4;
+  top: calc(100% + 0.45rem);
+  right: 1.1rem;
+  width: min(24rem, calc(100% - 2.2rem));
+  max-height: min(70vh, 32rem);
+  overflow-y: auto;
+  padding: 0.5rem;
+  border: 1px solid var(--line-hard);
+  border-radius: var(--radius);
+  background: linear-gradient(165deg, #32334a, #22222f);
+  box-shadow: 0 26px 60px rgba(0, 0, 0, 0.62), var(--glow-soft), var(--inset);
+  animation: menu-in 150ms ease-out;
+}
+
+@keyframes menu-in {
+  from { opacity: 0; transform: translateY(-6px); }
+  to   { opacity: 1; transform: none; }
+}
+
+.menu__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+/* The name, and the line under it. */
+.menu__item {
+  display: grid;
+  gap: 0.15rem;
+  align-items: center;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  text-decoration: none;
+  color: inherit;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.menu__item:hover,
+.menu__item:focus-visible {
+  background: rgba(209, 96, 255, 0.12);
+  border-color: var(--line-soft);
+}
+
+.menu__item--active {
+  background: linear-gradient(160deg, rgba(209, 96, 255, 0.28), rgba(164, 53, 224, 0.16));
+  border-color: var(--neon);
+}
+
+.menu__name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-main);
+}
+
+.menu__text {
+  font-size: 0.8rem;
+  line-height: 1.45;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------------- stage */
+
+.stage {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  display: block;
+}
+
+/* ------------------------------------------------------------------- rack */
+
+.rack {
+  flex: none;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1.5rem;
+  padding: 0.9rem 1.2rem;
+  border-top: 1px solid var(--line-grey);
+  background: linear-gradient(0deg, rgba(48, 49, 66, 0.6), rgba(30, 30, 43, 0.45));
+}
+
+.rack__line {
+  margin: 0;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.rack__line--dim {
+  color: var(--text-dim);
+}
+
+/* The second download, on the quiet shelf. It is a link and says so on hover;
+   at rest it is one more line of the footer, which is all it should be. */
+.rack__link {
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 150ms ease;
+}
+
+.rack__link:hover,
+.rack__link:focus-visible {
+  color: var(--text-main);
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+@media (max-width: 760px) {
+  .brand__name,
+  .chrome-btn__label,
+  .chrome__tool {
+    display: none;
+  }
+
+  .chrome-btn {
+    padding: 0.6rem 0.7rem;
+  }
+
+  .download-menu__chevron {
+    display: none;
+  }
+}
+
+/* Shared console chrome: bevelled tabs over a recessed working surface. */
+.chassis {
+  border: 1px solid #555364;
+  background: linear-gradient(120deg, #30303e, #22222c 60%);
+  box-shadow: inset 0 0 0 5px #292936, inset 0 0 0 6px #41414e;
+}
+.chrome { padding: 0.6rem 1rem; background: linear-gradient(#353541, #262630); }
+.chrome-btn { border-color: #111119; box-shadow: inset 0 1px 0 #666173, 0 1px 1px #55515f; }
+.console-tabs {
+  display: flex;
+  flex: none;
+  gap: 5px;
+  padding: 8px 12px 0;
+  overflow-x: auto;
+  background: #22222c;
+  border-bottom: 1px solid #56515f;
+}
+.console-tab {
+  display: flex;
+  flex: 1 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 48px;
+  padding: 0 16px;
+  border: 1px solid #111119;
+  border-bottom: 0;
+  border-radius: 10px 10px 0 0;
+  background: linear-gradient(#383744, #252530);
+  box-shadow: inset 0 1px 0 #615a6c, inset 1px 0 0 #494452;
+  color: #d2c3e1;
+  text-decoration: none;
+  font-size: 0.86rem;
+  white-space: nowrap;
+}
+.console-tab mat-icon { color: #d493ef; }
+.console-tab:hover { background: linear-gradient(#464052, #302b3d); color: #fff; }
+.console-tab--active {
+  position: relative;
+  color: #f9e8ff;
+  border-color: #d269f5;
+  background: radial-gradient(ellipse at top, #67228866, transparent 85%), #282032;
+  box-shadow: inset 0 0 0 2px #17131f, inset 0 0 15px #bc35ff30, 0 0 10px #ce40ff25;
+}
+.console-tab--active mat-icon { color: #e481ff; filter: drop-shadow(0 0 5px #c338f9); }
+.stage { background: linear-gradient(135deg, #2d2d39, #24242f 70%); }
+.rack { padding: 0.55rem 1.2rem; background: linear-gradient(#30303c, #24242e); }
+.rack__line { font-size: 0.72rem; }
+@media (max-width: 760px) {
+  .console-tabs { padding: 6px 8px 0; }
+  .console-tab { flex: 0 0 auto; min-height: 44px; padding: 0 12px; font-size: 0.78rem; gap: 6px; }
+  .console-tab mat-icon { font-size: 20px; width: 20px; height: 20px; }
+  .rack { gap: 4px; }
+}
+
+/* ---------------------------------------------------------------- desktop */
+
+/*
+ * What changes when the site is the window.
+ *
+ * The shell opens the window without a frame, so everything a frame does has to
+ * be done here. Two things are needed and no more: the bar has to be draggable,
+ * and there has to be somewhere to grab for a resize.
+ *
+ * The grab strip is the padding. The chassis already paints a six-pixel bezel
+ * with an inset shadow; in the shell that bezel becomes real space, the content
+ * sits inside it, and the ring left over is page that is *not* a drag region —
+ * which is exactly what the compositor needs in order to offer a resize cursor
+ * there. Maximized there is nothing to resize, so the ring goes away.
+ */
+.chassis--desktop {
+  padding: 6px;
+}
+
+.chassis--desktop.chassis--maximized {
+  padding: 0;
+  border-radius: 0;
+}
+
+/*
+ * The bar, as a handle.
+ *
+ * `drag` swallows the pointer: anything inside it that is meant to be pressed
+ * has to opt back out, or the brand, the menu and the lights become nothing but
+ * places to pick the window up by.
+ */
+.chrome--drag {
+  -webkit-app-region: drag;
+  app-region: drag;
+  /* A drag handle is not a text selection. */
+  user-select: none;
+}
+
+.chrome--drag :is(a, button, input, .menu, .chrome-menu, .download-menu, app-window-controls, .no-drag) {
+  -webkit-app-region: no-drag;
+  app-region: no-drag;
+}

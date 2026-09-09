@@ -1,0 +1,251 @@
+<div
+  class="chassis"
+  [class.chassis--desktop]="desktop.isDesktop"
+  [class.chassis--maximized]="desktop.maximized()">
+
+  <!-- In the desktop shell this bar is the window's title bar: it is what
+       the window is dragged by, and a double click on it maximizes or
+       restores. In a browser tab both bindings are inert. -->
+  <header
+    class="chrome"
+    [class.chrome--drag]="desktop.isDesktop"
+    (dblclick)="desktop.titleBarDoubleClick($event)">
+    <a class="brand" routerLink="/" aria-label="SimpleVlogEditor home">
+      <img class="brand__mark" src="/assets/icons/icon-256.png" alt="" width="34" height="34">
+      <span class="brand__name">SimpleVlogEditor</span>
+    </a>
+
+    <!-- Which of the six is open, beside the name of the site — the way a
+         window says what document it is showing. The catalogue is what names
+         it, so this and the page's own title cannot drift apart, and on the
+         home page there is nothing to say and nothing is shown. -->
+    @if (selectedToolName(); as tool) {
+      <span class="chrome__tool">{{ tool }}</span>
+    }
+
+    <span class="chrome__spacer"></span>
+
+    <!--
+      The desktop application, from either side of it.
+
+      On the web this is the way to get the program; inside the program it is
+      the way back to the site. Same slot, same button, opposite directions —
+      and never both, because each is meaningless where the other belongs.
+    -->
+    @if (desktop.isDesktop) {
+      <a
+        class="chrome-btn chrome-btn--away"
+        href="https://simplevlogeditor.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Open simplevlogeditor.com in your browser">
+        <span class="chrome-btn__mark" aria-hidden="true">
+          <svg viewBox="0 0 16 16"><path d="M6 3.4h6.6V10M12.6 3.4 4 12" /></svg>
+        </span>
+        <span class="chrome-btn__label">Online</span>
+      </a>
+    } @else {
+      <div class="download-menu">
+        <button
+          type="button"
+          class="chrome-btn chrome-btn--get"
+          id="download-menu-button"
+          [class.chrome-btn--on]="downloadMenuOpen()"
+          [attr.aria-expanded]="downloadMenuOpen()"
+          aria-controls="download-menu"
+          aria-haspopup="menu"
+          (click)="toggleDownloadMenu()">
+          <span class="chrome-btn__mark" aria-hidden="true">
+            <svg viewBox="0 0 16 16"><path d="M8 2.6v7.2m0 0 2.8-2.8M8 9.8 5.2 7M3 12.8h10" /></svg>
+          </span>
+          <span class="chrome-btn__label">Desktop app</span>
+          <svg class="download-menu__chevron" viewBox="0 0 12 8" aria-hidden="true"><path d="m2 2 4 4 4-4" /></svg>
+        </button>
+
+        <div
+          class="download-menu__panel"
+          id="download-menu"
+          role="menu"
+          aria-labelledby="download-menu-button"
+          [hidden]="!downloadMenuOpen()">
+          <a
+            class="download-menu__item"
+            role="menuitem"
+            [href]="download.installerPath"
+            download
+            (click)="closeDownloadMenu()">
+            <span class="download-menu__name">Windows installer</span>
+            <span class="download-menu__detail">
+              Setup .exe@if (download.info(); as info) { · {{ info.installer.size }}}
+            </span>
+          </a>
+          @if (download.info()?.portable; as portable) {
+            <a
+              class="download-menu__item"
+              role="menuitem"
+              [href]="download.portablePath"
+              download
+              (click)="closeDownloadMenu()">
+              <span class="download-menu__name">Standalone</span>
+              <span class="download-menu__detail">Portable .zip · {{ portable.size }}</span>
+            </a>
+          } @else {
+            <a
+              class="download-menu__item"
+              role="menuitem"
+              [href]="download.portablePath"
+              download
+              (click)="closeDownloadMenu()">
+              <span class="download-menu__name">Standalone</span>
+              <span class="download-menu__detail">Portable .zip · no installation</span>
+            </a>
+          }
+        </div>
+      </div>
+    }
+
+    <!--
+      Help opens a choice, not a document.
+
+      There are two things a reader might want from this button — what the tool
+      in front of them does, and where their files go — and the second is not a
+      footnote of the first. A little menu says both exist; the button alone
+      could only ever offer one of them.
+
+      Same panel and same rows as the download beside it: two dropdowns a
+      centimetre apart that opened differently would read as two mechanisms.
+    -->
+    <div class="chrome-menu">
+      <button
+        type="button"
+        class="chrome-btn chrome-btn--help"
+        id="help-menu-button"
+        [class.chrome-btn--on]="help.menuOpen() || !!help.showing()"
+        [attr.aria-expanded]="help.menuOpen()"
+        aria-controls="help-menu"
+        aria-haspopup="menu"
+        (click)="toggleHelpMenu()">
+        <span class="chrome-btn__mark" aria-hidden="true">?</span>
+        <span class="chrome-btn__label">Help</span>
+        <svg class="download-menu__chevron" viewBox="0 0 12 8" aria-hidden="true"><path d="m2 2 4 4 4-4" /></svg>
+      </button>
+
+      <div
+        class="chrome-menu__panel"
+        id="help-menu"
+        role="menu"
+        aria-labelledby="help-menu-button"
+        [hidden]="!help.menuOpen()">
+        <button
+          type="button"
+          class="chrome-menu__item"
+          role="menuitem"
+          [disabled]="!help.available()"
+          (click)="help.show('instructions')">
+          <span class="chrome-menu__name">Instructions</span>
+          <span class="chrome-menu__detail">What this page does, and how to work it</span>
+        </button>
+
+        <button
+          type="button"
+          class="chrome-menu__item"
+          role="menuitem"
+          (click)="help.show('privacy')">
+          <span class="chrome-menu__name">Privacy</span>
+          <span class="chrome-menu__detail">Where your files go — and where they do not</span>
+        </button>
+      </div>
+    </div>
+
+    <button
+      type="button"
+      class="chrome-btn burger"
+      id="tools-menu-button"
+      [class.chrome-btn--on]="menuOpen()"
+      [attr.aria-expanded]="menuOpen()"
+      aria-controls="tools-menu"
+      aria-haspopup="true"
+      (click)="toggleMenu()">
+      <span class="burger__bars" aria-hidden="true"><span></span><span></span><span></span></span>
+      <span class="chrome-btn__label">Tools</span>
+    </button>
+
+    <!--
+      The window lights belong to a window.
+
+      Inside the desktop shell they are the window's own buttons, and they are
+      always there, because closing the application cannot depend on which page
+      is open. In a browser tab there is no window to control — the tab already
+      has one, drawn by the browser — so painted-on lights would be a picture of
+      a control sitting next to real ones.
+    -->
+    @if (desktop.isDesktop) {
+      <app-window-controls />
+    }
+
+    <!-- Hidden with an attribute rather than removed with @if, unlike the
+         scrim: these six links are this site's whole internal link graph, and
+         a crawler reading the prerendered HTML should find them there whether
+         or not anybody has opened the menu. -->
+    <nav
+      class="menu"
+      id="tools-menu"
+      aria-labelledby="tools-menu-button"
+      [hidden]="!menuOpen()">
+      <ul class="menu__list">
+        @for (tool of tools; track tool.rota) {
+          <li>
+            <a
+              class="menu__item"
+              [routerLink]="'/' + tool.rota"
+              routerLinkActive="menu__item--active"
+              [routerLinkActiveOptions]="{ exact: true }">
+              <span class="menu__name">{{ tool.titulo }}</span>
+              <span class="menu__text">{{ tool.descricao }}</span>
+            </a>
+          </li>
+        }
+      </ul>
+    </nav>
+  </header>
+
+  <!-- Clicking anywhere off the panel closes it. Rendered only while the menu
+       is open, so it never sits invisibly over the page swallowing clicks. -->
+  @if (menuOpen() || downloadMenuOpen() || help.menuOpen()) {
+    <div class="menu-scrim" (click)="closeMenu(); closeDownloadMenu(); help.closeMenu()"></div>
+  }
+
+  <nav class="console-tabs" aria-label="Editing tools">
+    @for (tool of tools; track tool.rota) {
+      <a class="console-tab" [routerLink]="'/' + tool.rota"
+        routerLinkActive="console-tab--active" ariaCurrentWhenActive="page"
+        [routerLinkActiveOptions]="{ exact: true }">
+        <mat-icon aria-hidden="true">{{ tool.icone }}</mat-icon>
+        <span>{{ tool.titulo }}</span>
+      </a>
+    }
+  </nav>
+
+  <main class="stage" #stage>
+    <router-outlet></router-outlet>
+  </main>
+
+  <app-privacy-panel />
+
+  <footer class="rack">
+    <!-- In a tab the promise is about the browser, because that is where the
+         reader is and what they are trusting. In the desktop shell there is no
+         browser to name and the promise is the same one, said plainly. -->
+    <p class="rack__line">
+      @if (desktop.isDesktop) {
+        We never store your files.
+      } @else {
+        Everything runs in your browser. Your files are never uploaded.
+      }
+    </p>
+    <p class="rack__line rack__line--dim">
+      © {{ currentYear }} simplevlogeditor.com
+    </p>
+  </footer>
+
+</div>

@@ -1,0 +1,864 @@
+/* ============================================================================
+ * SimpleVlogEditor — global stylesheet
+ *
+ * The look is one console: a dark violet-grey chassis, recessed panels, and a
+ * single magenta accent that is the only saturated colour on the page. Every
+ * surface is one of four greys and every lit thing is one of three magentas,
+ * which is what makes a page of unrelated controls read as one machine.
+ *
+ * The variable names ending in `--aqua`, `--navy-*` are inherited from the
+ * tools this site was assembled from. They are kept because the tool
+ * stylesheets refer to them by name; only their values changed. Renaming them
+ * would mean editing forty component files to say the same thing.
+ * ========================================================================== */
+
+@import '@angular/material/prebuilt-themes/purple-green.css';
+
+:root {
+  /* ---- chassis --------------------------------------------------------- */
+  --bg-deep: #12121b;
+  --app-bg: #1b1b27;
+  --navy-950: #12121b;
+  --navy-900: #1e1e2b;
+  --navy-850: #262738;
+  --navy-800: #303142;
+
+  --panel: #2a2b3a;
+  --panel-raised: #303142;
+  --panel-well: #232332;
+  --panel-dark: rgba(30, 30, 43, 0.92);
+
+  /* ---- the one accent -------------------------------------------------- */
+  --neon: #d160ff;
+  --neon-bright: #e88bff;
+  --neon-deep: #a435e0;
+  --aqua: #d160ff;          /* the tools' accent, retuned */
+  --purple: #b625ff;
+  --yellow: #ffc94a;
+  --accent: #d160ff;
+
+  /* ---- ink ------------------------------------------------------------- */
+  --text-main: #f1ecf8;
+  --text-muted: #a79fbb;
+  --text-dim: #7e768f;
+
+  /* ---- lines and light -------------------------------------------------- */
+  --line-soft: rgba(209, 96, 255, 0.22);
+  --line-hard: rgba(209, 96, 255, 0.45);
+  --line-grey: rgba(255, 255, 255, 0.07);
+  --glow-soft: 0 0 18px rgba(209, 96, 255, 0.28);
+  --glow-hard: 0 0 26px rgba(209, 96, 255, 0.55);
+
+  /* ---- depth ------------------------------------------------------------ */
+  --lift: 0 10px 30px rgba(0, 0, 0, 0.55);
+  --inset: inset 0 1px 0 rgba(255, 255, 255, 0.06), inset 0 -1px 0 rgba(0, 0, 0, 0.4);
+  --radius: 14px;
+  --radius-sm: 9px;
+
+  --glow-angle: 0deg;
+}
+
+@property --glow-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+/* ============================================================ page ground */
+
+html,
+body {
+  min-height: 100%;
+  margin: 0;
+  color: var(--text-main);
+  background-color: var(--bg-deep);
+  background:
+    radial-gradient(circle at 14% 6%, rgba(164, 53, 224, 0.16), transparent 34rem),
+    radial-gradient(circle at 88% 12%, rgba(93, 63, 214, 0.14), transparent 32rem),
+    linear-gradient(160deg, #14131f, #101019 55%, #15121e);
+  background-attachment: fixed;
+
+  /*
+   * This site is dark, and until this line the browser did not know it. A
+   * `<select>` can be painted by CSS, but the list it drops down cannot — that
+   * popup is drawn by the operating system, from what the page declares itself
+   * to be. One declaration fixes every select, scrollbar and date picker here.
+   */
+  color-scheme: dark;
+  font-family: Roboto, "Helvetica Neue", system-ui, sans-serif;
+}
+
+/* The faint engraved grid of the reference console. */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 54px 54px, 54px 54px;
+  opacity: 0.5;
+  mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.8), rgba(0, 0, 0, 0.1));
+}
+
+option,
+optgroup {
+  background-color: var(--panel-well);
+  color: var(--text-main);
+}
+
+optgroup {
+  color: var(--text-dim);
+  font-style: normal;
+}
+
+* {
+  scrollbar-color: #3a3a52 var(--bg-deep);
+  scrollbar-width: thin;
+}
+
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+*::-webkit-scrollbar-track {
+  background: var(--bg-deep);
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #3a3a52;
+  border-radius: 99px;
+  border: 2px solid var(--bg-deep);
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: var(--neon-deep);
+}
+
+a {
+  color: var(--neon);
+  text-underline-offset: 0.22em;
+}
+
+a:hover {
+  color: var(--neon-bright);
+}
+
+::selection {
+  background: rgba(209, 96, 255, 0.35);
+  color: #fff;
+}
+
+:focus-visible {
+  outline: 2px solid var(--neon);
+  outline-offset: 2px;
+}
+
+.icon-white,
+.inverte-cor-icone {
+  filter: invert(100%);
+}
+
+/* ====================================================== console primitives
+ *
+ * The parts the reference console is built from, named for what they are so a
+ * tool page can reach for one without reinventing it.
+ */
+
+/** A recessed module: the bordered box every group of controls sits in. */
+.svl-panel {
+  position: relative;
+  background: linear-gradient(160deg, var(--panel-raised), var(--panel));
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius);
+  box-shadow: var(--lift), var(--inset);
+}
+
+/** A module with the accent border lit, for the one that currently matters. */
+.svl-panel--lit {
+  border-color: var(--line-hard);
+  box-shadow: var(--lift), var(--inset), var(--glow-soft);
+}
+
+/** The dot-and-label caption at the top left of every module in the reference. */
+.svl-panel__title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  margin: 0;
+  padding: 0.75rem 1rem 0.35rem;
+  font-size: 0.9rem;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+  color: var(--text-main);
+}
+
+.svl-panel__title::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--neon);
+  box-shadow: var(--glow-soft);
+  flex: none;
+}
+
+/** The sunken area a knob, meter or waveform is set into. */
+.svl-well {
+  background: var(--panel-well);
+  border: 1px solid rgba(0, 0, 0, 0.5);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.55);
+}
+
+/** The three window lights at the top right of the chassis: the traffic lights
+    of a macOS window, in their order — close, minimise, zoom. Decoration, not
+    controls; they are hidden from screen readers where they are written. */
+/** The tab strip along the top of the chassis. */
+.svl-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1.15rem;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(160deg, #323345, #2a2b3a);
+  color: var(--text-muted);
+  font-size: 0.92rem;
+  font-weight: 500;
+  text-decoration: none;
+  white-space: nowrap;
+  transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease, transform 160ms ease;
+}
+
+.svl-tab:hover {
+  color: var(--text-main);
+  border-color: var(--line-soft);
+  transform: translateY(-1px);
+}
+
+.svl-tab--active,
+.svl-tab.active {
+  color: #fff;
+  border-color: var(--neon);
+  background: linear-gradient(160deg, rgba(209, 96, 255, 0.4), rgba(164, 53, 224, 0.24));
+  box-shadow: var(--glow-soft), var(--inset);
+}
+
+/** The square utility button from the right-hand rail. */
+.svl-key {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  min-width: 74px;
+  padding: 0.7rem 0.6rem;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(160deg, #363749, #2b2c3b);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  cursor: pointer;
+  box-shadow: var(--inset);
+  transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.svl-key:hover {
+  color: var(--text-main);
+  border-color: var(--line-hard);
+  box-shadow: var(--inset), var(--glow-soft);
+}
+
+/* ============================================== Angular Material, retuned */
+
+.mat-mdc-card {
+  position: relative;
+  overflow: hidden;
+  background: linear-gradient(160deg, var(--panel-raised), var(--panel)) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius) !important;
+  box-shadow: var(--lift), var(--inset) !important;
+}
+
+.mat-mdc-card-content {
+  color: var(--text-main);
+}
+
+/* --- buttons --- */
+
+.mat-mdc-raised-button.mat-primary,
+.mat-mdc-unelevated-button.mat-primary,
+.mat-mdc-fab.mat-primary,
+.mat-mdc-mini-fab.mat-primary {
+  --mdc-protected-button-container-color: transparent;
+  --mdc-filled-button-container-color: transparent;
+  background: linear-gradient(160deg, var(--neon), var(--neon-deep)) !important;
+  color: #fff !important;
+  border: 1px solid rgba(232, 139, 255, 0.55);
+  box-shadow: var(--glow-soft), var(--inset) !important;
+}
+
+.mat-mdc-raised-button.mat-primary:hover:not([disabled]),
+.mat-mdc-unelevated-button.mat-primary:hover:not([disabled]),
+.mat-mdc-mini-fab.mat-primary:hover:not([disabled]) {
+  box-shadow: var(--glow-hard), var(--inset) !important;
+  filter: brightness(1.06);
+}
+
+.mat-mdc-raised-button[disabled],
+.mat-mdc-unelevated-button[disabled],
+.mat-mdc-button[disabled],
+.mat-mdc-mini-fab[disabled] {
+  opacity: 0.42;
+  filter: grayscale(0.5);
+  box-shadow: none !important;
+}
+
+.mat-mdc-button,
+.mat-mdc-outlined-button,
+.mat-mdc-stroked-button {
+  color: var(--text-muted) !important;
+  border-radius: var(--radius-sm) !important;
+}
+
+.mat-mdc-button:hover:not([disabled]),
+.mat-mdc-outlined-button:hover:not([disabled]) {
+  color: var(--text-main) !important;
+  background: rgba(209, 96, 255, 0.1) !important;
+}
+
+.mat-mdc-outlined-button,
+.mat-mdc-stroked-button {
+  border-color: var(--line-soft) !important;
+}
+
+.mat-mdc-icon-button {
+  color: var(--text-muted) !important;
+}
+
+.mat-mdc-icon-button:hover:not([disabled]) {
+  color: var(--neon) !important;
+  background: rgba(209, 96, 255, 0.12) !important;
+}
+
+/* --- form fields --- */
+
+.mat-mdc-form-field {
+  --mdc-filled-text-field-container-color: var(--panel-well);
+  --mdc-filled-text-field-label-text-color: var(--text-muted);
+  --mdc-filled-text-field-input-text-color: var(--text-main);
+  --mdc-filled-text-field-caret-color: var(--neon);
+  --mdc-filled-text-field-active-indicator-color: var(--line-soft);
+  --mdc-filled-text-field-hover-active-indicator-color: var(--line-hard);
+  --mdc-filled-text-field-focus-active-indicator-color: var(--neon);
+  --mdc-filled-text-field-focus-label-text-color: var(--neon);
+  --mdc-outlined-text-field-outline-color: var(--line-soft);
+  --mdc-outlined-text-field-hover-outline-color: var(--line-hard);
+  --mdc-outlined-text-field-focus-outline-color: var(--neon);
+  --mdc-outlined-text-field-label-text-color: var(--text-muted);
+  --mdc-outlined-text-field-input-text-color: var(--text-main);
+  --mdc-outlined-text-field-focus-label-text-color: var(--neon);
+  --mat-select-enabled-trigger-text-color: var(--text-main);
+  --mat-select-placeholder-text-color: var(--text-dim);
+  --mat-select-enabled-arrow-color: var(--text-muted);
+  --mat-select-focused-arrow-color: var(--neon);
+  --mat-form-field-state-layer-color: rgba(255, 255, 255, 0.04);
+}
+
+.mat-mdc-form-field .mdc-text-field--filled {
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+/* The select's popup is an overlay, so it sits outside every component scope. */
+.mat-mdc-select-panel,
+.mat-mdc-autocomplete-panel,
+.mat-mdc-menu-panel {
+  background: var(--panel-raised) !important;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm) !important;
+  box-shadow: var(--lift) !important;
+}
+
+.mat-mdc-option {
+  color: var(--text-main) !important;
+}
+
+.mat-mdc-option:hover:not(.mdc-list-item--disabled),
+.mat-mdc-option.mat-mdc-option-active {
+  background: rgba(209, 96, 255, 0.16) !important;
+}
+
+.mat-mdc-option.mdc-list-item--selected .mdc-list-item__primary-text {
+  color: var(--neon-bright) !important;
+}
+
+/* --- progress --- */
+
+.mat-mdc-progress-bar {
+  --mdc-linear-progress-active-indicator-color: var(--neon);
+  --mdc-linear-progress-track-color: rgba(255, 255, 255, 0.08);
+  border-radius: 99px;
+  overflow: hidden;
+  height: 6px;
+}
+
+.mat-mdc-progress-spinner {
+  --mdc-circular-progress-active-indicator-color: var(--neon);
+}
+
+/* --- misc chrome --- */
+
+.mat-mdc-slider {
+  --mdc-slider-handle-color: var(--neon);
+  --mdc-slider-focus-handle-color: var(--neon-bright);
+  --mdc-slider-active-track-color: var(--neon);
+  --mdc-slider-inactive-track-color: rgba(255, 255, 255, 0.14);
+}
+
+.mat-mdc-tooltip .mdc-tooltip__surface {
+  background: var(--panel-raised) !important;
+  color: var(--text-main) !important;
+  border: 1px solid var(--line-soft);
+  font-size: 0.8rem;
+}
+
+.mat-divider {
+  border-top-color: var(--line-grey) !important;
+}
+
+.cdk-overlay-dark-backdrop {
+  background: rgba(9, 8, 16, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+/* Native range inputs appear inside several tools; make them console parts. */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.14);
+  outline: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, var(--neon-bright), var(--neon-deep));
+  box-shadow: var(--glow-soft);
+  cursor: pointer;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--neon);
+  box-shadow: var(--glow-soft);
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* ================================================== tool page prose blocks
+ *
+ * Every tool page ends with the copy that explains it: a heading, a couple of
+ * paragraphs, a cover, and the how-to. The tool components carry the markup but
+ * none of the styling — in the site these came from it lived in the global
+ * sheet, so it belongs in this one.
+ *
+ * The measure is the point. The tools above are as wide as the screen, but
+ * prose set to 1400px is prose nobody reads, so this block caps itself and
+ * centres regardless of what encloses it.
+ */
+
+.instrucoes {
+  max-width: 62rem;
+  margin: 2.5rem auto 0;
+  padding: 0 clamp(1rem, 3vw, 2rem) 3rem;
+  color: var(--text-muted);
+  line-height: 1.7;
+}
+
+.instrucoes h2 {
+  margin: 1.8em 0 0.45em;
+  padding-bottom: 0.3em;
+  border-bottom: 1px solid var(--line-grey);
+  color: var(--text-main);
+  font-size: 1.15em;
+  font-weight: 600;
+}
+
+.instrucoes h2:first-child {
+  margin-top: 0;
+}
+
+.instrucoes h3,
+.instrucoes h4 {
+  margin: 1.2em 0 0.3em;
+  color: var(--text-main);
+  font-size: 0.98em;
+  font-weight: 600;
+}
+
+.instrucoes p {
+  margin: 0 0 0.8em;
+  font-size: 0.95em;
+}
+
+.instrucoes ul,
+.instrucoes ol {
+  margin: 0.4em 0 0.9em;
+  padding-left: 1.5em;
+}
+
+.instrucoes li {
+  margin-bottom: 0.45em;
+  font-size: 0.95em;
+}
+
+.instrucoes strong {
+  color: var(--text-main);
+  font-weight: 600;
+}
+
+.instrucoes code {
+  padding: 0.05em 0.35em;
+  border: 1px solid var(--line-soft);
+  border-radius: 4px;
+  background: rgba(209, 96, 255, 0.08);
+  color: var(--neon);
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.9em;
+}
+
+.sublinhado,
+.instrucoes .sublinhado {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: var(--line-hard);
+}
+
+/* The lead paragraph, marked off by a lit rule rather than a box. */
+.seo-intro {
+  margin: 0 0 1.75em;
+  padding: 0.2em 0 0.2em 1.1em;
+  border-left: 3px solid var(--neon);
+  line-height: 1.7;
+}
+
+.seo-intro h1 {
+  margin: 0 0 0.55em;
+  color: var(--text-main);
+  font-size: 1.5em;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.seo-intro p {
+  margin: 0 0 0.7em;
+}
+
+.seo-intro p:last-child {
+  margin-bottom: 0;
+}
+
+/* The cover that follows it: a picture element, so the rule has to reach the
+   img inside as well as the wrapper, or the intrinsic width wins. */
+.seo-capa,
+.seo-capa img {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  height: auto;
+}
+
+.seo-capa {
+  margin: 1.25em 0 0;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--lift);
+}
+
+/* ============================================== buttons: one shared centre
+ *
+ * A Material button that contains both an icon and a label is laying out two
+ * boxes of different heights — a 24px glyph and a 14px line of text. MDC makes
+ * the button a flex row but leaves each child to find its own vertical middle,
+ * and `mat-icon` brings a line-height of its own, so the glyph settles a pixel
+ * or two below the word beside it. It is small and it is visible, because a row
+ * of buttons repeats the same error six times.
+ *
+ * The fix is to state the centre once: the button centres its children, the
+ * label stops carrying a line-height taller than itself, and the icon is given
+ * a line box exactly as tall as its own glyph box. Nothing here changes a size
+ * or a spacing — only what each part is measured against.
+ */
+
+.mat-mdc-button,
+.mat-mdc-raised-button,
+.mat-mdc-unelevated-button,
+.mat-mdc-outlined-button,
+.mat-mdc-stroked-button,
+.mat-mdc-fab,
+.mat-mdc-mini-fab,
+.mat-mdc-icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mat-mdc-button .mdc-button__label,
+.mat-mdc-raised-button .mdc-button__label,
+.mat-mdc-unelevated-button .mdc-button__label,
+.mat-mdc-outlined-button .mdc-button__label,
+.mat-mdc-stroked-button .mdc-button__label {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.mat-mdc-button > .mat-icon,
+.mat-mdc-raised-button > .mat-icon,
+.mat-mdc-unelevated-button > .mat-icon,
+.mat-mdc-outlined-button > .mat-icon,
+.mat-mdc-stroked-button > .mat-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.25em;
+  height: 1.25em;
+  font-size: 1.25em;
+  line-height: 1;
+  margin: 0 0.4em 0 0;
+  vertical-align: middle;
+}
+
+/* An icon button has nothing but the icon; its line box must not be taller. */
+.mat-mdc-icon-button .mat-icon,
+.mat-mdc-fab .mat-icon,
+.mat-mdc-mini-fab .mat-icon {
+  display: block;
+  line-height: 1;
+  margin: 0;
+}
+
+/* Native and custom controls follow the same rule, so a hand-rolled button next
+   to a Material one does not sit a pixel off. */
+button,
+.svl-tab,
+.svl-key {
+  align-items: center;
+}
+
+button .mat-icon,
+label .mat-icon {
+  vertical-align: middle;
+}
+
+/* Console finish shared by all six tools. Component CSS owns their layout. */
+:root {
+  --text-muted: #bdb1cb;
+  --text-dim: #a297af;
+  --panel: #2a2935;
+  --panel-raised: #353440;
+  --panel-well: #1b1924;
+  --line-soft: rgba(192, 169, 209, 0.23);
+  --line-hard: rgba(218, 111, 255, 0.6);
+  --lift: 0 3px 9px #0005;
+  --inset: inset 0 1px 0 #ffffff16, inset 0 -1px 0 #0008;
+}
+.chassis .stage .container :is(.painel, .cartao, .palco, .previa, .saida, .resumo) {
+  border: 1px solid #111019;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #343340, #282832 65%, #2c2b37);
+  box-shadow: inset 0 1px 0 #82758d55, 0 1px 0 #70647977, inset 1px 0 0 #ffffff08;
+}
+.chassis .stage .container :is(.painel, .cartao, .palco) > h2 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #eee3f6;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 0.94rem;
+  font-weight: 500;
+  line-height: 1.4;
+}
+.chassis .stage .container :is(.painel, .cartao, .palco) > h2::before {
+  content: '';
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 25%, #ffe1ff, #d956ff 65%);
+  box-shadow: 0 0 8px #d64effa0;
+}
+.chassis .stage .container .upload-area {
+  position: relative;
+  padding: clamp(2rem, 5vw, 4rem) 1.25rem;
+  border: 1px dashed #877093;
+  background: radial-gradient(ellipse at 50% 20%, #a238d018, transparent 65%), linear-gradient(#211e2b, #272431);
+  box-shadow: inset 0 2px 8px #0006, 0 1px 0 #ffffff12;
+}
+.chassis .stage .container .upload-area:hover, .chassis .stage .container .upload-area.arrastando {
+  border-color: #d269f5;
+  background-color: #392545;
+  box-shadow: inset 0 0 24px #b743e51a, 0 0 12px #be47e51a;
+}
+.chassis .stage .container .upload-icone {
+  padding: 16px;
+  border: 1px solid #766181;
+  border-radius: 16px;
+  background: linear-gradient(#413249, #282030);
+  box-shadow: inset 0 1px 0 #ffffff26, 0 4px 8px #0005;
+  color: #e69bff;
+}
+.chassis .stage .container .campo :is(select, textarea, input[type='number'], input[type='text']),
+.chassis .stage .container .escolha {
+  border: 1px solid #121019;
+  background: #1c1a25;
+  color: var(--text-main);
+  box-shadow: inset 0 2px 4px #0005, 0 1px 0 #ffffff1c;
+  border-radius: 7px;
+}
+.chassis .stage .container .escolha.ativa {
+  border-color: #bd65dc;
+  background: linear-gradient(110deg, #493054, #282230);
+  box-shadow: inset 3px 0 0 #d36cf5, inset 0 1px 0 #ffffff12;
+}
+.chassis .stage .container :is(.tempo, .carimbo) {
+  color: #e88bff;
+  font-variant-numeric: tabular-nums;
+}
+.chassis .stage .container :is(.preview-frame, .previa-palco) {
+  border: 1px solid #101017;
+  box-shadow: 0 1px 0 #75658066, inset 0 0 8px #0009;
+}
+.chassis .stage .container :is(.palco-controles, .menu-ferramenta) {
+  background: linear-gradient(#34323e, #24222e);
+  border-top: 1px solid #ffffff15;
+  border-bottom: 1px solid #101018;
+  border-radius: 8px;
+  padding: 10px;
+}
+.chassis .stage .container input[type='range'] {
+  appearance: none;
+  height: 6px;
+  min-width: 0;
+  border: 1px solid #100d17;
+  border-radius: 6px;
+  background: linear-gradient(#514057, #82608f);
+  box-shadow: inset 0 2px 3px #0007, 0 1px 0 #ffffff20;
+  accent-color: #d25af5;
+  cursor: pointer;
+}
+.chassis .stage .container input[type='range']::-webkit-slider-thumb {
+  appearance: none;
+  width: 18px;
+  height: 22px;
+  border: 1px solid #160f20;
+  border-radius: 5px;
+  background: linear-gradient(#bd71d8, #8529a6 45%, #e389ff 48%, #b143d3 58%, #58206f);
+  box-shadow: inset 0 1px 0 #f1bfff, 0 2px 4px #000a;
+}
+.chassis .stage .container input[type='range']::-moz-range-thumb {
+  width: 16px;
+  height: 20px;
+  border: 1px solid #160f20;
+  border-radius: 5px;
+  background: linear-gradient(#bd71d8, #8529a6 45%, #e389ff 48%, #b143d3 58%, #58206f);
+  box-shadow: inset 0 1px 0 #f1bfff, 0 2px 4px #000a;
+}
+.chassis .stage .container input[type='range']:disabled { opacity: 0.4; cursor: default; }
+.mat-mdc-raised-button.mat-primary, .mat-mdc-unelevated-button.mat-primary {
+  background: linear-gradient(#493054, #302036) !important;
+  border: 1px solid #db73ff;
+  box-shadow: inset 0 0 0 2px #1b1522, inset 0 0 14px #cf40ff33, 0 0 8px #c33ff933 !important;
+  color: #f2ceff !important;
+  border-radius: 9px !important;
+}
+.stage .mat-mdc-outlined-button {
+  background: linear-gradient(#423b4b, #292530);
+  border-color: #776681 !important;
+  box-shadow: inset 0 1px 0 #ffffff1c, 0 2px 3px #0005;
+}
+.chassis .stage .container .palco-controles .mat-mdc-icon-button:first-child {
+  border: 1px solid #d879ff;
+  color: #efa6ff !important;
+  background: radial-gradient(circle at 40% 25%, #76418b, #382141 70%);
+  box-shadow: inset 0 0 0 3px #24182f, 0 0 10px #c945f74d;
+}
+@media (max-width: 600px) {
+  .chassis .stage .container { padding: 12px; gap: 12px; }
+  .chassis .stage .container .paineis { grid-template-columns: minmax(0, 1fr); }
+  .chassis .stage .container .grade { grid-template-columns: minmax(0, 1fr); }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; }
+}
+
+/* ==========================================================================
+ * Inside the desktop application
+ *
+ * A window is not a page, and the difference is mostly in what does *not*
+ * happen. Dragging across a label in a program does not paint it blue; the
+ * pointer over a heading is an arrow, not an I-beam; an image cannot be
+ * pulled out of the window and dropped somewhere else. On the web all three
+ * are correct — the page is a document, and a reader may want to copy it. In
+ * a program they are the small things that give away that this used to be a
+ * web page.
+ *
+ * So selection is turned off, and then turned back on everywhere it is the
+ * point: anything you type into, and anything marked `selectable`. A
+ * transcript you are correcting, a file name you want to copy, the privacy
+ * notice — those are text, and text you cannot select is a small cruelty.
+ * ========================================================================== */
+
+.is-desktop {
+  user-select: none;
+  cursor: default;
+}
+
+.is-desktop :is(
+  input,
+  textarea,
+  select,
+  [contenteditable="true"],
+  .selectable
+),
+.is-desktop .selectable * {
+  user-select: text;
+  cursor: auto;
+}
+
+/* The prose panels are documents inside the program, and are read as such. */
+.is-desktop :is(.help-modal__body, .instrucoes),
+.is-desktop :is(.help-modal__body, .instrucoes) * {
+  user-select: text;
+}
+
+/* An image in a program is part of the program, not a file lying on it. */
+.is-desktop img {
+  -webkit-user-drag: none;
+  user-select: none;
+}

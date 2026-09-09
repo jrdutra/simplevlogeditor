@@ -1,0 +1,109 @@
+<section class="hero">
+  <img class="hero__mark" src="/assets/icons/icon-256.png" alt="" width="96" height="96">
+
+  <!-- The name is the address. On the web that is a link to where the reader
+       already is, so it stays plain text; in the desktop shell it is the one
+       place the site itself can be reached from, and it opens in the machine's
+       browser rather than inside the application. -->
+  @if (desktop.isDesktop) {
+    <h1 class="hero__title">
+      <a
+        class="hero__home"
+        href="https://simplevlogeditor.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        title="Open simplevlogeditor.com in your browser">SimpleVlogEditor<span class="hero__tld">.com</span></a>
+    </h1>
+  } @else {
+    <h1 class="hero__title">SimpleVlogEditor<span class="hero__tld">.com</span></h1>
+  }
+
+  <p class="hero__lead">
+    Six free tools for cutting a vlog together — editing, silence, sound, subtitles and titles.
+    They run inside your browser, so nothing is uploaded and nothing is watermarked.
+  </p>
+</section>
+
+<section class="grid-wrap" aria-labelledby="tools-heading">
+  <h2 id="tools-heading" class="grid-heading">Audio &amp; video tools</h2>
+
+  <ul class="grid">
+    @for (tool of tools; track tool.rota) {
+      <li class="grid__cell">
+        <a class="card" [routerLink]="'/' + tool.rota">
+          <img
+            class="card__shot"
+            [src]="tool.image"
+            [alt]="tool.imageAlt"
+            [width]="tool.imageWidth"
+            [height]="tool.imageHeight"
+            loading="lazy"
+            decoding="async">
+          <span class="card__title">{{ tool.titulo }}</span>
+        </a>
+      </li>
+    }
+  </ul>
+</section>
+
+<!--
+  The site's own manual, opened by the Help button in the chrome.
+
+  Hidden by attribute rather than removed, like the tools' own panels: this is
+  the only prose on the home page, so it is also the only thing here a search
+  engine can read beyond six card titles.
+-->
+<app-help-panel label="What each tool does">
+  <div class="instrucoes">
+    <section class="seo-intro">
+      <h2>Six tools, one job each</h2>
+      <p>Every tool here runs inside your browser. Your file is read from your disk, worked on by your
+        own machine and written back there — nothing is uploaded, so there is no queue, no size limit
+        beyond your own memory, and nothing for anyone to store. All six are free, with no account, no
+        watermark and no export limit.</p>
+      <p>They are meant to be used together: cut the take, clean the sound, caption it, and put the
+        pieces in order. Each one also stands alone if it is the only thing you need.</p>
+    </section>
+
+    <h2>Video Editor</h2>
+    <p>The whole edit in one place. Arrange video, audio, images and text cards on a single timeline,
+      then work on any clip: cut the silence out of it, push in on the picture after its longest
+      pauses, change its speed, replace or level its sound, and lay a caption along the bottom.</p>
+    <p>Export the result as MP4, WebM, MKV or MOV — or as audio alone in M4A, MP3, OGG or WAV. Reach
+      for this when the edit has more than one moving part.</p>
+
+    <h2>Silence Cutter</h2>
+    <p>Finds the silent stretches in a recording and takes them out. You set how quiet counts as
+      silence and how much breathing room to leave around each cut, and every cut is drawn on the
+      waveform before a single frame is written, so you see exactly what will go.</p>
+    <p>This is the one for a take that is mostly fine and mostly pauses: a lecture, an interview, a
+      podcast, a screen recording, a voice memo.</p>
+
+    <h2>Media Merger</h2>
+    <p>Joins clips, music and stills into one file, in the order you put them, with fades between
+      them. Files recorded at different resolutions or frame rates are brought onto common ground
+      first, so the join does not stutter where two sources meet.</p>
+    <p>Use it when the material was captured in pieces — several takes, a separate audio recording, a
+      title still — and needs to become one video or one audio file.</p>
+
+    <h2>Noise Remover</h2>
+    <p>Separates the voice from everything that was going on behind it. A speech model picks out
+      speech and pulls down the room, the fan, the traffic, the keyboard and the hum, and the picture
+      is passed through untouched.</p>
+    <p>Reach for this when the performance is good and the room was not: it fixes the sound of a take
+      you would otherwise have to record again.</p>
+
+    <h2>Video Transcription</h2>
+    <p>Turns speech into timed caption lines you can correct on screen before exporting. Every line
+      keeps its own start and end, so fixing a word does not knock the timing out.</p>
+    <p>Export as SubRip (.srt) or SubViewer (.sbv) for upload, WebVTT (.vtt) for a web player, or
+      plain and timed text for a transcript somebody will read.</p>
+
+    <h2>Text Video Maker</h2>
+    <p>Animates text over a photograph or a flat colour and gives you back a video clip or a still
+      image. You choose how the words arrive, how long they stay, the type, the alignment and the
+      background, and can lay a sound under it.</p>
+    <p>This is the one for the short pieces around the main edit: an intro, a title card, an end
+      slate, a quote to post on its own.</p>
+  </div>
+</app-help-panel>

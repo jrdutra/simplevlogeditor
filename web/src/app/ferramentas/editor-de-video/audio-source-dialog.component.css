@@ -1,0 +1,300 @@
+/* This component owns its own dialog chrome rather than borrowing the editor's.
+   Emulated encapsulation means the editor's `.dialogo` rules cannot reach in
+   here anyway, and copying the shape is cheaper than opening those styles up to
+   the whole application. The measurements match on purpose, so the two dialogs
+   read as the same object. */
+
+:host { display: contents; }
+
+.fundo {
+  position: fixed;
+  inset: 0;
+  /* Above the fixed site menu (1000) and the material overlay container. */
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(18, 17, 25, 0.78);
+  backdrop-filter: blur(3px);
+}
+
+.painel {
+  display: flex;
+  flex-direction: column;
+  width: min(560px, 100%);
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  border: 1px solid var(--line-soft, rgba(180, 165, 200, 0.25));
+  border-radius: 14px;
+  background: var(--panel-dark, #071426);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.topo {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.85rem 0.75rem 0.85rem 1rem;
+  border-bottom: 1px solid var(--line-soft, rgba(180, 165, 200, 0.25));
+}
+
+.titulo {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.titulo h2 {
+  margin: 0;
+  font-size: 1.02rem;
+  line-height: 1.3;
+  color: var(--text-main, #e8f0fb);
+}
+
+.subtitulo {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+  color: var(--text-muted, #9fb2c9);
+}
+
+/* `min-height: 0` is what actually lets this scroll: a flex child's default
+   minimum is its content, so without it the body grows and takes the footer off
+   the bottom of the screen instead of scrolling. */
+.corpo {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+.rodape {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.7rem 1rem;
+  border-top: 1px solid var(--line-soft, rgba(180, 165, 200, 0.25));
+}
+
+/* --------------------------------------------------------------- choosing -- */
+
+.escolhas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+/* Material centres a button's label, but a label next to an icon is two boxes;
+   this is what keeps the pair centred as one. */
+.btn-conteudo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  line-height: 1;
+}
+
+.ajuda {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  color: var(--text-muted, #9fb2c9);
+}
+
+/* -------------------------------------------------------------- recording -- */
+
+.gravando {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.gravando-cabeca {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+}
+
+.ponto {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 50%;
+  background: #ff5252;
+  animation: pulsar 1.2s ease-in-out infinite;
+}
+
+.ponto.pausado {
+  background: var(--text-muted, #9fb2c9);
+  animation: none;
+}
+
+@keyframes pulsar {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* Respected rather than assumed: a blinking dot is exactly the kind of motion
+   someone turns that setting off to avoid. */
+@media (prefers-reduced-motion: reduce) {
+  .ponto { animation: none; }
+}
+
+.relogio {
+  font-size: 1.7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-main, #e8f0fb);
+}
+
+.estado {
+  font-size: 0.8rem;
+  color: var(--text-muted, #9fb2c9);
+}
+
+.medidor {
+  height: 0.6rem;
+  border-radius: 999px;
+  background: rgba(180, 165, 200, 0.16);
+  overflow: hidden;
+}
+
+.medidor-barra {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--aqua, #00ffd1), #7fe7ff 65%, #ffbd59);
+  transition: width 60ms linear;
+}
+
+.gravando-acoes,
+.revisao-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* ----------------------------------------------------------------- review -- */
+
+.revisao {
+  display: flex;
+  flex-direction: column;
+  gap: 0.8rem;
+}
+
+.nome-som {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-main, #e8f0fb);
+}
+
+.nome-som .nota {
+  color: var(--aqua, #00ffd1);
+  font-size: 0.78rem;
+}
+
+.previa {
+  width: 100%;
+  /* Chrome's default player is 300px wide and does not shrink on its own. */
+  min-width: 0;
+}
+
+.ajustes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.7rem 0.8rem 0.8rem;
+  border: 1px solid var(--line-soft, rgba(180, 165, 200, 0.25));
+  border-radius: 10px;
+}
+
+.ajustes legend {
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted, #9fb2c9);
+}
+
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-main, #e8f0fb);
+  cursor: pointer;
+}
+
+.check input { margin-top: 0.2rem; flex: 0 0 auto; }
+
+.check small {
+  display: block;
+  margin-top: 0.1rem;
+  font-size: 0.74rem;
+  line-height: 1.45;
+  color: var(--text-muted, #9fb2c9);
+}
+
+.linha-preset {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.82rem;
+  color: var(--text-muted, #9fb2c9);
+}
+
+.linha-preset select {
+  flex: 1 1 auto;
+  /* Without this the select can push the fieldset wider than the dialog. */
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 0.35rem 0.45rem;
+  border: 1px solid var(--line-soft, rgba(180, 165, 200, 0.25));
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.6);
+  color: var(--text-main, #e8f0fb);
+  font: inherit;
+}
+
+.progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.76rem;
+  color: var(--text-muted, #9fb2c9);
+}
+
+.salvo,
+.erro {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.salvo { color: var(--aqua, #00ffd1); }
+.erro { color: #ff8a80; }
+
+.salvo mat-icon,
+.erro mat-icon {
+  font-size: 1.05rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+}
+
+.erro small {
+  display: block;
+  color: var(--text-muted, #9fb2c9);
+}

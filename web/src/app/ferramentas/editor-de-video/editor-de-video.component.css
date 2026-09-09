@@ -1,0 +1,1926 @@
+/*
+ * The page: everything from the drop area at the top down to the row a clip
+ * gets in the list, plus every dialog that opens over it.
+ *
+ * This used to be one stylesheet of 2,348 lines, which is more than the
+ * component-style budget allows and more than anybody can hold in their head.
+ * It is now two, cut at a real seam — the page and its dialogs here, the
+ * preview and the strip of cards in `editor-de-video.previa.css`.
+ *
+ * The two are listed in `styleUrls` in this order and must stay in it: they are
+ * concatenated as written, so the order between them is the cascade.
+ */
+
+/*
+ * Two names for two facts that were sharing one colour.
+ *
+ * `--yellow` is a single global token, and this component was using it for both
+ * "the clip you are on" and "this clip is playing a supplied soundtrack" — two
+ * different things on the very same row, in the same hue. Naming them apart is
+ * what lets the selected row be loud without the soundtrack mark shouting with
+ * it: the selection takes the pure yellow, and the soundtrack keeps the amber
+ * the code had already written as its fallback and never once reached.
+ */
+:host {
+  --selecao: #ffea00;
+  --selecao-brilho: rgba(255, 234, 0, 0.34);
+  --selecao-anel: rgba(255, 234, 0, 0.2);
+  --selecao-lavagem: rgba(255, 234, 0, 0.22);
+  --som-externo: #ffbd59;
+  /* A fourth fact, and so a fourth colour. Aqua already means "has settings of
+     its own", yellow means "the clip you are on", amber means "playing a
+     supplied track" — blue was the one thing left on a card that meant nothing.
+     Two of them, because the ribbon is a lit edge over a dark ground rather
+     than one flat fill: the navy is what it is printed on, the bright blue is
+     what makes it look lit. */
+  --timelapse: #4da3ff;
+  --timelapse-marinho: #0d2a63;
+  --timelapse-marinho-claro: #163f8f;
+}
+
+.container {
+  max-width: none;
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* Before the first clip, fill the space below the toolbar with the way into
+   the editor. Once media exists the component's regular grid takes over. */
+:host { height: 100%; min-height: 100%; }
+
+.container.inicial {
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+}
+
+.container.inicial > .upload-area {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 16rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------------ upload */
+
+.upload-area {
+  border: 2px dashed var(--line-soft);
+  border-radius: 12px;
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 200ms ease, background 200ms ease;
+  background: rgba(209, 96, 255, 0.02);
+}
+
+.upload-area:hover,
+.upload-area.arrastando {
+  border-color: var(--aqua);
+  background: rgba(209, 96, 255, 0.05);
+}
+
+/*
+ * A file being dragged anywhere over the tool.
+ *
+ * The rectangle above only exists on the empty screen, so with a timeline
+ * loaded there would otherwise be no answer at all to "will it take this?" —
+ * the reader would be holding a file over a page that shows no sign of
+ * noticing. An outline around the whole tool is the honest answer, because the
+ * whole tool is what accepts the drop.
+ */
+.container.arrastando {
+  outline: 2px dashed var(--aqua);
+  outline-offset: 6px;
+  border-radius: 12px;
+}
+
+.upload-icone {
+  font-size: 3rem;
+  width: 3rem;
+  height: 3rem;
+  color: var(--aqua);
+  margin-bottom: 0.5rem;
+}
+
+.upload-texto {
+  margin: 0.25rem 0;
+  font-size: 1rem;
+  color: var(--text-main);
+}
+
+.upload-hint {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.lendo {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+/* -------------------------------------------------------------- the queue */
+
+/*
+ * The row wraps, and the buttons in it never do.
+ *
+ * A flex item shrinks below its content by default, which is what was breaking
+ * "Add media" across two lines the moment a clip appeared and a sixth button
+ * joined the row: nothing overflowed, so nothing wrapped — the buttons just got
+ * narrower until their labels folded. `flex: 0 0 auto` takes that away, and
+ * `flex-wrap` gives the row somewhere to put what no longer fits.
+ */
+/*
+ * The tool's menu: one bar across the top of it, edge to edge.
+ *
+ * It spans the tool's own width rather than the window's — negative margins
+ * that cancel the page's padding, so the bar reaches the sides of the panel the
+ * editor lives in and stops there. A strip running to the edges of the screen
+ * would be claiming to be the application's menu, and it is this tool's.
+ */
+/* No fill and no rule: the row is the tool's menu because of where it sits and
+   what is in it, and a page this dark does not need a second surface or a green
+   line to be told where the top is. The width and the left edge do the work. */
+.menu-ferramenta {
+  margin: 0 -1rem;
+  padding: 0.55rem 1rem 0.7rem;
+}
+
+/*
+ * The actions the whole tool starts from, in three states.
+ *
+ * One row while the six fit, which is the case on any ordinary window: the
+ * padding is tightened a little to buy that, because a row that gains a second
+ * line the moment a preview opens moves everything under it by forty pixels.
+ *
+ * When they genuinely do not fit, the row wraps — but only *between* the two
+ * groups, never inside one, so what drops to the second line is "the project's
+ * actions" as a unit rather than whichever button happened to be last. This is
+ * the state that used to be broken: the row was told never to wrap, so instead
+ * of moving it simply overflowed, and the last buttons ran off the edge.
+ *
+ * Narrower than a group can be, the whole thing becomes a stack of full-width
+ * buttons — see the query below.
+ */
+.acoes-topo {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.5rem;
+  align-items: center;
+}
+
+.acoes-grupo {
+  display: flex;
+  /* A group is one idea and breaks as one: either it is on this line or it is
+     on the next, never half of each. */
+  flex-wrap: nowrap;
+  gap: 0.4rem;
+  align-items: center;
+  min-width: 0;
+}
+
+/*
+ * The project's actions follow the timeline's, on the same left edge.
+ *
+ * They used to be pushed to the far right, which made the row read as two
+ * unrelated toolbars with a lake between them on a wide screen. Now every
+ * button starts from the same edge, including the ones on a second line — an
+ * indent or a separator here would look like alignment gone wrong the moment
+ * the row wraps, which at this width it usually does. The two groups survive as
+ * elements because a group still wraps as a unit; they just no longer announce
+ * themselves.
+ */
+.acoes-grupo-fim { margin-left: 0; }
+
+.acoes-topo button {
+  flex: 0 0 auto;
+  /* `white-space` is inherited, so this reaches Material's own label span
+     without needing to name a class this component does not own. */
+  white-space: nowrap;
+  /* Material's default is sixteen a side. Six buttons on one line is worth
+     twelve pixels each, and the labels are what carry the meaning anyway. */
+  padding-left: 10px;
+  padding-right: 10px;
+  min-width: 0;
+}
+
+/*
+ * Below the width where the project's four buttons fit side by side.
+ *
+ * Measured rather than guessed: those four and their gaps come to a little
+ * under 620px, and the page's own padding takes 32px off the viewport — so
+ * anything narrower than about 650px cannot hold that group on one line at all.
+ * The breakpoint sits just above it.
+ *
+ * Wrapping stops helping here: a group of four cannot break, so it would either
+ * overflow or leave one button stranded on a line of its own. So the groups
+ * stop being rows and become grids of equal cells — every button the same
+ * width, icons in a column, nothing ragged.
+ *
+ * The primary group keeps one column because "Add media or text" is the longest
+ * label on the page and would not survive being halved; the project's actions
+ * are short enough to pair up whenever there is room for two.
+ */
+@media (max-width: 680px) {
+  /* The bar keeps its edges and loses the inset: at this width the page's own
+     padding is most of the room there is. */
+  .menu-ferramenta { padding-left: 0.75rem; padding-right: 0.75rem; }
+
+  .acoes-topo {
+    flex-direction: column;
+    flex-wrap: nowrap;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+
+  .acoes-grupo {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+
+  .acoes-grupo-fim { grid-template-columns: repeat(auto-fit, minmax(10.5rem, 1fr)); }
+
+  .acoes-topo button {
+    width: 100%;
+    /* Left-aligned rather than centred: stacked, it is a menu, and a menu reads
+       down the icons. Centred labels of six different lengths are exactly the
+       raggedness this query exists to remove. */
+    justify-content: flex-start;
+    padding-left: 14px;
+    padding-right: 14px;
+  }
+}
+
+.lista-cabecalho {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.lista-info {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.lista-clipes {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-height: 40px;
+}
+
+/* The row is a three-column band — the still, everything the clip has to say,
+   and the controls — and all three hang from its top edge. Centred, a clip
+   with a warning on it pushed its own thumbnail and its own Edit button into
+   the middle of a paragraph, so the two things the eye actually goes for on a
+   row sat wherever the longest sentence happened to leave them. */
+.item-clipe {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.7rem;
+  padding: 0.7rem 0.85rem;
+  background: rgba(43, 42, 55, 0.7);
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  transition: border-color 150ms ease;
+}
+
+.item-clipe:hover {
+  border-color: rgba(209, 96, 255, 0.4);
+}
+
+/* The row sends the preview to this clip, so it says so with the pointer — but
+   only while it can keep the promise. During an export, and while a clip is
+   still waiting for its file, the click does nothing and the row must not
+   advertise it. Its own controls set their own cursors and are excluded from
+   the click. */
+.item-clipe.item-clicavel { cursor: pointer; }
+
+/* Handle, number and still travel together: they are one object, they are
+   always the same height, and grouped they can be pinned to the top of the row
+   with a single rule instead of three. */
+.item-inicio {
+  display: flex;
+  /* The handle and the number stay up beside the name; the still, which now
+     runs the height of the row, is stretched by its own rule below. Centred,
+     the two small controls would drift into the middle of the picture. */
+  align-items: flex-start;
+  align-self: stretch;
+  gap: 0.45rem;
+  flex: 0 0 auto;
+}
+
+.drag-handle {
+  color: var(--text-muted);
+  cursor: grab;
+  flex-shrink: 0;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+/* A button that still reads as a number. The site has no global reset, so every
+   default a `<button>` brings with it has to be undone by hand. */
+.posicao {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  width: 1.2rem;
+  text-align: center;
+  flex-shrink: 0;
+  padding: 2px 0;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  font-family: inherit;
+  line-height: 1.2;
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease;
+}
+
+.item-clipe .posicao:hover:not(:disabled) {
+  color: var(--aqua, #00ffd1);
+  background: rgba(209, 96, 255, 0.12);
+}
+
+.posicao:focus-visible {
+  outline: 2px solid var(--aqua, #00ffd1);
+  outline-offset: 1px;
+}
+
+.tipo-icone {
+  flex-shrink: 0;
+}
+
+.icone-video { color: #b625ff; }
+.icone-audio { color: var(--aqua); }
+.icone-imagem { color: #ffb74d; }
+
+.item-texto {
+  /* A basis of zero, not of its own content: with `auto` the column asks for
+     the width of the longest filename in the list, and below about 500px that
+     ask is enough to push the thumbnail onto a line of its own on some rows
+     and not others. From zero it simply takes what is left. */
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  /* Every child is as wide as it needs to be and no wider. Stretched — the
+     default — a one-word pill like "no sound of its own" ran the whole width
+     of the column with its border, and read as a banner rather than a tag. */
+  align-items: flex-start;
+  gap: 0.22rem;
+}
+
+/* The name is the one thing on the row that must never be given up, so it gets
+   the whole column and truncates last. */
+.item-texto > .nome-clipe,
+.item-texto > .detalhe-clipe {
+  align-self: stretch;
+}
+
+.nome-clipe {
+  font-size: 0.88rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--text-main);
+}
+
+.detalhe-clipe {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.aviso-clipe {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  color: #ffb74d;
+}
+
+.aviso-clipe mat-icon {
+  font-size: 0.95rem;
+  width: 0.95rem;
+  height: 0.95rem;
+  flex-shrink: 0;
+}
+
+
+.imagem-controles {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  margin-top: 0.2rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.campo-segundos {
+  width: 4.2rem;
+  padding: 0.15rem 0.35rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.35em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.75rem;
+}
+
+.campo-segundos:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+
+.unidade { margin-left: -0.15rem; }
+
+.som-anexo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  max-width: 14rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--aqua);
+}
+
+.som-anexo mat-icon {
+  font-size: 0.9rem;
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+}
+
+
+.item-ordenar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.btn-mover {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.btn-mover:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.btn-mover:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+.btn-mover mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+}
+
+.btn-mover:hover:not(:disabled) { color: var(--aqua) !important; }
+
+.btn-preview {
+  flex-shrink: 0;
+  color: var(--aqua) !important;
+}
+
+.btn-preview:hover { background: rgba(209, 96, 255, 0.1) !important; }
+
+.btn-remover {
+  flex-shrink: 0;
+  color: var(--text-muted) !important;
+}
+
+.btn-remover:hover { color: #f44336 !important; }
+
+.drag-placeholder {
+  height: 62px;
+  background: rgba(209, 96, 255, 0.05);
+  border: 2px dashed rgba(209, 96, 255, 0.3);
+  border-radius: 8px;
+}
+
+.cdk-drag-preview {
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  opacity: 0.9;
+}
+
+.cdk-drag-animating {
+  transition: transform 200ms cubic-bezier(0, 0, 0.2, 1);
+}
+
+/* ---------------------------------------------------------------- options */
+
+/* Bare inside `.grupo`, which now draws the box: two concentric rounded frames
+   15px apart is not a design, it is two people having the same idea. */
+.opcoes {
+  display: grid;
+  /* 180 rather than 220: the group around it costs 30px of width, and at 220 the
+     single remaining column no longer fitted a phone — the card clips rather
+     than scrolls, so the format selects were simply cut off. */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.9rem;
+  min-width: 0;
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.campo label {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.campo input[type="number"] {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.88rem;
+}
+
+.campo input[type="number"]:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+.campo input[type="number"]:disabled { opacity: 0.5; }
+
+.campo select {
+  padding: 0.5rem 0.6rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.88rem;
+}
+
+.campo select:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+.campo select:disabled { opacity: 0.5; }
+
+.campo small {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.plano-aviso {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.plano-aviso mat-icon {
+  font-size: 1.05rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  color: var(--aqua);
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------- progress */
+
+.acoes-baixo {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.acoes-baixo button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/**
+ * The icon and the label of a merge button.
+ *
+ * Material centres what it projects into its own icon slot, but an icon
+ * declared inside an @if never gets there — it arrives with the label and is
+ * placed on the text baseline, which reads as an icon floating too high. This
+ * row centres them itself, and cancels the margins Material adds for the slot
+ * it thinks the icon is in.
+ */
+.btn-conteudo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  line-height: 1;
+}
+
+.btn-conteudo mat-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  font-size: 1.2rem;
+  line-height: 1.2rem;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.btn-conteudo mat-spinner {
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+/*
+ * Material lays its label out on a text baseline inside a button of a fixed
+ * height, so a row of our own sitting in that slot inherits the offset and ends
+ * up a couple of pixels high. Stretching the row to the button's full height
+ * and centring inside it puts the icon and the words on the button's middle
+ * rather than on the typography's.
+ */
+.acoes-baixo .btn-conteudo,
+.escolhas .btn-conteudo {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 1.5rem;
+}
+
+.progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(43, 42, 55, 0.55);
+}
+
+.progresso-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-main);
+  min-width: 0;
+}
+
+.progresso-item {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+/* --------------------------------------------------------------- messages */
+
+.mensagem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(209, 96, 255, 0.08);
+  border: 1px solid rgba(209, 96, 255, 0.2);
+  color: var(--aqua);
+  font-size: 0.9rem;
+}
+
+.mensagem-nota {
+  background: rgba(182, 37, 255, 0.08);
+  border-color: rgba(182, 37, 255, 0.28);
+  color: #d79bff;
+}
+
+.mensagem-erro {
+  background: rgba(244, 67, 54, 0.08);
+  border-color: rgba(244, 67, 54, 0.3);
+  color: #f44336;
+  align-items: flex-start;
+}
+
+.mensagem-erro > span {
+  flex: 1 1 auto;
+  /* Without this the trace below cannot scroll: a flex item refuses to shrink
+     past its content, so a long stack frame would widen the whole page. */
+  min-width: 0;
+}
+
+.mensagem .dica {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+
+.resumo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(43, 42, 55, 0.45);
+}
+
+.resumo dt {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.resumo dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.95rem;
+  color: var(--text-main);
+}
+
+/* ---------------------------------------------------------------- preview */
+
+.preview-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 1.25rem;
+  background: rgba(2, 9, 23, 0.58);
+  backdrop-filter: blur(5px);
+}
+
+.preview-balao {
+  position: relative;
+  width: min(88vw, 760px);
+  max-height: min(82vh, 720px);
+  padding: 1rem;
+  border: 1px solid rgba(209, 96, 255, 0.28);
+  border-radius: 2rem 2rem 2rem 0.85rem;
+  background:
+    radial-gradient(circle at 18% 0%, rgba(209, 96, 255, 0.12), transparent 32%),
+    linear-gradient(145deg, rgba(43, 42, 55, 0.98), rgba(5, 18, 39, 0.98));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+}
+
+.preview-topo {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  padding: 0 2.25rem 0.75rem 0.25rem;
+  color: var(--text-main);
+  min-width: 0;
+}
+
+.preview-topo mat-icon {
+  color: var(--aqua);
+  flex: 0 0 auto;
+}
+
+.preview-topo span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.preview-fechar {
+  position: absolute;
+  top: 0.6rem;
+  right: 0.6rem;
+  z-index: 1;
+  color: var(--text-muted) !important;
+}
+
+.preview-fechar:hover { color: #ff7070 !important; }
+
+.preview-moldura {
+  display: grid;
+  place-items: center;
+  padding: 0.5rem;
+  max-height: calc(min(82vh, 720px) - 4.5rem);
+  border-radius: 1.35rem;
+  overflow: hidden;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.preview-moldura video {
+  display: block;
+  max-width: 100%;
+  max-height: calc(min(82vh, 720px) - 5.5rem);
+  border-radius: 1rem;
+}
+
+.preview-moldura audio { width: min(100%, 480px); }
+
+.preview-moldura img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(min(82vh, 720px) - 5.5rem);
+  border-radius: 1rem;
+}
+
+@media (max-width: 650px) {
+  /* Only these two rules belong here. Everything else that sat inside this
+     query was a verbatim copy of the top-level block above it — a paste that
+     landed in the wrong place, re-declaring identical values below 650px. */
+  .item-ordenar { display: none; }
+  .detalhe-clipe { white-space: normal; }
+
+  /* Below this width the three columns stop being three columns: the text
+     alone needs most of the row, so the controls wrap under it and line up on
+     the right, where the eye leaves the row. */
+  .item-clipe { flex-wrap: wrap; }
+
+  /* The controls take the whole second line and sit at its right end, which is
+     where the row finishes reading. */
+  .item-acoes {
+    width: 100%;
+    justify-content: flex-end;
+    margin-top: 4px;
+  }
+}
+
+/* ------------------------------------------------------- project settings */
+
+.projeto {
+  margin: 18px 0 6px;
+  padding: 16px 18px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel-dark);
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--aqua);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.86rem;
+}
+
+.disclosure:disabled { opacity: 0.5; cursor: default; }
+.disclosure mat-icon { font-size: 20px; width: 20px; height: 20px; }
+
+.disclosure-titulo {
+  /* Full width, and a flex row rather than inline, so the length can sit at the
+     far end instead of trailing the title. */
+  display: flex;
+  width: 100%;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.disclosure-titulo mat-icon { color: var(--aqua); }
+
+/* Pushed to the far end of the header so the title and the length do not
+   shuffle sideways as the number changes width. */
+.projeto-duracao {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  font-weight: 500;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.previa-corte-linha {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 24px;
+  margin-top: 8px;
+}
+
+.previa-tempos {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px 22px;
+  margin: 0 0 0 auto;
+  flex: 0 1 auto;
+}
+
+.previa-tempos-item {
+  display: inline-flex;
+  align-items: baseline;
+  flex: 0 0 auto;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.previa-tempos-item strong {
+  color: var(--text-main);
+  font-size: 0.95rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.previa-corte {
+  display: flex;
+  align-items: center;
+  flex: 1 1 300px;
+  min-width: 0;
+  gap: 8px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.previa-corte input { cursor: pointer; }
+
+.projeto-nota {
+  margin: 6px 0 0 26px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  max-width: 78ch;
+}
+
+.projeto-painel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  margin-top: 16px;
+}
+
+/* ------------------------------------------------------------ the clip row */
+
+.item-clipe.tem-override {
+  border-left: 3px solid var(--aqua);
+}
+
+/*
+ * The row you picked — the clip the playhead is inside.
+ *
+ * Lit rather than tinted. Every other mark on this row is a property of the
+ * clip and is drawn quietly: a left edge, an icon, a wash. This one is the
+ * answer to "which one am I looking at", it changes as you work, and it has to
+ * be findable in a list of thirty rows without reading any of them. So it gets
+ * the border, a ring just outside it, a glow, and a wash across the row — four
+ * cues that no other state uses together.
+ *
+ * The rules come after the override and supplied-sound tints on purpose: this
+ * is the one state that is *happening now*, so it wins the border.
+ */
+.item-clipe.item-atual {
+  border-color: var(--selecao);
+  box-shadow:
+    0 0 0 1px var(--selecao) inset,
+    0 0 0 3px var(--selecao-anel),
+    0 0 22px var(--selecao-brilho);
+  background:
+    linear-gradient(90deg, var(--selecao-lavagem), rgba(255, 234, 0, 0.06) 45%, transparent 78%),
+    rgba(43, 42, 55, 0.7);
+}
+
+/* The left edge keeps saying what it said — those are properties of the clip,
+   not of the moment — but in the playing row it is drawn a shade brighter so it
+   is still legible against the blue. */
+.item-clipe.item-atual .posicao,
+.item-clipe.item-atual .nome-clipe {
+  color: var(--text-main);
+}
+
+.item-clipe.item-atual .tipo-icone { color: var(--selecao); }
+
+.icone-texto { color: var(--purple, #b98cff); }
+
+/* No strike-through: the note now says things like "0.5×" as well as
+   "was 03:21", and a rate crossed out reads as a rate that was cancelled. */
+.antes {
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  white-space: nowrap;
+}
+
+/*
+ * The badges: their own line, directly under the details they qualify.
+ *
+ * Sharing the name's line was the cheaper idea and the worse one. Seven pills
+ * do not fit beside a filename, so they wrapped into three ragged right-aligned
+ * rows and took the name down to an ellipsis to do it. Across the full column
+ * they are usually one line — the height they were worth all along — and they
+ * start where every other line in the column starts, which is what stops the
+ * row looking scattered.
+ */
+.selos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 2px;
+}
+
+/* The one fact in the group that is about the footage rather than about what
+   was done to it, so it is the one that carries a colour. */
+.selo-timelapse {
+  border-color: rgba(77, 163, 255, 0.55);
+  background: rgba(77, 163, 255, 0.12);
+  color: var(--timelapse);
+  font-weight: 600;
+}
+
+.selo {
+  padding: 2px 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* Told as a pill rather than as a warning: it is a fact about the file, not a
+   problem with the edit — the red sentence above covers the case where it has
+   become one. The icon has to be laid out by hand; `.selo` is inline text. */
+.selo-mudo {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.selo-mudo mat-icon {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+}
+
+/*
+ * The controls, as one block at the top of the row.
+ *
+ * Loose in the row they were five siblings of a text column four lines tall,
+ * so the flex box centred each of them against it: Edit ended up level with a
+ * sentence about a missing file, nowhere anybody looks for it. Grouped, they
+ * hold the corner opposite the still, and the row reads as three columns
+ * instead of nine things in a line.
+ */
+.item-acoes {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.btn-editar {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  margin-right: 4px;
+}
+
+.btn-duplicar { flex: 0 0 auto; }
+
+/* Material sizes an icon button for a finger. Five of them in a row on a list
+   item is a lot of empty circle, so they are brought in to something closer to
+   the row's own scale without touching the icon inside. */
+.item-acoes .mat-mdc-icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+}
+
+/* ---------------------------------------------------------------- dialogs */
+
+/*
+ * The dialogs are moved to `<body>` by `appBodyPortal`, so these rules are
+ * written for an element that no longer lives inside the component — which is
+ * why they are marked `::ng-deep`-free but must be `:host ::ng-deep`-safe: the
+ * portalled node keeps its `_ngcontent` attribute, so the emulated styles
+ * follow it. The move is what makes the z-index below mean anything: inside the
+ * page's card the whole subtree sits in a stacking context of its own, and no
+ * number written here could ever have lifted a dialog over the site menu.
+ */
+.dialogo-fundo {
+  position: fixed;
+  inset: 0;
+  /* Above the fixed site menu (1000) and the material overlay container. */
+  z-index: 4000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(18, 17, 25, 0.78);
+  backdrop-filter: blur(3px);
+}
+
+.dialogo {
+  display: flex;
+  flex-direction: column;
+  width: min(920px, 100%);
+  max-height: calc(100vh - 48px);
+  /* `100dvh` on the browsers that have it: a phone's address bar eats the
+     difference, and a dialog measured against the larger viewport loses its
+     footer off the bottom of the screen. */
+  max-height: calc(100dvh - 48px);
+  border: 1px solid var(--line-soft);
+  border-radius: 14px;
+  background: var(--panel-dark, #071426);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+
+.dialogo-topo,
+.dialogo-rodape { flex: 0 0 auto; }
+
+.dialogo-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 12px 14px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.dialogo-titulo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.dialogo-titulo mat-icon { color: var(--aqua); }
+
+.dialogo-titulo h2 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/*
+ * `min-height: 0` is the whole fix for the dialog that could not be scrolled.
+ * A flex child defaults to `min-height: auto`, which means "never smaller than
+ * my content" — so this box grew past the dialog's `max-height`, the dialog's
+ * `overflow: hidden` cut the bottom off, and `overflow-y: auto` here never had
+ * anything to scroll because the box was never actually too small.
+ */
+.dialogo-corpo {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  gap: 18px;
+  padding: 18px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.dialogo-rodape {
+  display: flex;
+  justify-content: flex-end;
+  padding: 12px 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.dialogo-preview {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #000;
+}
+
+.dialogo-preview video,
+.dialogo-preview img {
+  max-width: 100%;
+  max-height: 320px;
+  border-radius: 6px;
+}
+
+.secao {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: rgba(20, 19, 28, 0.4);
+}
+
+.secao h3 {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--aqua);
+  text-transform: uppercase;
+}
+
+/* A label or legend that carries a "?" becomes a row, so the button sits on the
+   baseline beside the words instead of pushing them onto a second line. */
+.campo > label,
+.grupo-titulo,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.campo > label,
+.grupo-titulo {
+  flex-wrap: wrap;
+}
+
+.ajuda {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  max-width: 78ch;
+}
+
+.linha-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.linha-som { margin-top: 4px; }
+
+.linha-campos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+.linha-checks {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 22px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-main);
+  font-size: 0.92rem;
+}
+
+.check input { accent-color: var(--aqua); cursor: pointer; }
+.check input:disabled { cursor: default; }
+
+.check-seguir { font-weight: 600; }
+
+.campo-largo { grid-column: 1 / -1; }
+
+.com-unidade {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.com-unidade input[type='range'] { flex: 1 1 auto; accent-color: var(--aqua); }
+.com-unidade .unidade { color: var(--text-muted); font-size: 0.76rem; white-space: nowrap; }
+
+.dialogo-corpo textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.6);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+
+.dialogo-corpo textarea:focus { outline: 1px solid var(--aqua); }
+
+.dialogo-corpo input[type='color'] {
+  width: 100%;
+  height: 38px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.6);
+  cursor: pointer;
+}
+
+.obsoleto {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--som-externo);
+  font-size: 0.78rem;
+}
+
+.obsoleto mat-icon { font-size: 18px; width: 18px; height: 18px; }
+
+.som-duracao { color: var(--text-muted); font-size: 0.74rem; }
+
+.barra-analise { margin-top: 4px; }
+
+.texto-preview {
+  display: flex;
+  justify-content: center;
+  padding: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: #000;
+}
+
+.texto-preview canvas {
+  max-width: 100%;
+  height: auto;
+  border-radius: 6px;
+}
+
+@media (max-width: 720px) {
+  .dialogo { max-height: calc(100vh - 24px); }
+  .dialogo-fundo { padding: 12px 8px; }
+  .btn-editar span { display: none; }
+}
+
+/* ------------------------------------------------- clips playing a file */
+
+/* A clip whose sound is not its own is worth spotting from across the list:
+   it is the one thing on a row that cannot be heard by looking at the
+   picture, and the one most likely to have been set on the wrong clip. */
+.item-clipe.tem-som-externo {
+  border-color: rgba(255, 189, 89, 0.45);
+  background:
+    linear-gradient(90deg, rgba(255, 189, 89, 0.1), rgba(255, 189, 89, 0.02) 38%, transparent 70%),
+    rgba(20, 19, 28, 0.55);
+}
+
+.item-clipe.tem-som-externo .tipo-icone { color: var(--som-externo); }
+
+/* Both at once: the amber wash stays, so the row still says it is playing a
+   supplied file, and the lit rim on top says it is the one you are on. The two
+   are told apart by shape rather than by hue — the amber is a flat tint at the
+   left edge, the selection is a ring with a glow around the whole row. */
+.item-clipe.tem-som-externo.item-atual {
+  border-color: var(--selecao);
+  background:
+    linear-gradient(90deg, var(--selecao-lavagem), rgba(255, 189, 89, 0.1) 45%, transparent 78%),
+    rgba(20, 19, 28, 0.55);
+}
+
+.item-clipe.tem-som-externo.item-atual .tipo-icone { color: var(--som-externo); }
+
+.item-clipe.tem-som-externo.tem-override { border-left: 3px solid var(--som-externo); }
+
+.som-externo {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  max-width: 100%;
+  color: var(--som-externo);
+  font-size: 0.76rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.som-externo mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+}
+
+.som-offset {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+.item-clipe.tem-som-externo .selo {
+  border-color: rgba(255, 189, 89, 0.35);
+}
+
+/* ------------------------------------------------------------ thumbnails */
+
+/* The box is the same size whether or not a still has arrived, so a thumbnail
+   decoded a second after the file was read never makes the list jump. */
+/* As tall as the text beside it, and 16:9 at the height that text usually
+   comes to — a name, a line of detail and a row of pills, which is 71px.
+   Now that the list has the width for it, a still small enough to be a bullet
+   point was the one thing on the row nobody could actually see.
+
+   The width is a fixed number rather than one derived from the height, and that
+   is deliberate: a browser settles widths before it knows how tall anything is,
+   so a width asked for in terms of the row's height is a width computed from
+   the *old* height — the picture then grows past the column it was measured
+   into and sits on top of the filename. A stated width is reserved properly,
+   and `cover` keeps the picture itself undistorted on the rows that run taller
+   or shorter than the usual three lines. */
+.miniatura {
+  flex-shrink: 0;
+  box-sizing: border-box;
+  align-self: stretch;
+  width: 126px;
+  height: auto;
+  /* Never smaller than it used to be, on a row with nothing much to say. */
+  min-height: 43px;
+  border: 1px solid var(--line-soft);
+  border-radius: 5px;
+  background: #000;
+  object-fit: cover;
+}
+
+.miniatura-vazia {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 19, 28, 0.6);
+}
+
+.miniatura-vazia mat-icon {
+  font-size: 22px;
+  width: 22px;
+  height: 22px;
+}
+
+/* -------------------------------------------------- inserting a text card */
+
+.inserir {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 16px;
+}
+
+.inserir::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: var(--line-soft);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.inserir:hover::before,
+.inserir:focus-within::before { opacity: 1; }
+
+.inserir-botao {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: var(--panel-dark, #071426);
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.4;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.inserir:hover .inserir-botao,
+.inserir-botao:focus-visible {
+  opacity: 1;
+  color: var(--aqua);
+  border-color: var(--aqua);
+}
+
+.inserir-botao:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.inserir-botao:disabled { opacity: 0.2; cursor: default; }
+
+.inserir-botao mat-icon {
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+}
+
+/* Hidden rather than removed while a clip is being dragged: taking the row out
+   of the flow would move every item under the cursor mid-drag. */
+.lista-clipes.cdk-drop-list-dragging .inserir { visibility: hidden; }
+
+/* ------------------------------------------------- the project soundtrack */
+
+/* Nothing of its own left: `.grupo` further down has the same specificity and
+   is declared later, so a `gap` written here never applied. The class stays as
+   a hook for the markup and for `.som-padrao small`. */
+
+.som-padrao small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  max-width: 78ch;
+}
+
+/* ------------------------------------------------------ the sound chooser */
+
+.dialogo-estreito { width: min(560px, 100%); }
+
+.escolhas {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.escolhas button { justify-content: flex-start; }
+.escolhas .btn-conteudo { justify-content: flex-start; text-align: left; }
+
+/* ------------------------------------------------ the tag's position grid */
+
+/* Nine buttons in the shape of the frame, so "bottom left" is pointed at
+   rather than read. The same control lives on the picture inside the tag's own
+   dialog; this is the one on the clip's panel, for the reader who only wants to
+   move a badge off somebody's face. */
+.linha-posicao { align-items: flex-start; }
+
+.matriz-tag {
+  display: grid;
+  grid-template-columns: repeat(3, 2.1rem);
+  grid-template-rows: repeat(3, 1.45rem);
+  gap: 3px;
+  margin-top: 0.15rem;
+}
+
+.quadro-tag {
+  appearance: none;
+  border: 1px solid var(--line-soft, rgba(180, 165, 200, 0.3));
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.04);
+  padding: 0;
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.quadro-tag:hover:not(:disabled) {
+  border-color: rgba(160, 200, 255, 0.7);
+  background: rgba(120, 170, 255, 0.12);
+}
+
+.quadro-tag:focus-visible { outline: 2px solid var(--accent, #4da3ff); outline-offset: 1px; }
+.quadro-tag:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.quadro-tag span {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.35);
+  transition: background 0.12s ease, transform 0.12s ease;
+}
+
+.quadro-tag.escolhido { border-color: var(--accent, #4da3ff); background: rgba(77, 163, 255, 0.25); }
+.quadro-tag.escolhido span { background: var(--accent, #4da3ff); transform: scale(1.4); }
+
+/* The waiting files, one per line with what is knowable about each. */
+ul.reconectar-nomes {
+  list-style: none;
+  margin: 0.15rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+ul.reconectar-nomes li {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.arquivo-nome {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arquivo-detalhe {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+}
+
+/* ----------------------------------------------------------- render log */
+
+/*
+ * A console under the progress bar.
+ *
+ * Folded away by default because most exports need nothing but the bar, and
+ * fixed in height once opened for the reason a terminal is: a pane that grows
+ * with its contents pushes the page around under the reader while they are
+ * trying to read it. Beyond that height it scrolls, and the scrollbar is the
+ * one the rest of the tool uses.
+ */
+.registro {
+  border: 1px solid var(--line-soft);
+  border-radius: 6px;
+  background: rgba(2, 8, 23, 0.6);
+  overflow: hidden;
+}
+
+.registro-cabeca {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+}
+
+.registro-cabeca:hover { color: var(--text-main); }
+.registro-cabeca:focus-visible { outline: 2px solid var(--line-soft); outline-offset: -2px; }
+
+.registro-seta {
+  font-size: 1.05rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: 0 0 auto;
+}
+
+.registro-titulo {
+  flex: 0 0 auto;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-main);
+}
+
+/* The newest line, shown on the header while the console is closed. */
+.registro-ultima {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  opacity: 0.8;
+}
+
+.registro-conta {
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  background: rgba(209, 96, 255, 0.12);
+  color: var(--text-main);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.registro-aberto .registro-cabeca { border-bottom: 1px solid var(--line-soft); }
+
+.registro-console {
+  height: 13.5rem;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0.45rem 0.2rem 0.45rem 0.55rem;
+  background: var(--navy-950);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 0.73rem;
+  line-height: 1.5;
+  scrollbar-width: thin;
+  scrollbar-color: #0b2344 var(--navy-950);
+  /* The track is there whether or not it is needed, so the first line that
+     overflows does not reflow every line above it. */
+  scrollbar-gutter: stable;
+  box-shadow: inset 0 6px 8px -8px rgba(0, 0, 0, 0.9);
+}
+
+.registro-console:focus-visible { outline: 2px solid var(--line-soft); outline-offset: -2px; }
+
+/* Matches the scrollbar the rest of the tool draws, at a console's width. */
+.registro-console::-webkit-scrollbar { width: 10px; }
+.registro-console::-webkit-scrollbar-track { background: var(--navy-950); }
+.registro-console::-webkit-scrollbar-thumb {
+  border: 2px solid var(--navy-950);
+  border-radius: 999px;
+  background: #0b2344;
+}
+.registro-console::-webkit-scrollbar-thumb:hover { background: #12345f; }
+
+.registro-linha {
+  display: flex;
+  gap: 0.5rem;
+  align-items: baseline;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.registro-hora {
+  flex: 0 0 auto;
+  color: #5b7aa0;
+  font-variant-numeric: tabular-nums;
+}
+
+.registro-marca {
+  flex: 0 0 auto;
+  width: 0.7rem;
+  text-align: center;
+  opacity: 0.9;
+}
+
+.registro-texto { flex: 1 1 auto; min-width: 0; }
+
+.registro-step .registro-marca,
+.registro-step .registro-texto { color: #00ffd1; }
+
+.registro-clip .registro-marca,
+.registro-clip .registro-texto { color: var(--text-main); font-weight: 600; }
+
+.registro-detail .registro-texto { color: #9db2cb; }
+
+.registro-done .registro-marca,
+.registro-done .registro-texto { color: #5ce08f; }
+
+.registro-warn .registro-marca,
+.registro-warn .registro-texto { color: #ffc35c; }
+
+.registro-fail .registro-marca,
+.registro-fail .registro-texto { color: #ff7b7b; }
+
+/* Responsive workspace inside the maximized application frame. */
+:host { display: block; min-width: 0; }
+.container { width: 100%; box-sizing: border-box; min-width: 0; }
+.container > *, .painel, .cartao, .campo, .grupo { min-width: 0; }
+.campo input, .campo select, .campo textarea { box-sizing: border-box; max-width: 100%; }
+@media (max-width: 760px) {
+  .grade, .campo-duplo { grid-template-columns: minmax(0, 1fr); }
+}
+.menu-ferramenta { margin: 0; padding: 0 0 0.5rem; }
+/* Stretched, so that where the page does put two panels side by side — the
+   preview and the project, on a wide screen — they end on the same line. The
+   project column has its own ceiling and scrolls past it, so this levels the
+   two without ever making the page longer. */
+.container { display: grid; grid-template-columns: minmax(0, 1fr); align-items: stretch; }
+.container > * { grid-column: 1 / -1; }
+/* One shelf per row: each group box takes the height of the tallest one beside
+   it, and its closing sentence or button row rides the bottom edge so the
+   height it gains reads as room rather than as a gap left at the end. */
+.projeto-painel { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; }
+.projeto-painel > .grupo > .ajuda:last-child,
+.projeto-painel > .grupo > .linha-acoes:last-child,
+.projeto-painel > .grupo > small:last-child { margin-top: auto; }
+.projeto-painel > app-clip-edits-panel { grid-column: 1 / -1; min-width: 0; }
+/* The divider is in the document whenever the preview is, but it only means
+   anything where the two panes sit side by side; everywhere else the layout is
+   one column and there is nothing to divide. */
+.divisor { display: none; }
+
+@media (min-width: 1200px) {
+  /* Three tracks now: the preview, the handle, and the project. The middle one
+     is the handle itself rather than a `gap`, so the thing the reader grabs is
+     a real box with a real width instead of a few pixels of nothing. The last
+     one is what the drag changes — `--largura-projeto` is written straight onto
+     this element while the pointer moves, and `clamp` is what keeps a wild drag
+     from squeezing either pane out of existence. */
+  .container:has(> .previa:not(.previa-cheia)) {
+    /* A third of the room the divider used to be given on either side. The
+       column gap is set here rather than on `.container`, so the rows stacked
+       below the two panes keep the spacing they had. */
+    column-gap: 0.3rem;
+    grid-template-columns: minmax(0, 1fr) 0.3rem clamp(320px, var(--largura-projeto, 420px), 55%);
+  }
+  .container > .previa:not(.previa-cheia) { grid-column: 1; margin: 0; }
+
+  .container:has(> .previa:not(.previa-cheia)) > .divisor {
+    display: block;
+    grid-column: 2;
+    align-self: stretch;
+    justify-self: center;
+    width: 100%;
+    border: 0;
+    padding: 0;
+    background: none;
+    position: relative;
+    cursor: col-resize;
+    /* The grip is drawn rather than the whole column filled: a full-height bar
+       between two panels reads as a third panel. A dashed line, thickening
+       under the pointer, reads as an edge that can be moved. */
+    background-image: repeating-linear-gradient(
+      to bottom,
+      var(--line-hard) 0 5px,
+      transparent 5px 11px
+    );
+    background-size: 2px 100%;
+    background-position: center;
+    background-repeat: no-repeat;
+    transition: background-size 120ms ease;
+    touch-action: none;
+  }
+
+  /* The column is under five pixels wide, which is a fair line and a poor
+     target. This reaches a little way into each pane so there is something to
+     grab, and paints nothing: what the reader sees is still the line. */
+  .container:has(> .previa:not(.previa-cheia)) > .divisor::before {
+    content: "";
+    position: absolute;
+    inset: 0 -4px;
+    cursor: col-resize;
+  }
+
+  .container:has(> .previa:not(.previa-cheia)) > .divisor:hover,
+  .container:has(> .previa:not(.previa-cheia)) > .divisor:focus-visible {
+    background-image: repeating-linear-gradient(
+      to bottom,
+      var(--aqua) 0 5px,
+      transparent 5px 11px
+    );
+    background-size: 3px 100%;
+    outline: none;
+  }
+
+  .container:has(> .previa:not(.previa-cheia)) > .divisor:focus-visible {
+    background-size: 3px 100%;
+    box-shadow: 0 0 0 1px rgba(209, 96, 255, 0.35);
+    border-radius: 3px;
+  }
+  /* The settings column is exactly as tall as the preview beside it, and
+     scrolls inside that height when it has more to show. `height: 0` is what
+     keeps it from setting the row's height itself — it contributes nothing,
+     the preview decides, and `min-height: 100%` then fills what the preview
+     decided. Without that pair the two panels end on different lines: either
+     the settings stop short at a cap of their own, or a long project drags the
+     preview down with it. */
+  .container:has(> .previa:not(.previa-cheia)) > .projeto {
+    grid-column: 3;
+    /* The site has no global reset, so this box is content-box by default and
+       `min-height: 100%` would mean "the row, plus my padding and border" —
+       34 pixels taller than the preview rather than level with it. */
+    box-sizing: border-box;
+    height: 0;
+    min-height: 100%;
+    overflow: auto;
+  }
+  .container:has(> .previa:not(.previa-cheia)) .projeto-painel { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 760px) { .projeto-painel { grid-template-columns: minmax(0, 1fr); } }
+@media (min-width: 1200px) {
+  /* No margin of its own on this row: the preview beside it has none either,
+     and a margin below would hang the box past the row it is levelled with. */
+  .container:has(> .previa:not(.previa-cheia)) > .projeto { margin: 0; }
+}

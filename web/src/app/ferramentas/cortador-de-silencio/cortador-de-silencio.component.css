@@ -1,0 +1,369 @@
+.container {
+  max-width: none;
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+/* On the empty screen the drop target is the workspace, rather than a short
+   banner followed by unused space. Loaded projects return to the normal flow. */
+:host { height: 100%; min-height: 100%; }
+
+.container.inicial {
+  height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+
+.container.inicial > .upload-area {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 16rem;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ------------------------------------------------------------- privacy note */
+
+.privacidade {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.75em;
+  background: rgba(209, 96, 255, 0.05);
+  font-size: 0.87rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+
+.privacidade strong { color: var(--text-main); }
+.privacidade mat-icon { flex: 0 0 auto; color: var(--aqua); width: 1.2em; height: 1.2em; font-size: 1.2em; }
+
+/* ----------------------------------------------------------------- dropzone */
+
+.upload-area {
+  border: 2px dashed var(--line-soft);
+  border-radius: 12px;
+  padding: 3rem 2rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 200ms ease, background 200ms ease;
+  background: rgba(209, 96, 255, 0.02);
+}
+
+.upload-area:hover,
+.upload-area.arrastando {
+  border-color: var(--aqua);
+  background: rgba(209, 96, 255, 0.05);
+}
+
+.upload-icone {
+  font-size: 3rem;
+  width: 3rem;
+  height: 3rem;
+  color: var(--aqua);
+  margin-bottom: 0.5rem;
+}
+
+.upload-texto { margin: 0.25rem 0; font-size: 1rem; color: var(--text-main); }
+.upload-hint { margin: 0; font-size: 0.8rem; color: var(--text-muted); }
+
+/* -------------------------------------------------------------------- cards */
+
+.cartao {
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  background: var(--panel-dark);
+  padding: 1rem 1.15rem;
+}
+
+.cartao-titulo {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--text-main);
+}
+
+.ficha-cabecalho {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.ficha-cabecalho > mat-icon { color: var(--aqua); }
+
+.ficha-nome {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1 1 12rem;
+}
+
+.ficha-nome strong {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ficha-nome span { font-size: 0.8rem; color: var(--text-muted); }
+
+.ficha-dados,
+.resumo,
+.detalhes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+  gap: 0.6rem 1rem;
+  margin: 0.9rem 0 0;
+}
+
+.ficha-dados dt,
+.resumo dt,
+.detalhes dt {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.ficha-dados dd,
+.resumo dd,
+.detalhes dd {
+  margin: 0.1rem 0 0;
+  font-size: 0.95rem;
+  color: var(--text-main);
+}
+
+.resumo.compacto { grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr)); }
+.detalhes { grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr)); }
+.detalhe-nota { grid-column: 1 / -1; }
+.detalhe-nota dd { font-size: 0.82rem; color: var(--text-muted); }
+
+/* ----------------------------------------------------------------- settings */
+
+.presets { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 1rem; }
+
+.preset {
+  padding: 0.4em 0.9em;
+  border: 1px solid var(--line-soft);
+  border-radius: 2em;
+  background: transparent;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: border-color 200ms ease, color 200ms ease, background 200ms ease;
+}
+
+.preset:hover:not(:disabled) { border-color: var(--aqua); color: var(--text-main); }
+
+.preset.ativo {
+  border-color: var(--aqua);
+  background: rgba(209, 96, 255, 0.12);
+  color: var(--text-main);
+}
+
+.preset.custom { cursor: default; border-style: dashed; }
+.preset:disabled { opacity: 0.5; cursor: default; }
+
+.campo { margin-bottom: 1rem; }
+.campo:last-child { margin-bottom: 0; }
+
+.campo label {
+  display: block;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text-main);
+  margin-bottom: 0.35rem;
+}
+
+.campo-controles { display: flex; align-items: center; gap: 0.8rem; }
+
+.campo-controles input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--aqua);
+  height: 1.4rem;
+  cursor: pointer;
+}
+
+.campo-controles input[type='range']:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+
+.valor {
+  flex: 0 0 auto;
+  min-width: 4.5em;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.9rem;
+  color: var(--aqua);
+}
+
+.ajuda { margin: 0.3rem 0 0; font-size: 0.78rem; color: var(--text-muted); line-height: 1.45; }
+.ajuda-bloco { margin-top: 0.2rem; margin-bottom: 1rem; }
+
+.campo-duplo { display: grid; grid-template-columns: repeat(auto-fit, minmax(14rem, 1fr)); gap: 0 1.2rem; }
+.campo-duplo mat-form-field { width: 100%; }
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35em;
+  margin-top: 0.4rem;
+  padding: 0.35em 0;
+  border: 0;
+  background: transparent;
+  color: var(--aqua);
+  font: inherit;
+  font-size: 0.87rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.disclosure:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.disclosure mat-icon { width: 1.1em; height: 1.1em; font-size: 1.1em; }
+
+.avancado {
+  margin-top: 0.6rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid rgba(209, 96, 255, 0.12);
+}
+
+/* --------------------------------------------------------------- messages */
+
+.mensagem {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.7rem 0.9rem;
+  border-radius: 0.7em;
+  font-size: 0.87rem;
+  line-height: 1.5;
+  border: 1px solid var(--line-soft);
+  color: var(--text-muted);
+}
+
+.mensagem mat-icon { flex: 0 0 auto; width: 1.2em; height: 1.2em; font-size: 1.2em; }
+.erro-corpo { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+
+.erro-detalhe {
+  display: block;
+  margin-top: 0.3rem;
+  padding: 0.4em 0.6em;
+  border-radius: 0.4em;
+  background: rgba(18, 17, 25, 0.6);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+}
+.mensagem em { display: block; font-style: normal; opacity: 0.85; margin-top: 0.15rem; }
+
+.mensagem.aviso { border-color: rgba(255, 234, 0, 0.35); background: rgba(255, 234, 0, 0.07); }
+.mensagem.aviso mat-icon { color: var(--yellow); }
+.mensagem.sucesso { border-color: rgba(209, 96, 255, 0.35); background: rgba(209, 96, 255, 0.07); }
+.mensagem.sucesso mat-icon { color: var(--aqua); }
+
+.mensagem-erro {
+  border-color: rgba(255, 138, 128, 0.45);
+  background: rgba(255, 138, 128, 0.08);
+  color: #ffb4a9;
+}
+
+.mensagem-erro mat-icon { color: #ffb4a9; }
+
+.invalido {
+  border-color: rgba(255, 234, 0, 0.4);
+  background: rgba(255, 234, 0, 0.06);
+}
+
+.invalido p { margin: 0; font-size: 0.9rem; color: var(--text-muted); }
+
+/* --------------------------------------------------------------- progress */
+
+.acoes { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+
+.progresso-cabecalho {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 1rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.progresso-valor { font-variant-numeric: tabular-nums; color: var(--aqua); }
+.progresso-etapa { margin: 0.5rem 0 0.3rem; font-size: 0.82rem; color: var(--text-muted); }
+
+/* ----------------------------------------------------------------- player */
+
+.player { margin-top: 1rem; display: flex; flex-direction: column; gap: 0.6rem; }
+
+.player-midia {
+  width: 100%;
+  max-height: 340px;
+  border-radius: 0.6em;
+  background: #000;
+}
+
+audio.player-midia { max-height: none; background: transparent; }
+
+.preview-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5em;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.preview-toggle input { accent-color: var(--aqua); width: 1rem; height: 1rem; }
+
+.resultado-analise app-silence-waveform { display: block; margin-top: 1rem; }
+
+.concluido { border-color: rgba(209, 96, 255, 0.35); }
+.concluido .acoes { margin-top: 1rem; }
+
+@media (max-width: 650px) {
+  .container { margin: 1.2rem auto; }
+  .cartao { padding: 0.9rem; }
+  .campo-controles { gap: 0.5rem; }
+  .valor { min-width: 4em; font-size: 0.82rem; }
+}
+
+/* Responsive workspace inside the maximized application frame. */
+:host { display: block; min-width: 0; }
+.container { width: 100%; box-sizing: border-box; min-width: 0; }
+.container > *, .painel, .cartao, .campo, .grupo { min-width: 0; }
+.campo input, .campo select, .campo textarea { box-sizing: border-box; max-width: 100%; }
+@media (max-width: 760px) {
+  .grade, .campo-duplo { grid-template-columns: minmax(0, 1fr); }
+}
+/* The settings read as a grid only if they are one. Stretching levels the
+   fields of a row with each other, and the closing help line of each rides the
+   bottom edge, so the sentences under two sliders sit on the same line however
+   many lines their labels took above them. */
+.ajustes { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem 1.25rem; align-items: stretch; }
+.ajustes .campo-duplo { align-items: stretch; }
+/* A column, so the help line at the foot of a field has a bottom to be pushed
+   to. The label and the control keep the margins they already had. */
+.ajustes .campo { display: flex; flex-direction: column; }
+.ajustes .campo > .ajuda:last-child { margin-top: auto; }
+.ajustes > * { grid-column: 1 / -1; }
+.ajustes > .campo { grid-column: span 1; margin: 0; }
+.ajustes .campo-duplo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.resultado-analise .player-midia { max-height: 42vh; object-fit: contain; }
+@media (min-width: 1400px) {
+  .ajustes { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .ajustes > .campo-duplo { grid-column: span 2; }
+}
+@media (max-width: 760px) {
+  .ajustes, .ajustes .campo-duplo { grid-template-columns: minmax(0, 1fr); }
+  .ficha-dados, .resumo { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .resumo dd { overflow-wrap: anywhere; }
+}

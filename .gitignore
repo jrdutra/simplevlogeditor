@@ -1,0 +1,161 @@
+# ============================================================
+#  SimpleVlogEditor - .gitignore
+#  Node.js + Electron + Angular
+# ============================================================
+
+# ------------------------------------------------------------
+# Node.js
+# ------------------------------------------------------------
+node_modules/
+jspm_packages/
+.npm/
+.yarn/
+.yarn-integrity
+.pnp.*
+.pnpm-store/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+logs/
+*.log
+*.pid
+*.seed
+*.pid.lock
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Cache de ferramentas
+.cache/
+.parcel-cache/
+.eslintcache
+.stylelintcache
+.rollup.cache/
+.turbo/
+.rts2_cache_*/
+*.tsbuildinfo
+
+# Cobertura de testes
+coverage/
+*.lcov
+.nyc_output/
+lib-cov/
+testem.log
+/connect.lock
+/libpeerconnection.log
+
+# Variáveis de ambiente / segredos
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ------------------------------------------------------------
+# Angular
+# ------------------------------------------------------------
+/dist/
+dist/
+/tmp/
+/out-tsc/
+/bazel-out/
+.angular/
+/.angular/cache
+.sass-cache/
+/typings/
+
+# tsconfigs de verificação gerados por ferramentas locais
+tsconfig.*-check.json
+.tmp-review/
+
+# ------------------------------------------------------------
+# Electron
+# ------------------------------------------------------------
+release/
+out/
+build-output/
+app/dist/
+electron-builder-output/
+dist_electron/
+*.asar
+.electron-gyp/
+.electron/
+
+# Instaladores e pacotes gerados
+*.exe
+*.msi
+*.dmg
+*.pkg
+*.deb
+*.rpm
+*.snap
+*.AppImage
+*.blockmap
+builder-debug.yml
+builder-effective-config.yaml
+win-unpacked/
+mac/
+mac-arm64/
+linux-unpacked/
+
+# ------------------------------------------------------------
+# Python (scripts auxiliares)
+# ------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ------------------------------------------------------------
+# IDEs e editores
+# ------------------------------------------------------------
+.idea/
+.project
+.classpath
+.c9/
+*.launch
+.settings/
+*.sublime-workspace
+*.sublime-project
+.history/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ------------------------------------------------------------
+# Sistema operacional
+# ------------------------------------------------------------
+.DS_Store
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ------------------------------------------------------------
+# Arquivos temporários / locais do projeto
+# ------------------------------------------------------------
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+vscode.bat
+.9541a26712c35227.cache.json
+/dist/ferramentas/server/ngrock.bat
+/dist/ferramentas/server/node-server.bat
+/dist/ferramentas/server/start-server.bat
+/dist/ferramentas/server/ngrock.exe
+
+# ------------------------------------------------------------
+# Downloads gerados pelo build (instalador/portátil - >100MB)
+# Escritos por electron/scripts/publish-installer.js
+# ------------------------------------------------------------
+web/src/assets/download/*
+!web/src/assets/download/README.md
+web/dist/browser/assets/download/

@@ -1,0 +1,572 @@
+<div class="container" [class.inicial]="!file">
+
+  <p class="privacidade">
+    <mat-icon aria-hidden="true">lock</mat-icon>
+    <span><strong>Your file stays on your device.</strong> Nothing is uploaded to our servers — the media is read,
+      analyzed and cut entirely inside this browser tab.</span>
+  </p>
+
+  @if (!file) {
+    <div class="upload-area" [class.arrastando]="dragging" (click)="fileInput.click()"
+      (dragover)="onDragOver($event)" (dragleave)="onDragLeave($event)" (drop)="onDrop($event)">
+      <mat-icon class="upload-icone">graphic_eq</mat-icon>
+      <p class="upload-texto">Click or drop a video or audio file here</p>
+      <p class="upload-hint">MP4, MOV, M4V, WebM, MKV, MP3, WAV, M4A, AAC, OGG and FLAC — codec support depends on your browser</p>
+      <input hidden #fileInput type="file" [attr.accept]="accepted" (change)="onFileInput($event)">
+    </div>
+  }
+
+  @if (info; as media) {
+    <section class="cartao ficha" aria-label="Selected media">
+      <div class="ficha-cabecalho">
+        <mat-icon aria-hidden="true">{{ media.kind === 'video' ? 'movie' : 'music_note' }}</mat-icon>
+        <div class="ficha-nome">
+          <strong [title]="media.fileName">{{ media.fileName }}</strong>
+          <span>{{ formatSize(media.fileSize) }} · {{ formatTime(media.durationSeconds) }}</span>
+        </div>
+        <button mat-button type="button" (click)="fileInput2.click()" [disabled]="busy">
+          <mat-icon>swap_horiz</mat-icon> Choose another file
+        </button>
+        <input hidden #fileInput2 type="file" [attr.accept]="accepted" (change)="onFileInput($event)">
+      </div>
+
+      <dl class="ficha-dados">
+        <div><dt>Type</dt><dd>{{ media.kind === 'video' ? 'Video' : 'Audio' }}</dd></div>
+        <div><dt>Container</dt><dd>{{ media.containerName }}</dd></div>
+        @if (media.width && media.height) {
+          <div><dt>Resolution</dt><dd>{{ media.width }} × {{ media.height }}</dd></div>
+        }
+        @if (media.frameRate) {
+          <div><dt>Frame rate</dt><dd>{{ media.frameRate }} fps</dd></div>
+        }
+        @if (media.videoCodec) {
+          <div><dt>Video</dt><dd>{{ media.videoCodec | uppercase }}</dd></div>
+        }
+        @if (media.audioCodec) {
+          <div>
+            <dt>Audio</dt>
+            <dd>
+              {{ media.audioCodec | uppercase }}
+              @if (media.channelCount) { · {{ media.channelCount === 1 ? 'Mono' : media.channelCount === 2 ? 'Stereo' : media.channelCount + ' channels' }} }
+              @if (media.sampleRate) { · {{ media.sampleRate }} Hz }
+            </dd>
+          </div>
+        }
+      </dl>
+    </section>
+  }
+
+  @if (notice) {
+    <p class="mensagem aviso"><mat-icon>info_outline</mat-icon> {{ notice }}</p>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro" role="alert">
+      <mat-icon>error_outline</mat-icon>
+      <div class="erro-corpo">
+        <span>{{ errorMessage }}</span>
+        @if (errorHint) { <em>{{ errorHint }}</em> }
+        @if (errorDetail) { <code class="erro-detalhe">{{ errorDetail }}</code> }
+        <button type="button" class="disclosure" (click)="copyDiagnostics()">
+          <mat-icon>{{ diagnosticsCopied ? 'check' : 'content_copy' }}</mat-icon>
+          {{ diagnosticsCopied ? 'Copied' : 'Copy diagnostic log (' + diagnosticsCount + ' entries)' }}
+        </button>
+      </div>
+    </div>
+  }
+
+  @if (file && info?.hasAudioTrack) {
+    <section class="cartao ajustes" aria-labelledby="ajustes-titulo">
+      <h2 id="ajustes-titulo" class="cartao-titulo">Silence detection</h2>
+
+      <div class="presets" role="group" aria-label="Detection presets">
+        @for (item of presets; track item.id) {
+          <button type="button" class="preset" [class.ativo]="preset === item.id" (click)="applyPreset(item.id)"
+            [disabled]="busy" [title]="item.description">
+            {{ item.label }}
+          </button>
+        }
+        @if (preset === 'custom') {
+          <span class="preset ativo custom" aria-live="polite">Custom</span>
+        }
+      </div>
+
+      <div class="campo">
+        <label for="threshold">Silence threshold</label>
+        <div class="campo-controles">
+          <input id="threshold" type="range" [min]="limits.thresholdDb.min" [max]="limits.thresholdDb.max"
+            [step]="limits.thresholdDb.step" [ngModel]="settings.thresholdDb"
+            (ngModelChange)="onNumber('thresholdDb', $event)" [disabled]="busy">
+          <span class="valor">{{ settings.thresholdDb }} dB</span>
+        </div>
+        <p class="ajuda">Audio quieter than this level may be treated as silence.</p>
+      </div>
+
+      <div class="campo">
+        <label for="min-silence">Minimum silence duration</label>
+        <div class="campo-controles">
+          <input id="min-silence" type="range" [min]="limits.minimumSilenceMs.min" [max]="limits.minimumSilenceMs.max"
+            [step]="limits.minimumSilenceMs.step" [ngModel]="settings.minimumSilenceMs"
+            (ngModelChange)="onNumber('minimumSilenceMs', $event)" [disabled]="busy">
+          <span class="valor">{{ (settings.minimumSilenceMs / 1000).toFixed(2) }} s</span>
+        </div>
+        <p class="ajuda">Shorter pauses than this are preserved, so breaths and gaps between words survive.</p>
+      </div>
+
+      <div class="campo-duplo">
+        <div class="campo">
+          <label for="keep-before">Keep before speech</label>
+          <div class="campo-controles">
+            <input id="keep-before" type="range" [min]="limits.keepBeforeMs.min" [max]="limits.keepBeforeMs.max"
+              [step]="limits.keepBeforeMs.step" [ngModel]="settings.keepBeforeMs"
+              (ngModelChange)="onNumber('keepBeforeMs', $event)" [disabled]="busy">
+            <span class="valor">{{ settings.keepBeforeMs }} ms</span>
+          </div>
+          <p class="ajuda">Adds a small margin before speech begins.</p>
+        </div>
+
+        <div class="campo">
+          <label for="keep-after">Keep after speech</label>
+          <div class="campo-controles">
+            <input id="keep-after" type="range" [min]="limits.keepAfterMs.min" [max]="limits.keepAfterMs.max"
+              [step]="limits.keepAfterMs.step" [ngModel]="settings.keepAfterMs"
+              (ngModelChange)="onNumber('keepAfterMs', $event)" [disabled]="busy">
+            <span class="valor">{{ settings.keepAfterMs }} ms</span>
+          </div>
+          <p class="ajuda">Adds a small margin after speech ends.</p>
+        </div>
+      </div>
+
+      <button type="button" class="disclosure" (click)="advancedOpen = !advancedOpen"
+        [attr.aria-expanded]="advancedOpen" aria-controls="avancado">
+        <mat-icon>{{ advancedOpen ? 'expand_less' : 'expand_more' }}</mat-icon> Advanced settings
+      </button>
+
+      @if (advancedOpen) {
+        <div id="avancado" class="avancado">
+          <div class="campo">
+            <label for="min-kept">Minimum kept segment</label>
+            <div class="campo-controles">
+              <input id="min-kept" type="range" [min]="limits.minimumKeptSegmentMs.min"
+                [max]="limits.minimumKeptSegmentMs.max" [step]="limits.minimumKeptSegmentMs.step"
+                [ngModel]="settings.minimumKeptSegmentMs" (ngModelChange)="onNumber('minimumKeptSegmentMs', $event)"
+                [disabled]="busy">
+              <span class="valor">{{ settings.minimumKeptSegmentMs }} ms</span>
+            </div>
+            <p class="ajuda">A fragment shorter than this, trapped between two pauses, is absorbed by the cut. Use with care.</p>
+          </div>
+
+          <div class="campo-duplo">
+            <mat-form-field appearance="fill">
+              <mat-label>Detection window</mat-label>
+              <mat-select [ngModel]="settings.detectionWindowMs" (ngModelChange)="onNumber('detectionWindowMs', $event)"
+                [disabled]="busy">
+                @for (window of detectionWindows; track window) {
+                  <mat-option [value]="window">{{ window }} ms</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="fill">
+              <mat-label>Channel analysis</mat-label>
+              <mat-select [ngModel]="settings.channelMode" (ngModelChange)="onChannelMode($event)" [disabled]="busy">
+                @for (mode of channelModes; track mode.value) {
+                  <mat-option [value]="mode.value">{{ mode.label }}</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <p class="ajuda ajuda-bloco">
+            The detection window is how much audio is measured at a time when computing loudness. 20 ms is a good
+            balance; shorter windows react faster and longer ones are steadier.
+          </p>
+
+          <div class="campo-duplo">
+            <mat-form-field appearance="fill">
+              <mat-label>Cut smoothing (crossfade)</mat-label>
+              <mat-select [ngModel]="settings.crossfadeMs" (ngModelChange)="onNumber('crossfadeMs', $event)"
+                [disabled]="busy">
+                @for (fade of crossfades; track fade) {
+                  <mat-option [value]="fade">{{ fade }} ms</mat-option>
+                }
+              </mat-select>
+            </mat-form-field>
+
+            <mat-form-field appearance="fill">
+              <mat-label>Processing optimization</mat-label>
+              <mat-select [ngModel]="optimization" (ngModelChange)="onOptimizationChange($event)" [disabled]="busy">
+                <mat-option value="automatic">Automatic</mat-option>
+                <mat-option value="prefer-hardware">Prefer hardware</mat-option>
+                <mat-option value="compatibility">Compatibility</mat-option>
+              </mat-select>
+            </mat-form-field>
+          </div>
+
+          <p class="ajuda ajuda-bloco">
+            Crossfade is applied while writing the file, so changing it does not invalidate an analysis. Every other
+            setting on this panel changes what gets detected, and does.
+            <strong>Automatic</strong> is hardware-first: it uses acceleration when the browser offers it and falls back
+            on its own when it does not.
+          </p>
+
+          <app-auto-zoom-control
+            id="cutter-zoom"
+            [settings]="settings.autoZoom"
+            [disabled]="busy"
+            [note]="zoomPlanNote"
+            (settingsChange)="onAutoZoom($event)"></app-auto-zoom-control>
+
+          @if (strategy; as plan) {
+            <button type="button" class="disclosure" (click)="detailsOpen = !detailsOpen"
+              [attr.aria-expanded]="detailsOpen" aria-controls="detalhes">
+              <mat-icon>{{ detailsOpen ? 'expand_less' : 'expand_more' }}</mat-icon> Processing details
+            </button>
+
+            @if (detailsOpen) {
+              <dl id="detalhes" class="detalhes">
+                <div><dt>Acceleration</dt><dd>{{ accelerationLabel }}</dd></div>
+                <div><dt>Audio analysis</dt><dd>{{ plan.audioAnalysisMode === 'webgpu' ? 'WebGPU compute' : plan.audioAnalysisMode === 'worker' ? 'Web Worker' : 'Main thread (sliced)' }}</dd></div>
+                <div><dt>Waveform</dt><dd>{{ plan.waveformMode === 'accelerated-canvas' ? 'Accelerated canvas' : 'Canvas 2D' }}</dd></div>
+                @if (plan.videoCodec) {
+                  <div><dt>Video</dt><dd>{{ plan.videoMode === 'stream-copy' ? 'Stream copy (no re-encoding)' : plan.videoCodec | uppercase }}</dd></div>
+                }
+                <div><dt>Output</dt><dd>{{ plan.container | uppercase }} · {{ plan.audioCodec | uppercase }}</dd></div>
+                @for (note of plan.notes; track note) {
+                  <div class="detalhe-nota"><dd>{{ note }}</dd></div>
+                }
+              </dl>
+
+              <button type="button" class="disclosure" (click)="copyDiagnostics()">
+                <mat-icon>{{ diagnosticsCopied ? 'check' : 'content_copy' }}</mat-icon>
+                {{ diagnosticsCopied ? 'Copied' : 'Copy diagnostic log (' + diagnosticsCount + ' entries)' }}
+              </button>
+              <p class="ajuda">
+                Everything the tool decided during this run, in order. It records codecs, durations and counts —
+                never the media itself, and never the full file name.
+              </p>
+            }
+          }
+        </div>
+      }
+
+      @if (thresholdWarning) {
+        <p class="mensagem aviso"><mat-icon>warning_amber</mat-icon> {{ thresholdWarning }}</p>
+      }
+    </section>
+  }
+
+  @if (state === 'analysis-invalid') {
+    <section class="cartao invalido" role="status">
+      <h2 class="cartao-titulo">Settings changed</h2>
+      <p>Your previous analysis is no longer valid. Reanalyze the media to update the waveform and cut regions.</p>
+    </section>
+  }
+
+  @if (file && !busy) {
+    <div class="acoes">
+      @if (info?.hasAudioTrack) {
+        <button mat-raised-button color="primary" type="button" (click)="analyze()" [disabled]="!canAnalyze">
+          <mat-icon>graphic_eq</mat-icon> {{ analyzeLabel }}
+        </button>
+      }
+      <button mat-button type="button" (click)="clear()">
+        <mat-icon>clear</mat-icon> Start over
+      </button>
+    </div>
+  }
+
+  @if (busy) {
+    <section class="cartao progresso" role="status" aria-live="polite">
+      <div class="progresso-cabecalho">
+        <span>{{ state === 'processing' ? 'Processing media' : 'Analyzing audio' }}</span>
+        <span class="progresso-valor">
+          {{ progressRatio === null ? '' : (progressRatio * 100 | number: '1.0-0') + '%' }}
+        </span>
+      </div>
+      <mat-progress-bar [mode]="progressRatio === null ? 'indeterminate' : 'determinate'"
+        [value]="(progressRatio ?? 0) * 100"></mat-progress-bar>
+      <p class="progresso-etapa">{{ stageLabel }}</p>
+      <button mat-button type="button" (click)="cancel()">
+        <mat-icon>stop_circle</mat-icon> Cancel
+      </button>
+    </section>
+  }
+
+  @if (showWaveform && analysis; as report) {
+    <section class="cartao resultado-analise" aria-labelledby="analise-titulo">
+      <h2 id="analise-titulo" class="cartao-titulo">Review the cuts</h2>
+
+      <dl class="resumo">
+        <div><dt>Original duration</dt><dd>{{ formatTime(report.originalDuration) }}</dd></div>
+        <div><dt>Silence detected</dt><dd>{{ formatTime(report.removedDuration) }}</dd></div>
+        <div><dt>Estimated final duration</dt><dd>{{ formatTime(report.outputDuration) }}</dd></div>
+        <div><dt>Sections to remove</dt><dd>{{ report.silenceRanges.length }}</dd></div>
+        <div><dt>Time reduction</dt><dd>{{ reductionPercent }}%</dd></div>
+      </dl>
+
+      <app-silence-waveform
+        [waveform]="report.waveform"
+        [silenceRanges]="report.silenceRanges"
+        [duration]="report.originalDuration"
+        [currentTime]="currentTime"
+        [mode]="strategy?.waveformMode ?? 'canvas2d'"
+        (seek)="seekTo($event)"
+        (rangeAdd)="addCutRange($event)"
+        (rangeRemove)="removeCutRange($event)"></app-silence-waveform>
+
+      @if (previewUrl; as source) {
+        <div class="player">
+          @if (info?.kind === 'video') {
+            <video #player class="player-midia" [src]="source" controls preload="metadata"
+              (loadedmetadata)="onPlayerReady()"></video>
+          } @else {
+            <audio #player class="player-midia" [src]="source" controls preload="metadata"
+              (loadedmetadata)="onPlayerReady()"></audio>
+          }
+
+          <label class="preview-toggle">
+            <input type="checkbox" [checked]="skipSilence" (change)="toggleSkipSilence()">
+            <span>Preview cuts — skip the removed regions while playing</span>
+          </label>
+        </div>
+      }
+    </section>
+  }
+
+  @if (state === 'analysis-ready' && analysis; as report) {
+    @if (report.silenceRanges.length) {
+      @if (!confirming) {
+        <div class="acoes">
+          <button mat-raised-button color="primary" type="button" (click)="askConfirmation()" [disabled]="!canRender">
+            <mat-icon>content_cut</mat-icon> Remove Silence
+          </button>
+        </div>
+      } @else {
+        <section class="cartao confirmacao" aria-labelledby="confirmar-titulo">
+          <h2 id="confirmar-titulo" class="cartao-titulo">Ready to cut</h2>
+          <p>
+            <strong>{{ report.silenceRanges.length }}</strong> silent section(s) will be removed.
+            The original file is never modified — a new file is written.
+          </p>
+          <dl class="resumo compacto">
+            <div><dt>Original</dt><dd>{{ formatTime(report.originalDuration) }}</dd></div>
+            <div><dt>Final</dt><dd>{{ formatTime(report.outputDuration) }}</dd></div>
+            <div><dt>Removed</dt><dd>{{ formatTime(report.removedDuration) }}</dd></div>
+          </dl>
+          <div class="acoes">
+            <button mat-button type="button" (click)="dismissConfirmation()">Cancel</button>
+            <button mat-raised-button color="primary" type="button" (click)="removeSilence()">
+              <mat-icon>content_cut</mat-icon> Remove Silence
+            </button>
+          </div>
+        </section>
+      }
+    } @else {
+      <p class="mensagem aviso">
+        <mat-icon>info_outline</mat-icon>
+        No removable silence was found with the current settings. Adjust the threshold or the minimum duration and
+        reanalyze.
+      </p>
+    }
+  }
+
+  @if (state === 'completed' && result; as done) {
+    <section class="cartao concluido" aria-labelledby="pronto-titulo">
+      <h2 id="pronto-titulo" class="cartao-titulo">Your file is ready</h2>
+      <dl class="resumo">
+        <div><dt>Final duration</dt><dd>{{ formatTime(done.outputDuration) }}</dd></div>
+        <div><dt>Time removed</dt><dd>{{ formatTime(done.removedDuration) }}</dd></div>
+        <div><dt>Sections removed</dt><dd>{{ done.cutCount }}</dd></div>
+        <div><dt>File</dt><dd>{{ done.fileName }}</dd></div>
+      </dl>
+
+      <div class="acoes">
+        @if (done.savedToDisk) {
+          <p class="mensagem sucesso">
+            <mat-icon>check_circle_outline</mat-icon> Saved to the location you chose.
+          </p>
+        } @else {
+          <button mat-raised-button color="primary" type="button" (click)="save()">
+            <mat-icon>save_alt</mat-icon> Save file
+          </button>
+        }
+        <button mat-button type="button" (click)="clear()">
+          <mat-icon>restart_alt</mat-icon> Process another file
+        </button>
+      </div>
+    </section>
+  }
+
+</div>
+
+<app-help-panel label="How the Silence Cutter works">
+  <div class="instrucoes">
+    <section class="seo-intro" aria-labelledby="silence-cutter-seo-title">
+      <h1 id="silence-cutter-seo-title">Free Silence Cutter — Remove Silence from Video and Audio</h1>
+      <p>Automatically find and remove silent sections from video or audio. Fine-tune the silence threshold, preview every
+        cut on the waveform before anything is written, and process your media directly in your browser. It is free, your
+        file never leaves your computer, and you see exactly what will be removed before you cut.</p>
+      <p>The tool works with recordings and with music: lectures, interviews, podcasts, screen recordings, voice memos and
+        any file where long pauses make the result longer than it needs to be.</p>
+    </section>
+
+    <h2>How to remove silence from video or audio</h2>
+
+    <h4 class="sublinhado">1. Choose your media</h4>
+    <p>Drop a video or audio file onto the upload area, or click it to pick one. The file is inspected by reading its
+      header, not its extension, so a renamed or remuxed file is still identified correctly. Duration, container, codecs,
+      resolution and channel layout appear as soon as they are known; anything that could not be determined with certainty
+      is simply not shown.</p>
+
+    <h4 class="sublinhado">2. Configure the detection</h4>
+    <p>Start from a preset — Balanced, Aggressive, Natural speech or Long pauses only — and adjust from there. The four
+      settings that matter most are on the main panel; the rest live under "Advanced settings". Changing any of them marks
+      the analysis as out of date rather than silently re-running it, which keeps the sliders responsive on long files and
+      saves your battery.</p>
+
+    <h4 class="sublinhado">3. Analyze the media</h4>
+    <p>Click "Analyze Media". The audio is decoded in small pieces and reduced to loudness statistics as it goes, so a
+      multi-gigabyte recording is analysed without ever being loaded into memory. The interface keeps responding
+      throughout, progress is reported per stage, and you can cancel at any point without losing the selected file.</p>
+
+    <h4 class="sublinhado">4. Review the cuts</h4>
+    <p>The waveform appears with every region that will be removed marked in a hatched overlay, alongside a timeline whose
+      granularity adapts to the length of the file. The summary tells you how much will be removed, how many sections
+      there are, and how long the result will be. Click anywhere on the waveform to move the player there, and turn on
+      "Preview cuts" to hear the edit — the player skips the removed regions live, with nothing rendered yet.</p>
+
+    <h4 class="sublinhado">5. Export the result</h4>
+    <p>Click "Remove Silence", confirm the summary, and the file is written. Where the browser supports it you choose the
+      destination up front and the output is streamed straight to disk instead of being assembled in memory. Your original
+      file is never modified — the result is always a new file.</p>
+
+    <h2>How silence detection works</h2>
+    <p>Silence is not the absence of signal; it is the absence of anything <em>loud enough to matter</em>. The tool splits
+      the audio into short windows — 20 milliseconds by default — and measures the RMS level of each one, which is the
+      root mean square of its samples and a good stand-in for perceived loudness. That level is converted to decibels
+      relative to full scale (dBFS), where 0 dB is the loudest a digital signal can be and every value below it is
+      negative.</p>
+    <p>A window whose level falls below the <strong>silence threshold</strong> is a candidate. Consecutive candidates are
+      grouped, and a group only becomes a real cut once it lasts at least the <strong>minimum silence duration</strong>.
+      That second condition is what separates a pause from a gap between two words: without it, every syllable boundary
+      would be a cut.</p>
+    <p>Finally the margins are applied. <strong>Keep before speech</strong> and <strong>keep after speech</strong> shrink
+      each silence from its edges, so the cut never lands on the attack of a word or clips the tail of a sentence. The
+      ranges that survive are the ones you see hatched on the waveform.</p>
+
+    <h2>What silence threshold should I use?</h2>
+    <p>−40 dB is a sensible default for a clean recording. If the room is noisy, air conditioning, traffic or computer fans
+      sit somewhere around −50 to −35 dB, and a threshold below that noise floor will never detect anything — raise it
+      until the pauses light up. If quiet speech is being cut, lower it instead.</p>
+    <p>A practical way to find the right value: analyze once at −40 dB and look at the waveform. If the hatched regions
+      cover parts where someone is clearly talking, the threshold is too high. If long, obviously empty stretches stay
+      untouched, it is too low. Two or three passes are usually enough, and each one costs only the analysis, never a
+      render.</p>
+
+    <h2>Why keep padding around speech?</h2>
+    <p>Speech does not start at full volume. A word begins with a consonant that rises out of the noise floor over a few
+      tens of milliseconds, and a sentence ends with a tail that decays just as gradually. A detector working purely on
+      level will place the cut inside those transitions, which is what makes automatic edits sound clipped and abrupt.</p>
+    <p>The two padding values buy that time back. 120 ms before and 180 ms after is a good starting point: enough to keep
+      the onset of a word intact, short enough that the pause still feels removed. The asymmetry is deliberate — trailing
+      decay lasts longer than the onset that precedes speech.</p>
+
+    <h2>Silence cutter settings</h2>
+    <p><strong>Silence threshold (dB)</strong> — the level below which audio may be considered silent.</p>
+    <p><strong>Minimum silence duration</strong> — how long the level must stay below the threshold before the stretch
+      counts as a removable pause.</p>
+    <p><strong>Keep before / keep after speech</strong> — margins preserved at each end of a detected silence.</p>
+    <p><strong>Minimum kept segment</strong> — a fragment of audio shorter than this, trapped between two silences, is
+      absorbed into the cut. Useful for isolated clicks and false starts; aggressive if set too high.</p>
+    <p><strong>Detection window</strong> — how much audio is measured at a time. Shorter windows react faster to sharp
+      transitions, longer ones are steadier on noisy material.</p>
+    <p><strong>Channel analysis</strong> — how a stereo or multichannel signal is reduced to a single decision. "Combined"
+      measures every channel together and is the safe default; "Any channel" is stricter, "All channels" more
+      conservative.</p>
+    <p><strong>Automatic zoom after long pauses</strong> — when a pause is removed, the two halves it joined were filmed
+      with the same framing, so the join shows up as a jump. Tick this and the picture pushes in slightly on what follows
+      the longest pauses, which hides the jump and gives the edit a rhythm. Only pauses that stand out are used: the tool
+      takes the average length of everything it removed and zooms only after the ones at least 30% longer than that, so an
+      ordinary gap between two sentences is left alone. The gear beside the checkbox opens the settings — how far above
+      average a pause has to be, how far the picture pushes in (10% to 20% by default), whether the amount is picked at
+      random inside that range or in proportion to how long the pause was, how long the push-in takes and how long it is
+      held. The random choice is seeded from the file itself, so the same recording always gets the same zooms and a
+      second export never differs from the first. Nothing is stretched: the picture is enlarged and the edges are cropped.
+      Like the crossfade, this is applied while writing the file, so changing it never invalidates an analysis.</p>
+
+    <p><strong>Cut smoothing (crossfade)</strong> — a few milliseconds of fade at each cut point, which removes the click
+      a hard splice would leave. It is applied while writing the file, so changing it does not invalidate the analysis.</p>
+
+    <h2>Does the video get uploaded?</h2>
+    <p>No. There is no upload, no server-side processing and no third-party service involved. The file is read from your
+      disk by the browser, decoded by the browser's own codecs, and written back out by the browser. Nothing about the
+      media — not its name, not its content, not the waveform — leaves the tab. You can verify this by opening your
+      browser's network panel and watching it stay silent while a file is analysed.</p>
+
+    <h2>Can I use large video files?</h2>
+    <p>The tool is designed for them. Media is never loaded into memory as a whole: the file is read in ranges on demand,
+      audio is decoded in small pieces and folded into statistics that are kilobytes in size, and the output is streamed
+      to disk as it is produced where the browser supports it. The waveform stores a few thousand aggregated peaks rather
+      than millions of samples.</p>
+    <p>Real limits still depend on your browser, the codec, available memory, CPU and GPU, and free disk space. A desktop
+      browser will handle multi-gigabyte recordings; a phone may not, and the tool says so rather than failing halfway
+      through. Analysis is far cheaper than export — if a device can do only one of the two, it will be the analysis.</p>
+
+    <h2>Supported formats</h2>
+    <p>Video: MP4, MOV, M4V, WebM and MKV. Audio: MP3, WAV, M4A, AAC, OGG and FLAC. What actually works depends on the
+      codecs inside the container and on your browser: H.264 and AAC in MP4 are supported almost everywhere, VP9 and Opus
+      in WebM nearly as widely, and HEVC or AV1 depend on the platform. The file is validated before any work starts, and
+      an unsupported codec produces a clear message rather than a failure partway through.</p>
+    <p>The output keeps the input's container whenever the browser can encode into it. When it cannot — no browser ships
+      an MP3 encoder, for instance — the audio is written as uncompressed WAV, which never loses a second generation of
+      quality.</p>
+
+    <h2>How the tool picks a processing pipeline</h2>
+    <p>The rule is to avoid work before accelerating work. When nothing needs to be removed, the encoded streams are
+      copied across untouched, which beats any encoder and costs nothing in quality. When a cut forces a re-encode, the
+      video pipeline validates a hardware-accelerated configuration first and falls back to a compatible one when the
+      browser declines. Loudness statistics go to the GPU only when the media is long enough for the transfer to pay for
+      itself; below that, a Web Worker with typed arrays is faster.</p>
+    <p>Hardware acceleration is a preference the browser may or may not honour, and no web API reports which GPU or media
+      block actually ran. The tool therefore says "hardware acceleration preferred" and never claims a specific device is
+      in use.</p>
+
+    <h2>Frequently asked questions</h2>
+
+    <h4 class="sublinhado">What is a silence cutter?</h4>
+    <p>A silence cutter is a tool that finds the quiet stretches in a recording and removes them automatically, producing
+      a shorter, tighter version of the same material. It is the mechanical part of an edit that would otherwise be done
+      by hand, one pause at a time.</p>
+
+    <h4 class="sublinhado">Can I remove silence from a video for free?</h4>
+    <p>Yes. This tool is free, requires no account and has no export limits. It runs entirely in your browser, so there is
+      no per-minute cost on our side to pass on to you.</p>
+
+    <h4 class="sublinhado">Can I remove silence from audio too?</h4>
+    <p>Yes. Audio-only files are handled the same way as video, and the output preserves the sample rate and channel
+      layout of the original whenever the browser can encode them.</p>
+
+    <h4 class="sublinhado">What dB level should I use for silence detection?</h4>
+    <p>Start at −40 dB. Raise it towards −30 dB if a noisy room means nothing is being detected, and lower it towards −50
+      dB if quiet speech is being cut. The waveform tells you which of the two is happening.</p>
+
+    <h4 class="sublinhado">Will removing silence reduce video quality?</h4>
+    <p>Cutting requires re-encoding the parts that are kept, and re-encoding always costs a little quality. The tool
+      encodes at a high quality setting to keep that loss small, and skips re-encoding entirely when there is nothing to
+      remove. Audio exported as WAV is not re-compressed at all.</p>
+
+    <h4 class="sublinhado">Why do I need to reanalyze after changing the settings?</h4>
+    <p>Because the waveform and the cut regions on screen are the result of the previous settings, and showing them next
+      to different values would invite you to cut using numbers that no longer apply. Rather than re-running a heavy
+      analysis on every slider movement, the tool marks the result as out of date and waits for you to ask.</p>
+
+    <h4 class="sublinhado">What happens to a video with no audio track?</h4>
+    <p>Silence detection needs sound to measure, so a video with no audio track is reported as such and no analysis is
+      started.</p>
+
+    <h4 class="sublinhado">Is my original file modified?</h4>
+    <p>Never. The tool only reads the file you select and writes a separate new one, named after the original with
+      <code>-silence-cut</code> appended.</p>
+  </div>
+</app-help-panel>

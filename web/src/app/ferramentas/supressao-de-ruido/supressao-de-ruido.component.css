@@ -1,0 +1,468 @@
+.container {
+  max-width: none;
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+/* Stretching is left on: a row of panels is read across, and two boxes side by
+   side that stop at different heights read as one finished and one abandoned.
+   What fills the height is settled further down, where the layout lives. */
+.paineis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 1rem;
+}
+
+.painel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  background: rgba(43, 42, 55, 0.45);
+}
+
+.painel h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--aqua);
+}
+
+/* ---------------------------------------------------------- radio choices */
+
+.escolhas {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.escolha {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.7rem 0.8rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.6em;
+  background: rgba(20, 19, 28, 0.6);
+  cursor: pointer;
+}
+
+.escolha:hover { border-color: rgba(209, 96, 255, 0.45); }
+
+.escolha.ativa {
+  border-color: var(--aqua);
+  background: rgba(209, 96, 255, 0.08);
+}
+
+.escolha input { accent-color: var(--aqua); margin-top: 0.2rem; cursor: pointer; }
+
+.escolha > span {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.escolha strong { font-size: 0.88rem; color: var(--text-main); font-weight: 600; }
+.escolha em { font-size: 0.72rem; color: var(--aqua); font-style: normal; }
+.escolha small { font-size: 0.74rem; color: var(--text-muted); line-height: 1.4; }
+
+/* ---------------------------------------------------------------- fields */
+
+.grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.campo > span { font-size: 0.74rem; color: var(--text-muted); }
+.campo small { font-size: 0.72rem; color: var(--text-muted); line-height: 1.4; }
+
+.campo select {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-family: inherit;
+}
+
+.campo select:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+.campo select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ------------------------------------------------------------- the file */
+
+.fonte {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* Before a file is chosen, the chooser itself becomes the whole usable middle
+   of the panel. The title and explanatory note retain their own space. */
+.fonte.fonte-vazia {
+  min-height: 0;
+  align-items: stretch;
+  flex-wrap: nowrap;
+}
+
+.fonte.fonte-vazia > button {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
+.oculto { display: none; }
+
+.arquivo {
+  font-size: 0.78rem;
+  color: var(--aqua);
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-acao {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aqua);
+  font-size: 0.74rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-acao:hover { color: var(--text-main); }
+
+.nota {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+/* --------------------------------------------------------- the comparator */
+
+.comparador video {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  background: #080c16;
+  border-radius: 10px;
+}
+
+/* An audio file has no picture: the element is kept for its decoding, not for
+   the empty black rectangle it would otherwise reserve. */
+.comparador video.sem-imagem { height: 0; max-height: 0; }
+
+.lados {
+  display: inline-flex;
+  padding: 3px;
+  gap: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: 999px;
+  background: rgba(20, 19, 28, 0.7);
+  align-self: flex-start;
+}
+
+.lado {
+  border: 0;
+  border-radius: 999px;
+  padding: 0.4rem 1.1rem;
+  background: none;
+  color: var(--text-muted);
+  font: inherit;
+  font-size: 0.82rem;
+  cursor: pointer;
+}
+
+.lado:hover { color: var(--text-main); }
+
+.lado.ativa {
+  background: var(--aqua);
+  color: #04121f;
+  font-weight: 600;
+}
+
+.transporte {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.transporte button { color: var(--aqua) !important; flex-shrink: 0; }
+
+.scrub {
+  flex: 1;
+  accent-color: var(--aqua);
+  min-width: 0;
+}
+
+.tempo {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* --------------------------------------------------------------- actions */
+
+.acoes {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+
+.btn-conteudo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  line-height: 1;
+}
+
+.btn-conteudo mat-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  font-size: 1.2rem;
+  line-height: 1.2rem;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.btn-conteudo mat-spinner { margin: 0; flex: 0 0 auto; }
+
+/* The two actions that start processing share one signal, shown only once a
+   recording makes them available. */
+.btn-iniciar-processo:not(:disabled) {
+  border-color: rgba(218, 111, 255, 0.78) !important;
+  animation: pulso-iniciar-analise 1.8s ease-in-out infinite;
+}
+
+@keyframes pulso-iniciar-analise {
+  0%, 100% {
+    filter: drop-shadow(0 0 3px rgba(209, 96, 255, 0.36));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      0 0 5px rgba(209, 96, 255, 0.28);
+  }
+  50% {
+    filter: drop-shadow(0 0 11px rgba(218, 101, 255, 0.92));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22),
+      0 0 10px rgba(218, 101, 255, 0.72),
+      0 0 24px rgba(176, 52, 224, 0.48);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .btn-iniciar-processo:not(:disabled) {
+    animation: none;
+    filter: drop-shadow(0 0 7px rgba(209, 96, 255, 0.6));
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18),
+      0 0 12px rgba(209, 96, 255, 0.5);
+  }
+}
+
+/* -------------------------------------------------------------- progress */
+
+.progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(43, 42, 55, 0.55);
+}
+
+.progresso-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-main);
+}
+
+.detalhe { color: var(--text-muted); font-variant-numeric: tabular-nums; }
+
+/* -------------------------------------------------------------- messages */
+
+.mensagem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(209, 96, 255, 0.08);
+  border: 1px solid rgba(209, 96, 255, 0.2);
+  color: var(--aqua);
+  font-size: 0.9rem;
+}
+
+.mensagem-erro {
+  background: rgba(255, 99, 99, 0.08);
+  border-color: rgba(255, 99, 99, 0.3);
+  color: #ff9a9a;
+  align-items: flex-start;
+}
+
+.dica {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  /* Diagnostics arrive as separate lines and are worth keeping that way. */
+  white-space: pre-line;
+  word-break: break-word;
+}
+
+/* ---------------------------------------------------------------- result */
+
+.resumo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.resumo div { display: flex; flex-direction: column; gap: 0.15rem; }
+
+.resumo dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.resumo dd {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------- levelling */
+
+.nivel-linha {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.engrenagem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.7);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.engrenagem:hover { border-color: rgba(209, 96, 255, 0.45); color: var(--text-main); }
+
+.engrenagem.aberto {
+  border-color: var(--aqua);
+  color: var(--aqua);
+  background: rgba(209, 96, 255, 0.1);
+}
+
+.engrenagem:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.engrenagem mat-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  font-size: 1.1rem;
+  line-height: 1.1rem;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.86rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.check input { accent-color: var(--aqua); cursor: pointer; margin: 0; }
+.check input:disabled { cursor: not-allowed; }
+
+.campo input[type="range"] { accent-color: var(--aqua); width: 100%; }
+.campo input[type="range"]:disabled { opacity: 0.45; }
+.analysis-result { margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--text-muted, #697487); }
+.analysis-intervals { display: flex; flex-wrap: wrap; gap: 0.5rem; max-height: 18rem; overflow-y: auto; }
+summary { cursor: pointer; margin-bottom: 1rem; }
+
+/* Responsive workspace inside the maximized application frame. */
+:host { display: block; min-width: 0; }
+.container { width: 100%; box-sizing: border-box; min-width: 0; }
+.container > *, .painel, .cartao, .campo, .grupo { min-width: 0; }
+.campo input, .campo select, .campo textarea { box-sizing: border-box; max-width: 100%; }
+@media (max-width: 760px) {
+  .grade, .campo-duplo { grid-template-columns: minmax(0, 1fr); }
+}
+.container { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: stretch; gap: 1rem; }
+.container > * { grid-column: 1 / -1; }
+.container > .painel-fonte { grid-column: span 1; }
+.container > .painel-analise { grid-column: span 2; }
+.container > .paineis { grid-column: span 2; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.container > .painel-volume { grid-column: span 1; }
+.grade { grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr)); }
+.fonte button, .acoes button, .analysis-intervals button { max-width: 100%; height: auto; min-height: 40px; white-space: normal; padding-block: 0.6rem; }
+.btn-conteudo { line-height: 1.35; }
+@media (max-width: 1100px) {
+  .container { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .container > .painel-analise { grid-column: span 1; }
+  .container > .painel-volume { grid-column: 1 / -1; }
+}
+@media (max-width: 760px) {
+  .container, .container > .paineis { grid-template-columns: minmax(0, 1fr); }
+  .container > .painel-fonte, .container > .painel-analise, .container > .paineis { grid-column: 1 / -1; }
+}
+
+
+/* ------------------------------------------------- boxes level with boxes
+
+   Every box on a row is as tall as the tallest one on it. That is the grid's
+   own behaviour; `align-items: start` was what switched it off, and switching
+   it back on is the whole of the change.
+
+   Height alone is only half of it: a box given more room than its contents
+   need has to spend it somewhere, and spending it all at the bottom is how a
+   stretched box comes to look empty rather than roomy. So the closing note and
+   the button row ride the bottom edge — the extra space opens between the
+   controls and the footnote, and the footnotes of the boxes beside each other
+   end up on the same line. In the one panel that is short by nature, the file
+   chooser takes the room instead: a bigger target, not a hole. */
+.painel > .nota:last-child,
+.painel > .acoes:last-child { margin-top: auto; }
+.painel-fonte > .fonte { flex: 1 1 auto; align-content: center; }

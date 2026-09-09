@@ -1,0 +1,2578 @@
+<!-- The whole tool is the drop target.
+     It always was, in the reader's mind: a file dragged over a timeline is
+     being aimed at the timeline, not at a rectangle near the top. The rectangle
+     below now only teaches that on the one screen where there is nothing else
+     to look at. -->
+<div #bancada class="container" [class.arrastando]="dragging" [class.inicial]="!clips.length && !reading"
+  (dragover)="onDragOver($event)"
+  (dragleave)="onDragLeave($event)"
+  (drop)="onDrop($event)">
+
+  <!-- ------------------------------------------------------- the tool's menu -->
+
+  <!-- One bar across the top of the tool, everything on the left edge.
+       The actions were two groups pushed to opposite ends of a wide row, which
+       read as two toolbars with a lake between them. As one bar they read as
+       what they are: the things you do to this tool, in the order you reach for
+       them, with the way back from the last one at the end.
+
+       Three groups on one left edge: what goes on the timeline, what happens to
+       the project, and the way back. A group wraps as a unit when the row runs
+       out of width, so the bar gains a second line rather than squeezing eight
+       buttons until their labels break. -->
+  <div class="menu-ferramenta">
+    <div class="acoes-topo">
+    <div class="acoes-grupo">
+      <!-- One button rather than two. It asks what is being added before it
+           does anything, so the file picker only appears once the reader has
+           said they want a file — the same question the plus between two clips
+           asks, at the end of the timeline instead of in the middle. -->
+      <button mat-raised-button color="primary" (click)="openInsertChooser(clips.length)"
+        [disabled]="exporting !== null">
+        <mat-icon>add</mat-icon> Add media or text
+      </button>
+
+      <!-- Only ever opens. Closing belongs to the X on the picture itself: a
+           button up here that says "close" is a second control for something
+           the reader is already looking at, and it leaves them hunting at the
+           top of the page for the way out of a panel at the bottom. -->
+      @if (clips.length && !previewOpen) {
+        <button mat-stroked-button class="btn-previa" (click)="togglePreview()" [disabled]="exporting !== null">
+          <mat-icon>smart_display</mat-icon>
+          Preview
+        </button>
+      }
+    </div>
+
+    <div class="acoes-grupo acoes-grupo-fim">
+      <!-- Not gated on the timeline. The settings are worth saving before a
+           single clip exists — setting up how you work and then fetching the
+           footage is a perfectly ordinary order to do things in, and the button
+           refusing to open was the tool assuming the other one. -->
+      <button mat-stroked-button (click)="openSaveChooser()" [disabled]="exporting !== null"
+        title="Write this edit, or just its settings, to a file — or keep the settings as a preset">
+        <mat-icon>save</mat-icon> Save
+      </button>
+
+      <button mat-button (click)="projectInput.click()" [disabled]="exporting !== null"
+        title="Open a saved project or a saved set of settings">
+        <mat-icon>folder_open</mat-icon> Open
+      </button>
+
+      <!-- Settings without a timeline. A project file carries the clips as well,
+           which is the wrong thing to reach for when what the reader wants is
+           "the way I always do these". -->
+      <button mat-button (click)="openPresets()" [disabled]="exporting !== null"
+        title="Save these settings under a name, or use a set you saved before">
+        <mat-icon>bookmarks</mat-icon> Presets
+      </button>
+      <input hidden #projectInput type="file" accept="application/json,.json" (change)="importProject($event)">
+
+      <!-- One button for both: emptying the timeline and forgetting the stored
+           copy were never two decisions — a project cleared from the screen and
+           left in storage comes back on the next reload. -->
+      <button mat-button class="btn-cache" (click)="openCacheChooser()" [disabled]="exporting !== null"
+        title="Empty the timeline and throw away the copy this browser is keeping">
+        <mat-icon>delete_sweep</mat-icon> Clear all
+      </button>
+    </div>
+
+      <!-- Two icons rather than two worded buttons, and last in the row: they
+           are not a seventh and an eighth thing to do to the timeline, they are
+           the way back from whichever of the six was done last. -->
+      <div class="acoes-grupo acoes-historico">
+        <button mat-icon-button class="btn-historico" (click)="undo()" [disabled]="!canUndo"
+          title="Undo the last change (Ctrl+Z)" aria-label="Undo the last change">
+          <mat-icon>undo</mat-icon>
+        </button>
+        <button mat-icon-button class="btn-historico" (click)="redo()" [disabled]="!canRedo"
+          title="Redo (Ctrl+Y or Ctrl+Shift+Z)" aria-label="Redo">
+          <mat-icon>redo</mat-icon>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  @if (reading) {
+    <div class="lendo">
+      <mat-spinner diameter="18"></mat-spinner>
+      <span>Reading the files you added…</span>
+    </div>
+  }
+
+  <!-- ----------------------------------------------------- the empty screen -->
+
+  <!-- Only while there is nothing on the timeline.
+       It is the one screen every reader sees and the only one that can teach
+       the way in; once a clip is there it was a third of the page inviting
+       somebody to start again. -->
+  @if (!clips.length) {
+    <div class="upload-area" [class.arrastando]="dragging" (click)="chooseMedia(fileInput)">
+      <mat-icon class="upload-icone">movie_edit</mat-icon>
+      <p class="upload-texto">Click or drag videos, audio and images here</p>
+      <p class="upload-hint">MP4, MOV, MKV, WebM, MP3, M4A, WAV, OGG, FLAC, PNG, JPEG, WebP — nothing leaves your browser</p>
+    </div>
+  }
+
+  <!-- Outside the block above: the picker is opened by the menu as well, and an
+       input that only exists on the empty screen would take "Add media or text"
+       with it. -->
+  <input hidden multiple #fileInput type="file" [accept]="accepted"
+    (click)="$event.stopPropagation()" (change)="onFileInput($event)">
+
+  <!-- ------------------------------------------------- the restored project -->
+
+  @if (hasAwaitingFiles) {
+    <div class="reconectar">
+      <mat-icon aria-hidden="true">link_off</mat-icon>
+      <div class="reconectar-texto">
+        <strong>
+          @if (awaitingCount) { {{ awaitingCount }} clip(s) }
+          @if (awaitingCount && awaitingSounds.length) { and }
+          <!-- Named separately because a soundtrack goes missing invisibly: the
+               plan still knows how long it is, so nothing else notices, and an
+               export would simply write silence where the music was. -->
+          @if (awaitingSounds.length) { {{ awaitingSounds.length }} soundtrack(s) }
+          are waiting for their files.
+        </strong>
+        <span>
+          Your edit is kept in this browser, but your media never is.
+          @if (canReconnect) {
+            This browser knows where at least one of these came from — it only needs your permission to open it
+            again. Anything it cannot reach, you can choose by hand.
+          } @else {
+            A browser may not reopen a file on its own, and these were added before this one started remembering
+            where they came from. Add them once more and every cut, caption and setting reconnects to them.
+          }
+        </span>
+        <!-- Size and date rather than the folder. A page is never told where a
+             file came from: not the drive, not the directory, not even through a
+             handle, which carries a name and nothing else. What is knowable is
+             what the file was, which is what picks it out of a folder of
+             DJI_06xx.MP4 anyway. -->
+        <ul class="reconectar-nomes">
+          @for (row of awaitingDetails; track row.name) {
+            <li><span class="arquivo-nome">{{ row.name }}</span><span class="arquivo-detalhe">{{ row.detail }}</span></li>
+          }
+        </ul>
+      </div>
+      <div class="reconectar-acoes">
+        <!-- Two doors, and the reader gets to pick. One press asks the browser
+             for permission to reopen every file it still has a reference to —
+             one question rather than nine file dialogs. The other is the file
+             dialog, which works everywhere and for files that have since moved.
+             Neither is a fallback for the other: they are what a reader means by
+             "just open it" and by "let me find it". -->
+        @if (canReconnect) {
+          <button mat-raised-button color="primary" (click)="reconnectFiles()">
+            <mat-icon>lock_open</mat-icon> Ask permission and open them
+          </button>
+          <button mat-stroked-button (click)="chooseRelinkMedia(relinkInput)">
+            <mat-icon>attach_file</mat-icon> Choose them myself
+          </button>
+        } @else {
+          <button mat-raised-button color="primary" (click)="chooseRelinkMedia(relinkInput)">
+            <mat-icon>attach_file</mat-icon> Choose the files
+          </button>
+        }
+      </div>
+      <input hidden multiple #relinkInput type="file" [accept]="accepted" (change)="relinkFiles($event)">
+    </div>
+  }
+
+  @if (clips.length && !remembering) {
+    <p class="estado-salvo estado-salvo-parado">
+      <mat-icon aria-hidden="true">cloud_off</mat-icon>
+      <span>Not being kept in this browser — a reload will lose this edit.</span>
+      <button mat-button class="estado-salvo-limpar" (click)="rememberAgain()">Keep it again</button>
+    </p>
+  } @else if (clips.length && saveState !== 'idle' && saveState !== 'saved') {
+    <!-- Only when something is *not* right.
+         Saving quietly is the normal case and the reader has no decision to make
+         about it, so a permanent line saying so was a banner that never went
+         away and never told anybody anything. What survives here is the states
+         where the browser is failing to keep the project, or keeping less of it
+         than it was asked to — which are the ones worth interrupting for. -->
+    <p class="estado-salvo">
+      <mat-icon aria-hidden="true">{{ saveState === 'too-large' ? 'cloud_off' : 'cloud_done' }}</mat-icon>
+      @switch (saveState) {
+        @case ('saved-without-thumbnails') {
+          <span>Kept in this browser, without the thumbnails — there was not room for them.</span>
+        }
+        @case ('too-large') {
+          <span>This project is too large to keep in the browser. Use <strong>Save project</strong> to write it to a file.</span>
+        }
+        @default { <span>This browser is not keeping the project.</span> }
+      }
+      <!-- No button of its own: this line reports what the browser is holding,
+           and the one way to throw it away is "Clear all" in the toolbar above.
+           The same action offered twice on one screen reads as two actions. -->
+    </p>
+  }
+
+  <!-- --------------------------------------------------------- the preview -->
+
+  @if (previewOpen) {
+    <section #previaSecao class="previa" [class.previa-cheia]="previewFullscreen">
+      <div class="previa-palco">
+        <!-- This box wraps the picture so overlays that belong to the rendered
+             frame can follow its exact dimensions. -->
+        <div class="previa-quadro">
+          <canvas #previewCanvas class="previa-tela"></canvas>
+        </div>
+
+        <!-- Closing belongs to the preview stage, including the black area
+             around footage of another aspect ratio, so it stays in the upper
+             right corner of the whole black rectangle. -->
+        <button type="button" class="previa-fechar" (click)="closeTimelinePreview()"
+          title="Close the preview" aria-label="Close the preview">
+          <mat-icon>close</mat-icon>
+        </button>
+        <!-- The decoder and the soundtrack are off screen: the canvas is what
+             the reader sees, because it is the only surface the zoom, the
+             caption and the fade can be drawn onto. -->
+        <video #previewVideo class="previa-oculto" playsinline preload="auto"></video>
+        <!-- The second decoder exists for one job: during a transition two shots
+             are on screen at once, and one element cannot show two clips. It is
+             idle the rest of the time. -->
+        <video #previewVideoB class="previa-oculto" playsinline preload="auto" muted></video>
+        <audio #previewAudio class="previa-oculto" preload="auto"></audio>
+      </div>
+
+      <!-- The same handle as the one between the two panes, laid on its side.
+           It sits under the picture because that is the edge it moves: the
+           reader pulls the bottom of the stage down and the picture follows.
+           Hidden on the screen given over to the picture, where the height is
+           the window's to decide. -->
+      <div class="divisor-altura" role="separator" aria-orientation="horizontal" tabindex="0"
+        aria-label="Move the bottom edge of the preview to resize the picture"
+        title="Drag to resize the picture · double-click to put it back"
+        (pointerdown)="startVideoResize($event)"
+        (keydown)="onVideoResizeKey($event)"
+        (dblclick)="resetVideoHeight()"></div>
+
+      <div class="previa-transporte">
+        <button type="button" class="previa-botao" (click)="togglePlayback()"
+          [attr.aria-label]="previewPlaying ? 'Pause the preview' : 'Play the preview'">
+          <mat-icon>{{ previewPlaying ? 'pause' : 'play_arrow' }}</mat-icon>
+        </button>
+
+        <span class="previa-tempo">{{ formatTime(previewTime) }}</span>
+
+        <input class="previa-barra" type="range" min="0" [max]="previewDuration" step="0.05"
+          [value]="previewTime" (input)="onScrub($any($event.target).value)"
+          aria-label="Position in the finished video">
+
+        <span class="previa-tempo previa-total">{{ formatTime(previewDuration) }}</span>
+
+        <!-- The two things a playhead is for, next to the playhead. Cutting a
+             clip in two is a position before it is anything else, and asking
+             the reader to find the same instant again inside a dialog is asking
+             them to do the work twice. -->
+        <button type="button" class="previa-botao previa-botao-menor" (click)="splitAtPlayhead()"
+          [disabled]="!canSplitAtPlayhead || exporting !== null"
+          title="Split the clip under the playhead in two"
+          aria-label="Split the clip under the playhead in two">
+          <mat-icon>content_cut</mat-icon>
+        </button>
+
+        <button type="button" class="previa-botao previa-botao-menor" (click)="togglePreviewFullscreen()"
+          [attr.aria-label]="previewFullscreen ? 'Leave full screen' : 'Fill the screen'"
+          [title]="previewFullscreen ? 'Leave full screen' : 'Fill the screen'">
+          <mat-icon>{{ previewFullscreen ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+        </button>
+      </div>
+
+      <div class="previa-corte-linha">
+        <!-- Same question the silence cutter asks, in the same shape: play the
+             edit, or play the material it was made from. -->
+        <label class="previa-corte">
+          <input type="checkbox" [checked]="previewCutsSilence" (change)="togglePreviewCutsSilence()">
+          <span>Play with the silences cut — skip the removed pauses</span>
+        </label>
+
+        <!-- Kept as one group at the far right. The parent wraps this group
+             below the checkbox only when both no longer fit on one line. -->
+        @if (clips.length) {
+          <p class="previa-tempos">
+            <span class="previa-tempos-item">
+              <strong>{{ formatTime(plan.totalDuration) }}</strong>
+              <span>with the silences cut</span>
+            </span>
+            <span class="previa-tempos-item">
+              <strong>{{ formatTime(plan.sourceDuration) }}</strong>
+              <span>without cutting them</span>
+            </span>
+          </p>
+        }
+      </div>
+
+      <!-- The properties of whatever is playing, directly under the picture
+           playing it. The full list of clips, with its own reordering, is
+           further down the page. -->
+      @if (previewClip; as clip) {
+        <div class="previa-cartao">
+          <div class="previa-cartao-topo">
+            <mat-icon aria-hidden="true">{{ clipIcon(clip) }}</mat-icon>
+            <span class="previa-cartao-nome">
+              {{ clipTitle(clip) }}
+            </span>
+            <span class="previa-cartao-posicao">
+              clip {{ previewClipIndex + 1 }} of {{ plan.clips.length }} · {{ formatTime(outputDuration(clip)) }}
+              @if (durationNote(clip); as note) {
+                <span class="antes">{{ note }}</span>
+              }
+            </span>
+
+            @if (isMediaClip(clip) && !clip.summary.audioUsable) {
+              <span class="selo selo-mudo" title="This file carries no sound the browser can decode">
+                <mat-icon aria-hidden="true">volume_off</mat-icon>no sound of its own
+              </span>
+            }
+
+            <!-- Shut to begin with. What the reader came to the preview for is
+                 the picture; eleven fields under it are for the times they did
+                 not, and they were pushing the card strip off the screen. -->
+            <button type="button" class="disclosure previa-cartao-abrir" (click)="cardOpen = !cardOpen"
+              [attr.aria-expanded]="cardOpen" aria-controls="previa-ajustes">
+              <mat-icon>{{ cardOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+              <span>{{ cardOpen ? 'Hide the settings' : 'Settings for this clip' }}</span>
+            </button>
+
+            <button mat-stroked-button (click)="openClip(clip)" [disabled]="exporting !== null">
+              <mat-icon>tune</mat-icon> Everything else
+            </button>
+          </div>
+
+          @if (soundShortFor(clip)) {
+            <p class="aviso-som">
+              <mat-icon aria-hidden="true">report</mat-icon>
+              <span>
+                The soundtrack runs out before this clip does, so part of it will be silent. Give this clip a file of
+                its own, or choose a longer one for the project.
+              </span>
+            </p>
+          }
+
+          @if (cardOpen) {
+            <div id="previa-ajustes" class="previa-ajustes">
+              <label class="check">
+                <input type="checkbox" [checked]="follows(clip)" [disabled]="exporting !== null"
+                  (change)="setFollowsProject(clip, $any($event.target).checked)">
+                <span>Follow the project</span>
+              </label>
+
+              @if (isMediaClip(clip)) {
+                <div class="campo campo-largo">
+                  <label for="previa-legenda">Caption</label>
+                  <input id="previa-legenda" type="text" [value]="captionTextOf(clip)" [disabled]="exporting !== null"
+                    (input)="setCaptionText(clip, $any($event.target).value)"
+                    placeholder="A line along the bottom of this clip">
+                </div>
+              }
+
+              <app-clip-edits-panel
+                [id]="'previa-' + clip.id"
+                [edits]="editsFor(clip)"
+                [disabled]="exporting !== null"
+                [showCuts]="isMediaClip(clip) && clip.summary.kind !== 'image'"
+                [hasOwnSound]="isMediaClip(clip)"
+                [speedNote]="speedNoteFor(clip)"
+                [speedLocked]="isTimelapseTimed(clip)"
+                [speedLockedLabel]="timelapseSpeedNote(clip)"
+                [zoomNote]="zoomNoteFor(clip)"
+                (speedRelease)="releaseTimelapseSpeed(clip)"
+                (editsChange)="onClipEdits(clip, $event)"></app-clip-edits-panel>
+            </div>
+          }
+        </div>
+      }
+
+    </section>
+
+    <!-- The line between the two panes is the handle that moves it. A separator
+         rather than a button: it has a position, not an action, which is also
+         why the arrow keys move it and why it is reachable by tab at all. It is
+         only drawn where there are two columns to divide — the stylesheet gives
+         it its place in the grid, and hides it everywhere else. -->
+    <div class="divisor" role="separator" aria-orientation="vertical" tabindex="0"
+      aria-label="Move the divider between the preview and the project settings"
+      title="Drag to move · double-click to put it back"
+      (pointerdown)="startSplit($event)"
+      (keydown)="onSplitKey($event)"
+      (dblclick)="resetSplit()"></div>
+  }
+
+  <!-- ------------------------------------------------------ project settings -->
+
+  <section class="projeto">
+    <button type="button" class="disclosure disclosure-titulo" (click)="projectOpen = !projectOpen"
+      [attr.aria-expanded]="projectOpen" aria-controls="projeto-painel">
+      <mat-icon>{{ projectOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+      <span>Settings for the whole project</span>
+      <!-- Outside the panel on purpose: the length of the edit is the one thing
+           worth reading with the card shut. -->
+      @if (clips.length) {
+        <span class="projeto-duracao">
+          {{ formatTime(plan.totalDuration) }}
+          @if (projectDurationNote; as note) {
+            <span class="antes">{{ note }}</span>
+          }
+        </span>
+      }
+    </button>
+    <p class="projeto-nota">
+      Everything here applies to every clip that has not been given settings of its own. Open a clip to change it
+      alone; a clip with its own settings says so on its row, and can be handed back at any time.
+      @if (overriddenCount) {
+        <button mat-button class="projeto-devolver" (click)="followProjectEverywhere()" [disabled]="exporting !== null">
+          Hand all {{ overriddenCount }} back to the project
+        </button>
+      }
+    </p>
+
+    @if (projectOpen) {
+      <div id="projeto-painel" class="projeto-painel">
+        <app-clip-edits-panel
+          id="project"
+          [edits]="project.edits"
+          [disabled]="exporting !== null"
+          [zoomNote]="'Applies to every clip that follows the project. Each clip is measured on its own pauses.'"
+          (editsChange)="onProjectEdits($event)">
+
+          <!-- Projected in below Playback, because it answers the same question
+               as the speed control above it — how long does this run? — for the
+               one kind of clip whose answer nobody wants to work out by hand. -->
+          <fieldset afterPlayback class="grupo">
+            <legend class="grupo-titulo">Timelapse</legend>
+
+            <div class="campo">
+              <label for="timelapse-alvo">
+                Target length for timelapse clips
+                <app-help-hint label="What the timelapse target does">
+                  A clip recognised as a timelapse is given whatever speed makes it last this long. Nothing else on the
+                  timeline is touched, and the speed is written onto the clip where you can see it and change it — the
+                  moment you set the speed yourself, this stops deciding for that clip.
+                </app-help-hint>
+              </label>
+              <div class="com-unidade">
+                <input id="timelapse-alvo" type="number"
+                  [min]="timelapseLimits.min" [max]="timelapseLimits.max" [step]="timelapseLimits.step"
+                  [value]="project.timelapseTargetSeconds" [disabled]="exporting !== null"
+                  (change)="onTimelapseTarget($any($event.target).value)">
+                <span class="unidade">s</span>
+              </div>
+              <small>Zero leaves every timelapse at its own length.</small>
+            </div>
+
+            <p class="ajuda">
+              It applies per clip, not to the project: two timelapses with a target of ten seconds make twenty seconds
+              of video.
+              @if (timelapseClipCount) {
+                <strong>{{ timelapseClipCount }} clip(s)</strong> on this timeline are marked as timelapses.
+              } @else {
+                Nothing on this timeline is marked as a timelapse yet — a clip is marked when it has no soundtrack and
+                its file admits, one way or another, that it was shot at an interval.
+              }
+            </p>
+          </fieldset>
+        </app-clip-edits-panel>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Volume</legend>
+
+          <app-loudness-control
+            id="project-loudness"
+            [settings]="project.loudness"
+            [disabled]="exporting !== null"
+            [note]="loudnessNote"
+            (settingsChange)="onLoudness($event)"></app-loudness-control>
+        </fieldset>
+
+        <!-- One house style for the whole edit. A transition added by hand at a
+             particular join wins there and changes nothing anywhere else. -->
+        <fieldset class="grupo som-padrao">
+          <legend class="grupo-titulo">
+            Transition between every shot
+            <app-help-hint label="What the default transition does">
+              Applied at every join that has not been given a transition of its own. It is paid for out of the silence
+              at the end of one shot and the start of the next — the silence a cut would otherwise throw away — so a
+              project of clean takes keeps its length. {{ transitionCount }} animations to choose from.
+            </app-help-hint>
+          </legend>
+
+          <div class="linha-acoes">
+            <span class="som-anexo" [class.som-anexo-vazio]="!project.defaultTransition">
+              <mat-icon aria-hidden="true">animation</mat-icon>{{ defaultTransitionLabel }}
+            </span>
+            <button mat-stroked-button (click)="openDefaultTransition()" [disabled]="exporting !== null">
+              <mat-icon>tune</mat-icon>
+              {{ project.defaultTransition ? 'Change it' : 'Choose one' }}
+            </button>
+          </div>
+        </fieldset>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">
+            What a tag starts out as
+            <app-help-hint label="What the project's tag is for">
+              A template, not a badge. No clip wears a tag until you put one on it — even with this set — and a clip
+              you do give one to takes a copy of what is here. Changing that copy never comes back to this, and
+              changing this never reaches a tag already placed. Set it once and every tag you add starts the way you
+              work.
+            </app-help-hint>
+          </legend>
+
+          <div class="linha-campos">
+            <div class="campo campo-largo">
+              <label for="tag-padrao-texto">What it says</label>
+              <input id="tag-padrao-texto" type="text" maxlength="120" [value]="project.defaultTag.text"
+                [disabled]="exporting !== null" (input)="onDefaultTagText($any($event.target).value)">
+            </div>
+          </div>
+
+          <div class="linha-acoes">
+            <span class="som-anexo">
+              <mat-icon aria-hidden="true">sell</mat-icon>{{ defaultTagLabel }}
+            </span>
+            <button mat-stroked-button (click)="openDefaultTag()" [disabled]="exporting !== null">
+              <mat-icon>tune</mat-icon> Style and animation
+            </button>
+          </div>
+        </fieldset>
+
+        <fieldset class="grupo som-padrao">
+          <legend class="grupo-titulo">
+            Default sound for the project
+            <app-help-hint label="What the project sound is used for">
+              Used in two places. A clip set to have its sound replaced, and given no file of its own, plays this one —
+              and so does anything that brought no sound at all: footage shot with the microphone off, a still
+              photograph, a text card. One rule rather than an exception per kind, so a title never falls silent in the
+              middle of a soundtrack. A clip with a file of its own always uses that instead, and one you silenced on
+              purpose stays silent.
+            </app-help-hint>
+          </legend>
+
+          <div class="linha-acoes">
+            @if (project.defaultAudio; as sound) {
+              <span class="som-anexo" [title]="sound.summary.fileName">
+                <mat-icon aria-hidden="true">audiotrack</mat-icon>{{ sound.summary.fileName }}
+                <span class="som-duracao">{{ formatTime(sound.summary.durationSeconds) }}</span>
+              </span>
+              <button mat-button (click)="openAudioSource('project')" [disabled]="exporting !== null">Change it</button>
+              <button mat-button (click)="clearDefaultAudio()" [disabled]="exporting !== null">Remove it</button>
+            } @else {
+              <button mat-stroked-button (click)="openAudioSource('project')" [disabled]="exporting !== null">
+                <mat-icon>library_music</mat-icon> Choose or record one
+              </button>
+            }
+          </div>
+
+          <div class="campo campo-estreito">
+            <!-- The "?" sits beside the unit rather than after the label.
+                 This field is narrow and its label is four words, so the label
+                 wraps to two lines and the button was landing on a third of its
+                 own — three lines of chrome for one number. Beside the % it
+                 costs nothing and is no harder to find. -->
+            <label for="som-corte-limite">Treat as silent after cutting</label>
+            <div class="com-unidade">
+              <input id="som-corte-limite" type="number"
+                [min]="silentCutReplacementLimits.min * 100"
+                [max]="silentCutReplacementLimits.max * 100"
+                [step]="silentCutReplacementLimits.step * 100"
+                [value]="project.silentCutReplacementThreshold * 100"
+                [disabled]="exporting !== null"
+                (change)="onSilentCutReplacementThreshold($any($event.target).value)">
+              <span class="unidade">%</span>
+              <app-help-hint label="What this percentage decides">
+                When automatic silence cuts remove more than this share of a video, its remaining original sound is
+                treated as missing and the project sound is used when one exists. Manual cuts do not count.
+              </app-help-hint>
+            </div>
+          </div>
+
+          @if (project.defaultAudio) {
+            <label class="check check-silencio">
+              <input type="checkbox" [checked]="project.defaultAudio.skipLeadingSilence !== false"
+                [disabled]="exporting !== null"
+                (change)="onSkipLeadingSilence($any($event.target).checked)">
+              <span>Start at the first sound, skipping any silence at the head of the file</span>
+              <app-help-hint label="What skipping the leading silence does">{{ leadingSilenceNote }}</app-help-hint>
+            </label>
+          }
+
+          <!-- The track's own ramps, not the clip's. A clip's fade takes the
+               picture down with the sound; this one touches nothing but the
+               music, once at the start of each stretch and once at its end. -->
+          <div class="som-fade">
+            <div class="linha-checks">
+              <label class="check">
+                <input type="checkbox" [checked]="project.soundFade.fadeIn" [disabled]="exporting !== null"
+                  (change)="onSoundFade({ fadeIn: $any($event.target).checked })">
+                <span>Fade the added sound in</span>
+                <app-help-hint label="How the soundtrack rises and falls">{{ soundFadeNote }}</app-help-hint>
+              </label>
+
+              <label class="check">
+                <input type="checkbox" [checked]="project.soundFade.fadeOut" [disabled]="exporting !== null"
+                  (change)="onSoundFade({ fadeOut: $any($event.target).checked })">
+                <span>Fade it out</span>
+              </label>
+
+              <div class="campo campo-estreito">
+                <label for="som-fade-segundos">Over</label>
+                <div class="com-unidade">
+                  <input id="som-fade-segundos" type="number"
+                    [min]="soundFadeLimits.min" [max]="soundFadeLimits.max" [step]="soundFadeLimits.step"
+                    [value]="project.soundFade.seconds" [disabled]="exporting !== null"
+                    (change)="onSoundFadeSeconds($any($event.target).value)">
+                  <span class="unidade">s</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Output file</legend>
+
+          <div class="opcoes">
+          <div class="campo">
+            <label for="resolucao">
+              Picture size
+              <app-help-hint label="What automatic picture size does">
+                Automatic mode follows the resolution and frame rate shared by most videos. Clips that do not match are
+                letterboxed, never cropped or stretched.
+              </app-help-hint>
+            </label>
+            <select id="resolucao" [ngModel]="project.resolution" [disabled]="exporting !== null"
+              (ngModelChange)="onResolution($event)">
+              @for (option of resolutions; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+
+          <!-- Beside the size rather than in a section of its own: the reader
+               setting one is answering the same question as the reader setting
+               the other, which is "what shape and how big is the file". -->
+          <div class="campo">
+            <label for="proporcao">
+              Frame shape
+              <app-help-hint label="What reframing does">
+                The picture size above decides how many pixels there are; this decides their proportion. Vertical and
+                square are made from the same footage, so what changes is how much of each shot is on screen — a wide
+                shot fitted into a phone-shaped frame has to lose its sides or gain black bars, and the choice beside
+                this one says which.
+              </app-help-hint>
+            </label>
+            <select id="proporcao" [ngModel]="project.aspect" [disabled]="exporting !== null"
+              (ngModelChange)="onAspect($event)">
+              @for (option of aspects; track option.value) {
+                <option [value]="option.value">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+
+          @if (project.aspect !== 'source') {
+            <div class="campo">
+              <label for="reenquadramento">
+                Pictures of another shape
+                <app-help-hint label="Crop or letterbox">
+                  Filling crops: a 16:9 shot in a 9:16 frame keeps its middle and loses its sides, which is what makes a
+                  vertical export look like it was shot vertically. Fitting keeps every pixel and puts black around it,
+                  which is right when what is on screen is a slide or a screen recording and the edges matter.
+                </app-help-hint>
+              </label>
+              <select id="reenquadramento" [ngModel]="project.reframe" [disabled]="exporting !== null"
+                (ngModelChange)="onReframe($event)">
+                @for (option of reframeFits; track option.value) {
+                  <option [value]="option.value">{{ option.label }}</option>
+                }
+              </select>
+            </div>
+          }
+
+          <div class="campo">
+            <label for="formato-video">
+              Video format
+              <app-help-hint label="About this video format">{{ videoFormat.note }}</app-help-hint>
+            </label>
+            <select id="formato-video" [ngModel]="project.videoFormatId" [disabled]="exporting !== null"
+              (ngModelChange)="onVideoFormat($event)">
+              @for (option of videoFormats; track option.id) {
+                <option [value]="option.id">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="formato-audio">
+              Audio format
+              <app-help-hint label="About this audio format">{{ audioFormat.note }}</app-help-hint>
+            </label>
+            <select id="formato-audio" [ngModel]="project.audioFormatId" [disabled]="exporting !== null"
+              (ngModelChange)="onAudioFormat($event)">
+              @for (option of audioFormats; track option.id) {
+                <option [value]="option.id">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+          </div>
+
+          <p class="ajuda">{{ aspectNote }}</p>
+        </fieldset>
+      </div>
+    }
+  </section>
+
+  <!-- ------------------------------------------------------------- timeline -->
+
+  @if (clips.length) {
+    <div class="lista-cabecalho">
+      <span class="lista-info">
+        {{ clips.length }} clip(s) · {{ formatTime(plan.totalDuration) }} in the finished file
+        @if (plan.removedDuration > 0.05) {
+          <span> · {{ formatTime(plan.removedDuration) }} removed</span>
+        }
+        · drag to reorder
+      </span>
+
+      <!-- Offered only when there is something to do. Several clips are listened
+           to at once now, so this is one press for a queue of nine rather than
+           nine presses and nine waits. -->
+      @if (clipsAwaitingListening.length && !analysisBusy) {
+        <button mat-button class="btn-ouvir" (click)="analyzeEverything()" [disabled]="exporting !== null">
+          <mat-icon>graphic_eq</mat-icon>
+          Listen to {{ clipsAwaitingListening.length }} clip(s)
+        </button>
+      } @else if (analysisBusy) {
+        <span class="lista-ouvindo">
+          <mat-spinner diameter="16"></mat-spinner>
+          <span>Listening to {{ analyzingCount }} clip(s) at once…</span>
+        </span>
+      }
+    </div>
+
+    <div cdkDropList class="lista-clipes" (cdkDropListDropped)="reorder($event)">
+      <div class="inserir">
+        <button type="button" class="inserir-botao" (click)="openInsertChooser(0)" [disabled]="exporting !== null"
+          title="Add something here" aria-label="Add a clip before the first one">
+          <mat-icon>add</mat-icon>
+        </button>
+      </div>
+
+      @for (clip of clips; track clip.id; let i = $index) {
+        <!-- A transition is a row like any other — it can be dragged, opened and
+             removed — but it is deliberately not shaped like one. It takes no
+             time in the finished video and has no picture of its own; drawing it
+             as a full clip would be claiming both. -->
+        @if (asTransition(clip); as join) {
+          <!-- Not `role="button"`, and not focusable. It was both, and it holds
+               two real buttons — which ARIA forbids inside a button, and which
+               made Enter on "Remove" open the dialog for the row it was deleting.
+               The click stays for the pointer; the keyboard goes through the
+               buttons, which is where it belonged. -->
+          <div class="item-juncao" cdkDrag [cdkDragDisabled]="exporting !== null"
+            [class.juncao-orfa]="transitionOrphan(join)"
+            [class.juncao-sobre-conteudo]="transitionOverContent(join)"
+            (click)="onTransitionRow(join, $event)">
+            <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+            <mat-icon class="juncao-icone" aria-hidden="true">animation</mat-icon>
+
+            <span class="juncao-texto">
+              <span class="juncao-nome">{{ transitionLabel(join) }}</span>
+              <span class="juncao-detalhe">
+                {{ transitionSeconds(join).toFixed(2) }}s
+                @if (transitionOrphan(join)) {
+                  <span class="juncao-aviso">— a transition needs a shot on each side, so this one does nothing</span>
+                } @else if (transitionOverContent(join)) {
+                  <span class="juncao-aviso">— not enough silence at this join, so the animation plays over the picture</span>
+                } @else {
+                  <span> · paid for out of the silence at the join</span>
+                }
+              </span>
+            </span>
+
+            <!-- Plain buttons rather than `mat-icon-button`, for the same reason
+                 the reorder arrows are: Material keeps a 48px touch target
+                 whatever the button is shrunk to, and this row is deliberately
+                 slimmer than a clip's. -->
+            <button type="button" class="btn-juncao" (click)="openTransition(join); $event.stopPropagation()"
+              [disabled]="exporting !== null" title="Change this transition"
+              [attr.aria-label]="'Change the transition: ' + transitionLabel(join)">
+              <mat-icon>tune</mat-icon>
+            </button>
+            <button type="button" class="btn-juncao btn-juncao-remover" (click)="remove(i); $event.stopPropagation()"
+              [disabled]="exporting !== null" title="Remove this transition"
+              [attr.aria-label]="'Remove the transition: ' + transitionLabel(join)">
+              <mat-icon>close</mat-icon>
+            </button>
+
+            <div class="drag-placeholder" *cdkDragPlaceholder></div>
+          </div>
+        } @else {
+        <!-- The playhead is in this clip: the row lights up, the same way the
+             card in the strip above does. One position, said in two places, so
+             the reader never has to work out which row the picture belongs to. -->
+        <div class="item-clipe" cdkDrag [cdkDragDisabled]="exporting !== null"
+          [class.item-atual]="isPlayingClip(clip)"
+          [attr.aria-current]="isPlayingClip(clip) ? 'true' : null"
+          [class.tem-override]="!follows(clip)"
+          [class.tem-som-externo]="hasExternalSound(clip)"
+          [class.sem-som]="willBeSilent(clip)"
+          [class.item-clicavel]="canSeekToClips"
+          (click)="onClipRow(clip, $event)">
+
+          <!-- Handle, number and still, as one block.
+               The row is as tall as whatever the text column has to say — four
+               lines on a clip with a warning, one on a clip without — and these
+               three belong beside the *name*, not floating in the middle of
+               that. Grouped, they can hold the top of the row together. -->
+          <div class="item-inicio">
+            <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+
+            <!-- The number is a button rather than a label. Clicking the row is
+                 the obvious way to send the playhead here, but a row cannot
+                 itself be a button — it already contains five — so the badge is
+                 the one thing in it reachable from the keyboard for this. -->
+            <button type="button" class="posicao" [disabled]="exporting !== null"
+              (click)="onClipNumber(clip, $event)"
+              [title]="'Send the preview to the start of clip ' + clipNumber(clip)"
+              [attr.aria-label]="'Send the preview to the start of clip ' + clipNumber(clip)">
+              {{ clipNumber(clip) }}
+            </button>
+
+            <!-- The box keeps its size whether or not a still has arrived, so a
+                 thumbnail appearing a second after the file was read never makes
+                 the whole list jump. -->
+            @if (isMediaClip(clip) && clip.thumbUrl) {
+              <img class="miniatura" [src]="clip.thumbUrl" alt="" aria-hidden="true">
+            } @else {
+              <div class="miniatura miniatura-vazia">
+                @if (isMediaClip(clip)) {
+                  <mat-icon class="tipo-icone"
+                    [class.icone-video]="clip.summary.kind === 'video'"
+                    [class.icone-audio]="clip.summary.kind === 'audio'"
+                    [class.icone-imagem]="clip.summary.kind === 'image'">
+                    {{ clip.summary.kind === 'video' ? 'movie' : clip.summary.kind === 'image' ? 'image' : 'audiotrack' }}
+                  </mat-icon>
+                } @else {
+                  <mat-icon class="tipo-icone icone-texto">title</mat-icon>
+                }
+              </div>
+            }
+          </div>
+
+          <div class="item-texto">
+            <span class="nome-clipe" [title]="clipTitle(clip)">{{ clipTitle(clip) }}</span>
+
+            <span class="detalhe-clipe">
+              {{ formatTime(outputDuration(clip)) }}
+              @if (durationNote(clip); as note) {
+                <span class="antes">{{ note }}</span>
+              }
+              @if (isMediaClip(clip)) {
+                <span> · {{ formatSize(clip.summary.fileSize) }}</span>
+                @if (describeClip(clip)) { <span> · {{ describeClip(clip) }}</span> }
+              }
+            </span>
+
+            <!-- A line of their own, across the whole column. They were sharing
+                 the name's line to save height and cost more of it than they
+                 saved: seven pills cannot fit beside a filename, so they wrapped
+                 into three ragged rows and squeezed the name into an ellipsis.
+                 Given the full width they are one line, which is the height they
+                 were worth all along. -->
+            @if (badges(clip).length || (isMediaClip(clip) && clip.summary.isTimelapse)
+                 || (!willBeSilent(clip) && isSilentSource(clip))) {
+              <span class="selos">
+                <!-- First in the group: the one fact here about the footage
+                     itself rather than about what was done to it. -->
+                @if (isMediaClip(clip) && clip.summary.isTimelapse) {
+                  <span class="selo selo-timelapse"
+                    [title]="clip.summary.timelapseReason ?? 'This looks like a timelapse.'">Timelapse</span>
+                }
+                @for (badge of badges(clip); track badge) {
+                  <span class="selo">{{ badge }}</span>
+                }
+                <!-- Also a pill, so it joins the group instead of taking a line
+                     of its own below it. It is shown on exactly the same terms
+                     as before — only when the clip has no sound of its own and
+                     something else is covering it; when nothing is, the red
+                     sentence further down replaces it. -->
+                @if (!willBeSilent(clip) && isSilentSource(clip)) {
+                  <span class="selo selo-mudo" title="This file carries no sound the browser can decode">
+                    <mat-icon aria-hidden="true">volume_off</mat-icon>no sound of its own
+                  </span>
+                }
+              </span>
+            }
+
+            @if (isMediaClip(clip) && clip.summary.kind === 'image') {
+              <span class="imagem-controles">
+                <label [attr.for]="'seconds-' + clip.id">Show for</label>
+                <input [id]="'seconds-' + clip.id" type="number" class="campo-segundos"
+                  [min]="imageLimits.min" [max]="imageLimits.max" [step]="imageLimits.step"
+                  [value]="clip.summary.durationSeconds" [disabled]="exporting !== null"
+                  (change)="onImageSeconds(clip, $any($event.target).value)">
+                <span class="unidade">s</span>
+              </span>
+            }
+
+            @if (soundFor(clip); as sound) {
+              @if (sound.kind === 'file') {
+                <span class="som-externo" [title]="sound.label">
+                  <mat-icon aria-hidden="true">music_note</mat-icon>{{ sound.label }}
+                  @if (sound.offset > 0.05) {
+                    <span class="som-offset">from {{ formatTime(sound.offset) }}</span>
+                  }
+                </span>
+              }
+            }
+
+            <!-- The same fact told two ways. A file with no soundtrack is only
+                 worth a grey pill while something else is covering it — that
+                 one sits up with the badges; once nothing is, the clip is a
+                 silent hole in the edit and the row says so in red, here. -->
+            @if (willBeSilent(clip)) {
+              <span class="aviso-clipe aviso-sem-som">
+                <mat-icon aria-hidden="true">volume_off</mat-icon>
+                This clip will be completely silent: it has no sound of its own, none was chosen for it, and no
+                soundtrack reaches it from an earlier clip.
+              </span>
+            }
+
+
+            @if (soundShortFor(clip)) {
+              <span class="aviso-clipe aviso-som-curto">
+                <mat-icon aria-hidden="true">report</mat-icon>
+                The soundtrack runs out before this clip does, so part of it will be silent. Give it a file of its own,
+                or choose a longer one for the project.
+              </span>
+            }
+
+            @if (isMediaClip(clip) && clip.awaitingFile) {
+              <span class="aviso-clipe aviso-aguardando">
+                <mat-icon aria-hidden="true">link_off</mat-icon>
+                Waiting for "{{ clip.summary.fileName }}". Everything you set for it is kept.
+              </span>
+            }
+
+            @if (isMediaClip(clip) && needsAnalysis(clip)) {
+              <span class="aviso-clipe">
+                <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+                This clip has not been listened to yet. It will be, automatically, when you export.
+              </span>
+            }
+
+            @if (isMediaClip(clip) && clip.summary.warning) {
+              <span class="aviso-clipe">
+                <mat-icon aria-hidden="true">warning_amber</mat-icon>{{ clip.summary.warning }}
+              </span>
+            }
+          </div>
+
+          <!-- Every control in one block, held at the top of the row beside the
+               name. Loose in the row they were centred against the tallest
+               thing in it, which put Edit halfway down a paragraph about a
+               missing file — next to nothing, and nowhere the eye looks. -->
+          <div class="item-acoes">
+          <button mat-stroked-button class="btn-editar" (click)="openClip(clip)" [disabled]="exporting !== null">
+            <mat-icon>tune</mat-icon> Edit
+          </button>
+
+          <!-- Plain buttons rather than `mat-icon-button`: Material keeps a
+               48px touch target and a ripple layer at their own size whatever
+               the button is shrunk to, so two stacked in a row overlap — the
+               lower one covers the upper one, and the ripple shows up as a
+               misplaced disc on hover. -->
+          <div class="item-ordenar">
+            <button type="button" class="btn-mover" (click)="move(i, -1)"
+              [disabled]="i === 0 || exporting !== null" title="Move earlier"
+              [attr.aria-label]="'Move clip ' + (i + 1) + ' earlier'">
+              <mat-icon>keyboard_arrow_up</mat-icon>
+            </button>
+            <button type="button" class="btn-mover" (click)="move(i, 1)"
+              [disabled]="i === clips.length - 1 || exporting !== null" title="Move later"
+              [attr.aria-label]="'Move clip ' + (i + 1) + ' later'">
+              <mat-icon>keyboard_arrow_down</mat-icon>
+            </button>
+          </div>
+
+          @if (isMediaClip(clip)) {
+            <button mat-icon-button class="btn-preview" (click)="openPreview(clip)" title="Play this clip"
+              [disabled]="clip.awaitingFile"
+              [attr.aria-label]="'Play ' + clip.summary.fileName">
+              <mat-icon>play_circle</mat-icon>
+            </button>
+          }
+
+          <button mat-icon-button class="btn-duplicar" (click)="duplicate(i)" [disabled]="exporting !== null"
+            title="Duplicate" [attr.aria-label]="'Duplicate clip ' + (i + 1)">
+            <mat-icon>content_copy</mat-icon>
+          </button>
+
+          <button mat-icon-button class="btn-remover" (click)="remove(i)" [disabled]="exporting !== null"
+            title="Remove" [attr.aria-label]="'Remove clip ' + (i + 1)">
+            <mat-icon>close</mat-icon>
+          </button>
+          </div>
+
+          <div class="drag-placeholder" *cdkDragPlaceholder></div>
+        </div>
+        }
+
+        <div class="inserir">
+          <button type="button" class="inserir-botao" (click)="openInsertChooser(i + 1)" [disabled]="exporting !== null"
+            title="Add something here"
+            [attr.aria-label]="'Add a clip after clip ' + (i + 1)">
+            <mat-icon>add</mat-icon>
+          </button>
+        </div>
+      }
+    </div>
+
+    @if (planWarning) {
+      <p class="plano-aviso"><mat-icon aria-hidden="true">info_outline</mat-icon>{{ planWarning }}</p>
+    }
+
+    <div class="acoes-baixo">
+      <!-- The icon is wrapped rather than left loose in the button: an element
+           inside an @if lives in a template, so it never reaches the button's
+           icon slot and would be laid out on the text baseline. -->
+      <button mat-raised-button color="primary" (click)="export('video')" [disabled]="!canExportVideo">
+        <span class="btn-conteudo">
+          @if (exporting === 'video') {
+            <mat-spinner diameter="18"></mat-spinner>
+          } @else {
+            <mat-icon aria-hidden="true">movie_filter</mat-icon>
+          }
+          <span>{{ exporting === 'video' ? 'Exporting…' : 'Export video' }}</span>
+        </span>
+      </button>
+
+      <button mat-raised-button color="primary" (click)="export('audio')" [disabled]="!canExportAudio">
+        <span class="btn-conteudo">
+          @if (exporting === 'audio') {
+            <mat-spinner diameter="18"></mat-spinner>
+          } @else {
+            <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+          }
+          <span>{{ exporting === 'audio' ? 'Exporting…' : 'Export audio only' }}</span>
+        </span>
+      </button>
+
+      <!-- What is left of an export that was stopped. Offered here rather than
+           in the message above it, because it is an export like any other and
+           belongs beside the two buttons that start one. -->
+      @if (resume) {
+        <button mat-stroked-button class="btn-continuar" (click)="exportRest()" [disabled]="exporting !== null">
+          <mat-icon>playlist_play</mat-icon>
+          Export the rest (part {{ resume.part }})
+        </button>
+      }
+    </div>
+
+    @if (resume) {
+      <p class="plano-aviso plano-aviso-continuar">
+        <mat-icon aria-hidden="true">splitscreen</mat-icon>
+        <span>
+          {{ resumeNote }} The next part starts at the clip after the one that finished, so the two files meet at a cut
+          — join them back together with the media joiner. Changing anything on the timeline withdraws this, because the
+          second part would then be of a different edit.
+        </span>
+      </p>
+    }
+  }
+
+  @if (progress || renderLog.length) {
+    <div class="progresso">
+      @if (progress; as report) {
+      <div class="progresso-topo">
+        <span>
+          @if (progressPercent) {
+            <strong class="progresso-percentual">{{ progressPercent }}</strong>
+          }
+          {{ stageLabel }}
+          @if (report.clipName) {
+            <span class="progresso-item">· clip {{ report.clipIndex }} of {{ report.clipCount }}: {{ report.clipName }}</span>
+          }
+        </span>
+        <span class="progresso-acoes">
+          <!-- Two different answers to "not this". Stopping keeps everything
+               written so far and offers the rest as a second file; cancelling
+               throws the file away, which is what it always did. -->
+          @if (exporting) {
+            <button mat-button (click)="stopExport()" title="Finish the clip being written and keep the file">
+              Stop and keep
+            </button>
+          }
+          <button mat-button (click)="cancel()">Cancel</button>
+        </span>
+      </div>
+      <mat-progress-bar [mode]="report.ratio === null ? 'indeterminate' : 'determinate'"
+        [value]="(report.ratio ?? 0) * 100"></mat-progress-bar>
+      } @else {
+        <!-- The export is over but the account of it is still worth reading:
+             which container failed is the one thing nobody can reconstruct
+             once the bar has gone. -->
+        <div class="progresso-topo">
+          <span class="progresso-item">Last export — {{ renderLog.length }} lines</span>
+          <span class="progresso-acoes">
+            <button mat-button (click)="clearLog()">Clear</button>
+          </span>
+        </div>
+      }
+
+      @if (renderLog.length) {
+        <div class="registro" [class.registro-aberto]="logOpen">
+          <button type="button" class="registro-cabeca" (click)="toggleLog()"
+            [attr.aria-expanded]="logOpen" aria-controls="registro-console">
+            <mat-icon class="registro-seta">{{ logOpen ? 'expand_more' : 'chevron_right' }}</mat-icon>
+            <span class="registro-titulo">Render log</span>
+            @if (!logOpen && logTail) {
+              <span class="registro-ultima">{{ logTail }}</span>
+            }
+            <span class="registro-conta">{{ renderLog.length }}</span>
+          </button>
+
+          @if (logOpen) {
+            <div class="registro-console" id="registro-console" #logConsole
+              (scroll)="onLogScroll()" role="log" aria-live="polite" tabindex="0">
+              @for (line of renderLog; track line.seq) {
+                <div class="registro-linha registro-{{ line.kind }}">
+                  <span class="registro-hora">{{ line.at }}</span>
+                  <span class="registro-marca" aria-hidden="true">{{ logMark(line.kind) }}</span>
+                  <span class="registro-texto">{{ line.text }}</span>
+                </div>
+              }
+            </div>
+          }
+        </div>
+      }
+    </div>
+  }
+
+  @if (notice) {
+    <div class="mensagem mensagem-nota"><mat-icon>info_outline</mat-icon>{{ notice }}</div>
+  }
+
+  @if (message) {
+    <div class="mensagem">
+      <mat-icon>check_circle_outline</mat-icon>
+      <span>{{ message }}</span>
+      @if (result?.blob) {
+        <button mat-button (click)="download()">Download again</button>
+      }
+    </div>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro">
+      <mat-icon>error_outline</mat-icon>
+      <span>
+        @if (errorClip) {
+          <strong class="erro-clipe">{{ errorClip }}</strong>
+        }
+        {{ errorMessage }}
+        @if (errorHint) { <small class="dica">{{ errorHint }}</small> }
+
+        <!-- Shut, and one click from open. The reader who wants to carry on
+             editing never sees a stack trace; the one reporting a bug does not
+             have to open a console to find one. -->
+        @if (errorDetail) {
+          <button type="button" class="erro-detalhe-botao" (click)="errorDetailOpen = !errorDetailOpen"
+            [attr.aria-expanded]="errorDetailOpen" aria-controls="erro-detalhe">
+            <mat-icon>{{ errorDetailOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+            <span>{{ errorDetailOpen ? 'Hide the technical detail' : 'Show the technical detail' }}</span>
+          </button>
+
+          @if (errorDetailOpen) {
+            <pre id="erro-detalhe" class="erro-detalhe">{{ errorDetail }}</pre>
+          }
+        }
+      </span>
+    </div>
+  }
+
+  @if (result; as done) {
+    <dl class="resumo">
+      <div><dt>Length</dt><dd>{{ formatTime(done.plan.totalDuration) }}</dd></div>
+      @if (done.plan.removedDuration > 0.05) {
+        <div><dt>Removed</dt><dd>{{ formatTime(done.plan.removedDuration) }} in {{ done.plan.cutCount }} cut(s)</dd></div>
+      }
+      @if (done.kind === 'video') {
+        <div><dt>Picture</dt><dd>{{ done.plan.width }} × {{ done.plan.height }} · {{ done.plan.frameRate }} fps</dd></div>
+        @if (done.plan.zooms.length) {
+          <div><dt>Zooms</dt><dd>{{ done.plan.zooms.length }}</dd></div>
+        }
+        @if (done.plan.captions.length) {
+          <div><dt>Captions</dt><dd>{{ done.plan.captions.length }}</dd></div>
+        }
+      }
+      <div><dt>Sound</dt><dd>{{ done.plan.sampleRate / 1000 }} kHz · {{ done.plan.channelCount === 1 ? 'mono' : 'stereo' }}</dd></div>
+      @if (done.blob) {
+        <div><dt>File size</dt><dd>{{ formatSize(done.blob.size) }}</dd></div>
+      }
+    </dl>
+  }
+
+</div>
+
+<!-- ---------------------------------------------------------- clip dialog -->
+
+@if (editing; as clip) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closeClip()">
+    <div class="dialogo" role="dialog" aria-modal="true" aria-labelledby="dialogo-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">tune</mat-icon>
+          <h2 id="dialogo-titulo" [title]="clip.summary.fileName">{{ clip.summary.fileName }}</h2>
+        </div>
+        <button mat-icon-button (click)="closeClip()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+
+        <label class="check check-seguir">
+          <input type="checkbox" [checked]="follows(clip)" [disabled]="exporting !== null"
+            (change)="setFollowsProject(clip, $any($event.target).checked)">
+          <span>Follow the project settings</span>
+        </label>
+        <p class="ajuda">
+          {{ follows(clip)
+            ? 'This clip uses whatever the project says. Changing anything below gives it a copy of its own.'
+            : 'This clip has settings of its own. Tick the box above to hand it back to the project.' }}
+        </p>
+
+        @if (clip.previewUrl && clip.summary.kind !== 'audio') {
+          <div class="dialogo-preview">
+            @if (clip.summary.kind === 'image') {
+              <img [src]="clip.previewUrl" [alt]="'Preview of ' + clip.summary.fileName">
+            } @else {
+              <video [src]="clip.previewUrl" controls playsinline
+                (timeupdate)="onSeek($any($event.target).currentTime)"></video>
+            }
+          </div>
+        }
+
+        <!-- ------------------------------------------------- cuts and waveform -->
+
+        @if (clip.summary.kind !== 'image') {
+          <section class="secao">
+            <h3>Cuts</h3>
+
+            @if (clip.analysis; as analysis) {
+              <app-silence-waveform
+                [waveform]="analysis.waveform"
+                [silenceRanges]="editingRanges"
+                [duration]="clip.summary.durationSeconds"
+                [currentTime]="playhead"
+                (seek)="onSeek($event)"
+                (rangeAdd)="onRangeAdd($event)"
+                (rangeRemove)="onRangeRemove($event)"></app-silence-waveform>
+
+              <p class="ajuda">
+                Drag across the waveform to cut a stretch by hand; click a marked one to take it back. The pauses the
+                detector found are shown too — clicking one only switches it off, so it stays switched off the next
+                time the clip is listened to.
+              </p>
+
+              <div class="linha-acoes">
+                <button mat-stroked-button (click)="analyzeClip(clip)"
+                  [disabled]="isAnalyzing(clip) || exporting !== null">
+                  <mat-icon>refresh</mat-icon> Listen again
+                </button>
+                <button mat-button (click)="restoreCuts()" [disabled]="exporting !== null">
+                  <mat-icon>undo</mat-icon> Restore every cut
+                </button>
+                @if (isStale(clip)) {
+                  <span class="obsoleto">
+                    <mat-icon aria-hidden="true">info_outline</mat-icon>
+                    The detection settings changed. Listen again to see the new pauses.
+                  </span>
+                }
+              </div>
+            } @else {
+              <p class="ajuda">
+                Listening decodes the sound of this clip, draws its waveform and finds the pauses. Nothing is uploaded
+                and nothing is changed until you export.
+              </p>
+              <button mat-raised-button color="primary" (click)="analyzeClip(clip)"
+                [disabled]="!clip.summary.audioUsable || isAnalyzing(clip) || exporting !== null">
+                <span class="btn-conteudo">
+                  @if (isAnalyzing(clip)) {
+                    <mat-spinner diameter="18"></mat-spinner>
+                  } @else {
+                    <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+                  }
+                  <span>{{ isAnalyzing(clip) ? 'Listening…' : 'Listen to this clip' }}</span>
+                </span>
+              </button>
+              @if (!clip.summary.audioUsable) {
+                <p class="ajuda">This clip has no sound this browser can decode, so there is nothing to detect.</p>
+              }
+            }
+
+            @if (isAnalyzing(clip)) {
+              <mat-progress-bar class="barra-analise"
+                [mode]="analysisRatioOf(clip) === null ? 'indeterminate' : 'determinate'"
+                [value]="(analysisRatioOf(clip) ?? 0) * 100"></mat-progress-bar>
+            }
+          </section>
+        }
+
+        <!-- ------------------------------------------------------ the settings -->
+
+        <section class="secao">
+          <h3>Speed, sound, fades and zoom</h3>
+          <app-clip-edits-panel
+            [id]="'clip-' + clip.id"
+            [edits]="editsFor(clip)"
+            [disabled]="exporting !== null"
+            [showCuts]="clip.summary.kind !== 'image'"
+            [speedNote]="speedNoteFor(clip)"
+            [speedLocked]="isTimelapseTimed(clip)"
+            [speedLockedLabel]="timelapseSpeedNote(clip)"
+            [zoomNote]="zoomNoteFor(clip)"
+            (speedRelease)="releaseTimelapseSpeed(clip)"
+            (editsChange)="onClipEdits(clip, $event)"></app-clip-edits-panel>
+
+          <div class="linha-acoes linha-som">
+            @if (clip.replacementAudio; as sound) {
+              <span class="som-anexo" [title]="sound.summary.fileName">
+                <mat-icon aria-hidden="true">audiotrack</mat-icon>{{ sound.summary.fileName }}
+                <span class="som-duracao">{{ formatTime(sound.summary.durationSeconds) }}</span>
+              </span>
+              <button mat-button (click)="openAudioSource(clip)" [disabled]="exporting !== null">Change it</button>
+              <button mat-button (click)="detachAudio(clip)" [disabled]="exporting !== null">Remove it</button>
+            } @else {
+              <button mat-stroked-button (click)="openAudioSource(clip)" [disabled]="exporting !== null">
+                <mat-icon>library_music</mat-icon> Choose or record the sound for this clip
+              </button>
+            }
+          </div>
+
+          @if (clip.replacementAudio; as sound) {
+            @if (clipSilenceNote(sound)) {
+              <label class="check">
+                <input type="checkbox" [checked]="sound.skipLeadingSilence !== false" [disabled]="exporting !== null"
+                  (change)="onClipSkipLeadingSilence(clip, $any($event.target).checked)">
+                <span>{{ clipSilenceNote(sound) }}</span>
+              </label>
+            }
+          }
+          <p class="ajuda">
+            The clip's own length decides everything: sound longer than the clip is cut at its end, and sound shorter
+            than it is followed by real silence, so nothing after it drifts out of sync.
+          </p>
+        </section>
+
+
+        @if (clip.summary.kind !== 'image') {
+          <!-- ------------------------------------------- in, out and split -->
+
+          <section class="secao">
+            <h3>
+              Where this clip starts and stops
+              <app-help-hint label="What the in and out points do">
+                They are a window onto the file, not a cut into it: nothing is thrown away and either end can be moved
+                back at any time. Splitting works the same way, which is why it costs nothing — the two clips it leaves
+                behind read the same file, from the same waveform, at two different windows onto it.
+              </app-help-hint>
+            </h3>
+
+            <div class="corte-estado">
+              <span class="corte-valor">
+                <strong>{{ formatTime(boundsOf(clip).start) }}</strong>
+                <span>starts</span>
+              </span>
+              <span class="corte-valor">
+                <strong>{{ formatTime(boundsOf(clip).end) }}</strong>
+                <span>stops</span>
+              </span>
+              <span class="corte-valor">
+                <strong>{{ formatTime(boundsOf(clip).end - boundsOf(clip).start) }}</strong>
+                <span>of {{ formatTime(clip.summary.durationSeconds) }} in the file</span>
+              </span>
+            </div>
+
+            <div class="linha-acoes">
+              <button mat-stroked-button (click)="setInPoint(clip, playhead)" [disabled]="exporting !== null">
+                <mat-icon>first_page</mat-icon> Start here ({{ formatTime(playhead) }})
+              </button>
+              <button mat-stroked-button (click)="setOutPoint(clip, playhead)" [disabled]="exporting !== null">
+                <mat-icon>last_page</mat-icon> Stop here
+              </button>
+              <button mat-stroked-button (click)="splitEditingClip()"
+                [disabled]="!canSplitAt(clip, playhead) || exporting !== null">
+                <mat-icon>content_cut</mat-icon> Split here
+              </button>
+              @if (isTrimmed(clip)) {
+                <button mat-button (click)="clearTrim(clip)" [disabled]="exporting !== null">
+                  <mat-icon>undo</mat-icon> Use the whole file
+                </button>
+              }
+            </div>
+
+            <p class="ajuda">
+              @if (clip.analysis) {
+                Click the waveform above to move the playhead, then use it here.
+              } @else {
+                Play the clip above to move the playhead, then use it here.
+              }
+              A split leaves two rows on the timeline reading one file, so nothing is decoded again.
+            </p>
+          </section>
+
+          <!-- ------------------------------------------------- manual zooms -->
+
+          @if (clip.summary.videoUsable) {
+            <section class="secao">
+              <h3>
+                Push-ins you place yourself
+                <app-help-hint label="How these differ from the automatic zoom">
+                  The automatic zoom reads the pauses and decides for itself, which is right for a talking head and no
+                  answer at all for "hold closer on that diagram". These are placed by hand, in the file's own time, and
+                  survive listening to the clip again because nothing about them was inferred. Where one lands on top of
+                  an automatic zoom, yours is the one that plays.
+                </app-help-hint>
+              </h3>
+
+              @for (zoom of manualZoomsOf(clip); track zoom.id) {
+                <div class="zoom-linha">
+                  <div class="campo campo-estreito">
+                    <label [attr.for]="'zoom-inicio-' + zoom.id">From</label>
+                    <div class="com-unidade">
+                      <input [attr.id]="'zoom-inicio-' + zoom.id" type="number" min="0"
+                        [max]="clip.summary.durationSeconds" step="0.1" [value]="zoom.start"
+                        [disabled]="exporting !== null"
+                        (change)="onManualZoomNumber(clip, zoom, 'start', $any($event.target).value)">
+                      <span class="unidade">s</span>
+                    </div>
+                  </div>
+
+                  <div class="campo campo-estreito">
+                    <label [attr.for]="'zoom-fim-' + zoom.id">To</label>
+                    <div class="com-unidade">
+                      <input [attr.id]="'zoom-fim-' + zoom.id" type="number" min="0"
+                        [max]="clip.summary.durationSeconds" step="0.1" [value]="zoom.end"
+                        [disabled]="exporting !== null"
+                        (change)="onManualZoomNumber(clip, zoom, 'end', $any($event.target).value)">
+                      <span class="unidade">s</span>
+                    </div>
+                  </div>
+
+                  <div class="campo campo-estreito">
+                    <label [attr.for]="'zoom-escala-' + zoom.id">How far in</label>
+                    <div class="com-unidade">
+                      <input [attr.id]="'zoom-escala-' + zoom.id" type="range"
+                        [min]="zoomLimits.scalePercent.min" [max]="zoomLimits.scalePercent.max"
+                        [step]="zoomLimits.scalePercent.step" [value]="zoom.scalePercent"
+                        [disabled]="exporting !== null"
+                        (input)="onManualZoomNumber(clip, zoom, 'scalePercent', $any($event.target).value)">
+                      <span class="unidade">{{ zoom.scalePercent }}%</span>
+                    </div>
+                  </div>
+
+                  <div class="campo campo-estreito">
+                    <label [attr.for]="'zoom-rampa-' + zoom.id">Move takes</label>
+                    <div class="com-unidade">
+                      <input [attr.id]="'zoom-rampa-' + zoom.id" type="number"
+                        [min]="zoomLimits.rampSeconds.min" [max]="zoomLimits.rampSeconds.max"
+                        [step]="zoomLimits.rampSeconds.step" [value]="zoom.rampSeconds"
+                        [disabled]="exporting !== null"
+                        (change)="onManualZoomNumber(clip, zoom, 'rampSeconds', $any($event.target).value)">
+                      <span class="unidade">s</span>
+                    </div>
+                  </div>
+
+                  <label class="check zoom-manter">
+                    <input type="checkbox" [checked]="!zoom.easeOut" [disabled]="exporting !== null"
+                      (change)="updateManualZoom(clip, zoom, { easeOut: !$any($event.target).checked })">
+                    <span>Hold it</span>
+                  </label>
+
+                  <button mat-icon-button (click)="seekToZoom(zoom)" [disabled]="exporting !== null"
+                    title="Put the playhead at the start of this push-in" aria-label="Go to this push-in">
+                    <mat-icon>my_location</mat-icon>
+                  </button>
+                  <button mat-icon-button (click)="removeManualZoom(clip, zoom)" [disabled]="exporting !== null"
+                    title="Remove this push-in" aria-label="Remove this push-in">
+                    <mat-icon>close</mat-icon>
+                  </button>
+                </div>
+              } @empty {
+                <p class="ajuda">No push-in has been placed on this clip yet.</p>
+              }
+
+              <button mat-stroked-button (click)="addManualZoom(clip, playhead)" [disabled]="exporting !== null">
+                <mat-icon>zoom_in</mat-icon> Add one at {{ formatTime(playhead) }}
+              </button>
+            </section>
+          }
+        }
+
+        <!-- --------------------------------------------------------- the caption -->
+
+        <section class="secao">
+          <h3>Caption</h3>
+          <p class="ajuda">
+            A line of text along the bottom of this clip. It is always white with a black outline and a soft shadow,
+            which is what keeps it readable over footage of any colour.
+          </p>
+
+          <div class="campo campo-largo">
+            <label [attr.for]="'caption-' + clip.id">Text</label>
+            <textarea [id]="'caption-' + clip.id" rows="2" [disabled]="exporting !== null"
+              [value]="caption.text" (input)="onCaption({ text: $any($event.target).value })"
+              placeholder="Leave empty for no caption"></textarea>
+          </div>
+
+          @if (caption.text.trim()) {
+            <div class="linha-campos">
+              <div class="campo">
+                <label [attr.for]="'caption-size-' + clip.id">Size</label>
+                <div class="com-unidade">
+                  <input [attr.id]="'caption-size-' + clip.id" type="range"
+                    [min]="captionLimits.fontScale.min" [max]="captionLimits.fontScale.max"
+                    [step]="captionLimits.fontScale.step" [value]="caption.fontScale"
+                    [disabled]="exporting !== null"
+                    (input)="onCaptionNumber('fontScale', $any($event.target).value)">
+                  <span class="unidade">{{ (caption.fontScale * 100).toFixed(1) }}% of height</span>
+                </div>
+              </div>
+
+              <div class="campo">
+                <label [attr.for]="'caption-margin-' + clip.id">Distance from the bottom</label>
+                <div class="com-unidade">
+                  <input [attr.id]="'caption-margin-' + clip.id" type="range"
+                    [min]="captionLimits.bottomMargin.min" [max]="captionLimits.bottomMargin.max"
+                    [step]="captionLimits.bottomMargin.step" [value]="caption.bottomMargin"
+                    [disabled]="exporting !== null"
+                    (input)="onCaptionNumber('bottomMargin', $any($event.target).value)">
+                  <span class="unidade">{{ (caption.bottomMargin * 100).toFixed(1) }}%</span>
+                </div>
+              </div>
+
+              <div class="campo">
+                <label [attr.for]="'caption-fade-' + clip.id">Caption fade length</label>
+                <div class="com-unidade">
+                  <input [attr.id]="'caption-fade-' + clip.id" type="number"
+                    [min]="captionLimits.fadeSeconds.min" [max]="captionLimits.fadeSeconds.max"
+                    [step]="captionLimits.fadeSeconds.step" [value]="caption.fadeSeconds"
+                    [disabled]="exporting !== null"
+                    (change)="onCaptionNumber('fadeSeconds', $any($event.target).value)">
+                  <span class="unidade">s</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="linha-checks">
+              <label class="check">
+                <input type="checkbox" [checked]="caption.fadeIn" [disabled]="exporting !== null"
+                  (change)="onCaption({ fadeIn: $any($event.target).checked })">
+                <span>Fade the caption in</span>
+              </label>
+              <label class="check">
+                <input type="checkbox" [checked]="caption.fadeOut" [disabled]="exporting !== null"
+                  (change)="onCaption({ fadeOut: $any($event.target).checked })">
+                <span>Fade the caption out</span>
+              </label>
+              <button mat-button (click)="clearCaption()" [disabled]="exporting !== null">Remove the caption</button>
+            </div>
+          }
+        </section>
+
+        <!-- --------------------------------------------------- animated tag -->
+
+        <section class="secao">
+          <h3>Animated tag</h3>
+          <p class="ajuda">
+            A badge that arrives over the picture a moment after this clip starts. It is burned into the exported
+            file, so what the preview shows is what the video gets.
+          </p>
+
+          <label class="check">
+            <input type="checkbox" [checked]="hasTag" [disabled]="exporting !== null"
+              (change)="toggleTag($any($event.target).checked)">
+            <span>Put an animated tag on this clip</span>
+          </label>
+
+          @if (hasTag) {
+            <div class="linha-campos">
+              <div class="campo campo-largo">
+                <label for="tag-texto">What it says</label>
+                <input id="tag-texto" type="text" maxlength="120" [value]="tagDraft.text"
+                  [disabled]="exporting !== null" (input)="onTagText($any($event.target).value)">
+              </div>
+              <div class="campo campo-curto">
+                <label for="tag-inicio">
+                  Starts at
+                  <app-help-hint>Seconds into this clip, counted as it plays in the finished video.</app-help-hint>
+                </label>
+                <input id="tag-inicio" type="number" [min]="tagLimits['startSeconds'].min"
+                  [max]="tagLimits['startSeconds'].max" [step]="tagLimits['startSeconds'].step"
+                  [value]="tagDraft.startSeconds" [disabled]="exporting !== null"
+                  (change)="onTagStart($any($event.target).value)">
+              </div>
+            </div>
+
+            <div class="linha-campos linha-posicao">
+              <div class="campo">
+                <label id="tag-posicao-rotulo">
+                  Where it sits
+                  <app-help-hint>The nine places a tag can go. The same grid is drawn over the picture inside the tag's own dialog.</app-help-hint>
+                </label>
+                <div class="matriz-tag" role="radiogroup" aria-labelledby="tag-posicao-rotulo">
+                  @for (spot of tagPositions; track spot) {
+                    <button type="button" class="quadro-tag" role="radio"
+                      [class.escolhido]="tagDraft.position === spot"
+                      [attr.aria-checked]="tagDraft.position === spot"
+                      [attr.aria-label]="tagPositionLabels[spot]"
+                      [title]="tagPositionLabels[spot]"
+                      [disabled]="exporting !== null"
+                      (click)="setTagPosition(spot)"><span></span></button>
+                  }
+                </div>
+              </div>
+            </div>
+
+            <div class="linha-acoes">
+              <button mat-stroked-button (click)="openTagEditor()" [disabled]="exporting !== null">
+                <mat-icon>tune</mat-icon> Configure the tag
+              </button>
+              <span class="ajuda">{{ tagSummary }}</span>
+            </div>
+          }
+        </section>
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-raised-button color="primary" (click)="closeClip()">Done</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- ---------------------------------------------------------- text dialog -->
+
+@if (editingText; as card) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closeText()">
+    <div class="dialogo" role="dialog" aria-modal="true" aria-labelledby="texto-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">title</mat-icon>
+          <h2 id="texto-titulo">Text card</h2>
+        </div>
+        <button mat-icon-button (click)="closeText()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <div class="texto-preview">
+          <canvas #textPreview aria-label="Preview of the text card"></canvas>
+        </div>
+
+        <!-- A still frame cannot answer the only question anybody has about an
+             animation, which is whether it is too slow. -->
+        <div class="previa-transporte texto-transporte">
+          <button type="button" class="previa-botao" (click)="toggleTextPlay()"
+            [attr.aria-label]="textPlaying ? 'Pause the animation' : 'Play the animation'">
+            <mat-icon>{{ textPlaying ? 'pause' : 'play_arrow' }}</mat-icon>
+          </button>
+
+          <button type="button" class="previa-botao" (click)="restartTextPreview()" aria-label="Back to the start">
+            <mat-icon>replay</mat-icon>
+          </button>
+
+          <span class="previa-tempo">{{ textTime.toFixed(1) }}s</span>
+
+          <input class="previa-barra" type="range" min="0" [max]="textDuration" step="0.02"
+            [value]="textTime" (input)="onTextScrub($any($event.target).value)"
+            aria-label="Position in the text card">
+
+          <span class="previa-tempo previa-total">{{ textDuration.toFixed(1) }}s</span>
+        </div>
+
+        <div class="campo campo-largo">
+          <label for="texto-conteudo">Text</label>
+          <textarea id="texto-conteudo" rows="3" [value]="card.draft.text"
+            (input)="onTextDraft({ text: $any($event.target).value })"
+            placeholder="Chapter one"></textarea>
+        </div>
+
+        <div class="linha-campos">
+          <div class="campo">
+            <label for="texto-fonte">Typeface</label>
+            <select id="texto-fonte" [ngModel]="card.draft.fontId"
+              (ngModelChange)="onTextDraft({ fontId: $event })">
+              @for (font of fonts; track font.id) {
+                <option [value]="font.id">{{ font.label }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-peso">Weight</label>
+            <select id="texto-peso" [ngModel]="card.draft.fontWeight"
+              (ngModelChange)="onTextDraft({ fontWeight: $event })">
+              @for (weight of weights; track weight.value) {
+                <option [ngValue]="weight.value">{{ weight.label }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-anim">Animation</label>
+            <select id="texto-anim" [ngModel]="card.draft.animation"
+              (ngModelChange)="onTextDraft({ animation: $event })">
+              @for (option of animations; track option.id) {
+                <option [value]="option.id">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-legibilidade">Behind the letters</label>
+            <select id="texto-legibilidade" [ngModel]="card.draft.legibility"
+              (ngModelChange)="onTextDraft({ legibility: $event })">
+              @for (option of legibilities; track option.id) {
+                <option [value]="option.id">{{ option.label }}</option>
+              }
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-align">Horizontal</label>
+            <select id="texto-align" [ngModel]="card.draft.align"
+              (ngModelChange)="onTextDraft({ align: $event })">
+              <option value="left">Left</option>
+              <option value="center">Centre</option>
+              <option value="right">Right</option>
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-vertical">Vertical</label>
+            <select id="texto-vertical" [ngModel]="card.draft.vertical"
+              (ngModelChange)="onTextDraft({ vertical: $event })">
+              <option value="top">Top</option>
+              <option value="middle">Middle</option>
+              <option value="bottom">Bottom</option>
+            </select>
+          </div>
+
+          <div class="campo">
+            <label for="texto-cor">Text colour</label>
+            <input id="texto-cor" type="color" [value]="card.draft.color"
+              (input)="onTextDraft({ color: $any($event.target).value })">
+          </div>
+
+          <div class="campo">
+            <label for="texto-fundo">
+              Background colour
+              <app-help-hint label="When the background colour is used">
+                Used when there is no photograph behind the text.
+              </app-help-hint>
+            </label>
+            <input id="texto-fundo" type="color" [value]="card.draft.backgroundColor"
+              (input)="onTextDraft({ backgroundColor: $any($event.target).value })">
+          </div>
+
+          <div class="campo">
+            <label for="texto-tamanho">Type size</label>
+            <div class="com-unidade">
+              <input id="texto-tamanho" type="range" [min]="textLimits.fontScale.min"
+                [max]="textLimits.fontScale.max" [step]="textLimits.fontScale.step"
+                [value]="card.draft.fontScale" (input)="onTextNumber('fontScale', $any($event.target).value)">
+              <span class="unidade">{{ (card.draft.fontScale * 100).toFixed(1) }}%</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label for="texto-reveal">Arrives over</label>
+            <div class="com-unidade">
+              <input id="texto-reveal" type="number" [min]="textLimits.reveal.min" [max]="textLimits.reveal.max"
+                [step]="textLimits.reveal.step" [value]="card.draft.revealSeconds"
+                (change)="onTextNumber('revealSeconds', $any($event.target).value)">
+              <span class="unidade">s</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label for="texto-hold">Then held for</label>
+            <div class="com-unidade">
+              <input id="texto-hold" type="number" [min]="textLimits.hold.min" [max]="textLimits.hold.max"
+                [step]="textLimits.hold.step" [value]="card.draft.holdSeconds"
+                (change)="onTextNumber('holdSeconds', $any($event.target).value)">
+              <span class="unidade">s</span>
+            </div>
+            <small>
+              @if (textHoldIsAutomatic) {
+                Timed from how much there is to read, and keeping up as you type. Setting it here takes it over.
+              } @else {
+                Set by hand.
+                <button type="button" class="ligacao" (click)="restoreAutomaticHold()">Time it by the text again</button>
+              }
+            </small>
+          </div>
+        </div>
+
+        <div class="linha-acoes">
+          @if (card.backgroundFile) {
+            <span class="som-anexo"><mat-icon aria-hidden="true">image</mat-icon>{{ card.backgroundFile.name }}</span>
+            <button mat-button (click)="clearTextBackground()">Remove the photo</button>
+          } @else {
+            <button mat-stroked-button (click)="bgInput.click()">
+              <mat-icon>add_photo_alternate</mat-icon> Put a photo behind the text
+            </button>
+          }
+          <input hidden #bgInput type="file" [accept]="acceptedImage" (change)="onTextBackground($event)">
+        </div>
+
+        <section class="secao">
+          <h3>Sound, fades and speed</h3>
+          <label class="check check-seguir">
+            <input type="checkbox" [checked]="follows(card)" [disabled]="exporting !== null"
+              (change)="setFollowsProject(card, $any($event.target).checked)">
+            <span>Follow the project settings</span>
+          </label>
+
+          <!-- The sound control is shown here, not hidden as it once was: a
+               title has no soundtrack of its own to keep, but it is exactly
+               where an opening theme or a chapter sting belongs, and the reader
+               had no way to say so. -->
+          <app-clip-edits-panel
+            [id]="'text-' + card.id"
+            [edits]="editsFor(card)"
+            [disabled]="exporting !== null"
+            [showCuts]="false"
+            [hasOwnSound]="false"
+            [speedNote]="speedNoteFor(card)"
+            (editsChange)="onClipEdits(card, $event)"></app-clip-edits-panel>
+
+          <div class="linha-acoes linha-som">
+            @if (card.replacementAudio; as sound) {
+              <span class="som-anexo" [title]="sound.summary.fileName">
+                <mat-icon aria-hidden="true">audiotrack</mat-icon>{{ sound.summary.fileName }}
+                <span class="som-duracao">{{ formatTime(sound.summary.durationSeconds) }}</span>
+              </span>
+              <button mat-button (click)="openAudioSource(card)" [disabled]="exporting !== null">Change it</button>
+              <button mat-button (click)="detachAudio(card)" [disabled]="exporting !== null">Remove it</button>
+            } @else {
+              <button mat-stroked-button (click)="openAudioSource(card)" [disabled]="exporting !== null">
+                <mat-icon>library_music</mat-icon> Choose or record the sound for this card
+              </button>
+            }
+          </div>
+
+          @if (card.replacementAudio; as sound) {
+            @if (clipSilenceNote(sound)) {
+              <label class="check">
+                <input type="checkbox" [checked]="sound.skipLeadingSilence !== false" [disabled]="exporting !== null"
+                  (change)="onClipSkipLeadingSilence(card, $any($event.target).checked)">
+                <span>{{ clipSilenceNote(sound) }}</span>
+              </label>
+            }
+          }
+          <p class="ajuda">
+            With no file of its own the card falls back to the project's default sound; with neither, it plays over
+            silence. "Continue the sound from the previous clip" keeps a track that is already running playing straight
+            through the title instead of stopping under it.
+          </p>
+        </section>
+
+        <!-- --------------------------------------------------- animated tag -->
+
+        <section class="secao">
+          <h3>Animated tag</h3>
+          <p class="ajuda">
+            A badge that arrives over the picture a moment after this clip starts. It is burned into the exported
+            file, so what the preview shows is what the video gets.
+          </p>
+
+          <label class="check">
+            <input type="checkbox" [checked]="hasTag" [disabled]="exporting !== null"
+              (change)="toggleTag($any($event.target).checked)">
+            <span>Put an animated tag on this clip</span>
+          </label>
+
+          @if (hasTag) {
+            <div class="linha-campos">
+              <div class="campo campo-largo">
+                <label for="tag-texto">What it says</label>
+                <input id="tag-texto" type="text" maxlength="120" [value]="tagDraft.text"
+                  [disabled]="exporting !== null" (input)="onTagText($any($event.target).value)">
+              </div>
+              <div class="campo campo-curto">
+                <label for="tag-inicio">
+                  Starts at
+                  <app-help-hint>Seconds into this clip, counted as it plays in the finished video.</app-help-hint>
+                </label>
+                <input id="tag-inicio" type="number" [min]="tagLimits['startSeconds'].min"
+                  [max]="tagLimits['startSeconds'].max" [step]="tagLimits['startSeconds'].step"
+                  [value]="tagDraft.startSeconds" [disabled]="exporting !== null"
+                  (change)="onTagStart($any($event.target).value)">
+              </div>
+            </div>
+
+            <div class="linha-campos linha-posicao">
+              <div class="campo">
+                <label id="tag-posicao-rotulo">
+                  Where it sits
+                  <app-help-hint>The nine places a tag can go. The same grid is drawn over the picture inside the tag's own dialog.</app-help-hint>
+                </label>
+                <div class="matriz-tag" role="radiogroup" aria-labelledby="tag-posicao-rotulo">
+                  @for (spot of tagPositions; track spot) {
+                    <button type="button" class="quadro-tag" role="radio"
+                      [class.escolhido]="tagDraft.position === spot"
+                      [attr.aria-checked]="tagDraft.position === spot"
+                      [attr.aria-label]="tagPositionLabels[spot]"
+                      [title]="tagPositionLabels[spot]"
+                      [disabled]="exporting !== null"
+                      (click)="setTagPosition(spot)"><span></span></button>
+                  }
+                </div>
+              </div>
+            </div>
+
+            <div class="linha-acoes">
+              <button mat-stroked-button (click)="openTagEditor()" [disabled]="exporting !== null">
+                <mat-icon>tune</mat-icon> Configure the tag
+              </button>
+              <span class="ajuda">{{ tagSummary }}</span>
+            </div>
+          }
+        </section>
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-raised-button color="primary" (click)="closeText()">Done</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- ------------------------------------------------------ insert chooser -->
+
+@if (silenceTiming) {
+  <div class="dialogo-fundo" appBodyPortal (click)="cutSilenceAtExport()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="silencio-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">content_cut</mat-icon>
+          <h2 id="silencio-titulo">When should the pauses be found?</h2>
+        </div>
+        <button mat-icon-button (click)="cutSilenceAtExport()" aria-label="Decide later">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <p class="ajuda">
+          Finding them means decoding the sound of each clip. It happens either way — the question is only whether it
+          happens now, while you are still editing, or once, as the export begins.
+        </p>
+
+        <div class="escolhas">
+          <button mat-raised-button color="primary" (click)="cutSilenceNow()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+              <span>
+                Now — listen to {{ clipsAwaitingListening.length }} clip(s) and show the cut length straight away
+              </span>
+            </span>
+          </button>
+
+          <button mat-stroked-button (click)="cutSilenceAtExport()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">movie_filter</mat-icon>
+              <span>While rendering — leave it until I export, and keep editing now</span>
+            </span>
+          </button>
+        </div>
+
+        <p class="ajuda">
+          Either way the finished file is the same. Waiting only means the preview and the lengths above stay uncut
+          until the pauses have been found.
+        </p>
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="cutSilenceAtExport()">Decide later</button>
+      </footer>
+    </div>
+  </div>
+}
+
+@if (insertChooser !== null) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closeInsertChooser()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="inserir-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">add_circle_outline</mat-icon>
+          <h2 id="inserir-titulo">What goes {{ insertLabel }}?</h2>
+        </div>
+        <button mat-icon-button (click)="closeInsertChooser()" aria-label="Cancel">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <div class="escolhas">
+          <!-- One entry for all three kinds. The probe reads the file's own
+               header, so nothing has to be told which it is — and a photograph
+               added on its own still leads straight to the question of what is
+               heard over it, because that is what the adding path does now. -->
+          <button mat-raised-button color="primary" (click)="chooseInsertMedia(insertFilesInput)">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">video_library</mat-icon>
+              <span>A video, an audio file or an image</span>
+            </span>
+          </button>
+
+          <button mat-stroked-button (click)="insertTextClip()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">title</mat-icon>
+              <span>A text card</span>
+            </span>
+          </button>
+
+          <!-- Offered only where it can exist. A transition joins two shots, so
+               a plus at the very start of the timeline, at the very end, or
+               already beside a transition has nothing for one to join — and a
+               button that adds something inert is worse than no button. -->
+          <!-- No `?? clips.length` here: this block only exists inside
+               `@if (insertChooser !== null)`, so Angular has already narrowed it
+               to a number and the fallback is unreachable. -->
+          @if (canInsertTransition(insertChooser)) {
+            <button mat-stroked-button (click)="insertTransition()">
+              <span class="btn-conteudo">
+                <mat-icon aria-hidden="true">animation</mat-icon>
+                <span>A transition between these two shots</span>
+              </span>
+            </button>
+          }
+        </div>
+
+        <p class="ajuda">
+          Whichever you pick lands at this exact position, so a title goes between two shots rather than at the end of
+          the timeline. Choosing several files at once keeps them in the order you selected them.
+        </p>
+
+        <input hidden #insertFilesInput type="file" multiple [accept]="accepted" (change)="onInsertFiles($event)">
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="closeInsertChooser()">Cancel</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- -------------------------------------------------------- cache chooser -->
+
+<!-- ------------------------------------------------------- what to save -->
+
+@if (saveChooser) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closeSaveChooser()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="salvar-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">save</mat-icon>
+          <h2 id="salvar-titulo">What should be saved?</h2>
+        </div>
+        <button mat-icon-button (click)="closeSaveChooser()" aria-label="Cancel">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <div class="escolhas">
+          <button mat-raised-button color="primary" (click)="exportProject()" [disabled]="!clips.length">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">movie</mat-icon>
+              <span>The whole project</span>
+            </span>
+          </button>
+          <p class="ajuda">
+            @if (clips.length) {
+              Every clip in order, with its cuts, its captions, its tag and its sound, and the project settings around
+              them. Not the media itself — a file holds the edit, and the footage stays on your disk.
+            } @else {
+              Nothing on the timeline yet, so there is no edit to write down. The settings below are ready either way.
+            }
+          </p>
+
+          <button mat-stroked-button (click)="exportSettings()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">tune</mat-icon>
+              <span>Just the settings</span>
+            </span>
+          </button>
+          <p class="ajuda">
+            The way this project is set up and nothing else: the detector, the levelling, the fades, the default
+            transition, the frame and the formats. No clips, no timeline.
+            @if (project.defaultAudio) {
+              The soundtrack goes in by name — opening these settings will ask to reopen
+              <strong>{{ project.defaultAudio.summary.fileName }}</strong>.
+            }
+          </p>
+          <button mat-stroked-button (click)="saveAsPreset()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">bookmark_add</mat-icon>
+              <span>Keep the settings as a preset</span>
+            </span>
+          </button>
+          <p class="ajuda">
+            The same settings, under a name in this browser rather than in a file. Nothing to find again later — it is
+            in the list next time you open <strong>Presets</strong>. A file is the one to reach for when the way of
+            working has to travel to another machine.
+          </p>
+        </div>
+
+        <p class="ajuda">
+          <strong>Open</strong> takes either file back. A project replaces what is on screen; settings are applied to
+          it and leave your clips where they are.
+        </p>
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="closeSaveChooser()">Cancel</button>
+      </footer>
+    </div>
+  </div>
+}
+
+@if (cacheChooser) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closeCacheChooser()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="cache-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">delete_sweep</mat-icon>
+          <h2 id="cache-titulo">Clear the timeline and everything this browser is keeping?</h2>
+        </div>
+        <button mat-icon-button (click)="closeCacheChooser()" aria-label="Cancel">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <p class="ajuda">
+          @if (hasCache) {
+            This browser is holding {{ formatSize(cacheBytes) }} — the order of your clips, their cuts, their
+            captions and every setting. It has never held your media: the files themselves stay on your disk.
+          } @else {
+            This browser is not holding anything for this project yet.
+          }
+        </p>
+
+        <p class="ajuda">
+          Everything on the timeline goes with it: the clips, their cuts and captions, and every project setting. Your
+          media files are untouched — they were never held here, only read from your disk.
+        </p>
+
+        <div class="escolhas">
+          <button mat-raised-button color="warn" (click)="clearCacheAndTimeline()">
+            <span class="btn-conteudo">
+              <mat-icon aria-hidden="true">delete_forever</mat-icon>
+              <span>Yes, clear everything and start again</span>
+            </span>
+          </button>
+        </div>
+
+        <p class="ajuda">
+          This cannot be undone. If you want this edit back later, use <strong>Save project</strong> first — it writes
+          the same thing to a file you keep.
+        </p>
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="closeCacheChooser()">Cancel</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- ------------------------------------------------------- sound chooser -->
+
+@if (soundChooser) {
+  <div class="dialogo-fundo" appBodyPortal (click)="cancelSoundChoice()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="som-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">library_music</mat-icon>
+          <h2 id="som-titulo">Where should the sound come from?</h2>
+        </div>
+        <button mat-icon-button (click)="cancelSoundChoice()" aria-label="Cancel">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        @if (soundChooserIsProject) {
+          <p class="ajuda">
+            You asked for the sound of every clip to be replaced, and the project has no soundtrack yet. Choose the
+            file they should all play — a clip given a file of its own will still use that instead.
+          </p>
+          <div class="escolhas">
+            <button mat-raised-button color="primary" (click)="openAudioSource('project')">
+              <span class="btn-conteudo">
+                <mat-icon aria-hidden="true">library_music</mat-icon>
+                <span>Choose the project's sound</span>
+              </span>
+            </button>
+          </div>
+        }
+
+        @if (soundChooserClip; as clip) {
+          @if (project.defaultAudio; as sound) {
+            <p class="ajuda">
+              @if (isMediaClip(clip)) {
+                This clip will play a file instead of its own soundtrack. It can use the one the project already has,
+                or one chosen for this clip alone.
+              } @else {
+                This card will play a file under it. It can use the one the project already has, or one chosen for
+                this card alone.
+              }
+            </p>
+            <div class="escolhas">
+              <button mat-raised-button color="primary" (click)="useDefaultSound()">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">check_circle</mat-icon>
+                  <span>Use the project's sound — {{ sound.summary.fileName }}</span>
+                </span>
+              </button>
+              <button mat-stroked-button (click)="openAudioSource(clip)">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">audiotrack</mat-icon>
+                  <span>Choose a file just for this {{ soundChooserNoun }}</span>
+                </span>
+              </button>
+            </div>
+          } @else {
+            <p class="ajuda">
+              @if (isMediaClip(clip)) {
+                This clip will play a file instead of its own soundtrack, and the project has no soundtrack yet.
+              } @else {
+                This card will play a file under it, and the project has no soundtrack yet.
+              }
+              Setting one now means everything else you give a file to can reuse it.
+            </p>
+            <div class="escolhas">
+              <button mat-raised-button color="primary" (click)="openAudioSource('project')">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">library_music</mat-icon>
+                  <span>Choose the project's default sound</span>
+                </span>
+              </button>
+              <button mat-stroked-button (click)="openAudioSource(clip)">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">audiotrack</mat-icon>
+                  <span>Choose a file just for this {{ soundChooserNoun }}</span>
+                </span>
+              </button>
+            </div>
+          }
+        }
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="cancelSoundChoice()">Cancel</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- --------------------------------------------------------- clip preview -->
+
+@if (preview; as clip) {
+  <div class="preview-fundo" appBodyPortal (click)="closePreview()">
+    <div class="preview-balao" (click)="$event.stopPropagation()">
+      <button mat-icon-button class="preview-fechar" (click)="closePreview()" aria-label="Close preview">
+        <mat-icon>close</mat-icon>
+      </button>
+      <div class="preview-topo">
+        <mat-icon>{{ clip.summary.kind === 'video' ? 'movie' : clip.summary.kind === 'image' ? 'image' : 'audiotrack' }}</mat-icon>
+        <span [title]="clip.summary.fileName">{{ clip.summary.fileName }}</span>
+      </div>
+      <div class="preview-moldura">
+        @switch (clip.summary.kind) {
+          @case ('video') { <video [src]="clip.previewUrl" controls autoplay playsinline></video> }
+          @case ('image') { <img [src]="clip.previewUrl" [alt]="'Preview of ' + clip.summary.fileName"> }
+          @default { <audio [src]="clip.previewUrl" controls autoplay></audio> }
+        }
+      </div>
+    </div>
+  </div>
+}
+
+<app-help-panel label="How the Video Editor works">
+  <div class="instrucoes">
+    <section class="seo-intro" aria-labelledby="video-editor-seo-title">
+      <h1 id="video-editor-seo-title">Free Online Video Editor — Cut Silence, Zoom, Caption and Export</h1>
+      <p>Arrange video, audio, images and text cards into one timeline, cut the silence out of every clip, push in on the
+        picture after the longest pauses, change the speed, replace the sound, add a caption along the bottom and export
+        the result as MP4, WebM, MKV or MOV — or as audio alone in M4A, MP3, OGG or WAV.</p>
+      <p>Everything runs inside your browser using WebCodecs. Your files are never uploaded, and nothing is stored
+        anywhere but on your own computer.</p>
+
+      <!-- Dimensions on the element, not only in CSS: without them the browser
+           cannot reserve the space before the file arrives, and the whole page
+           jumps once it does. `lazy` because it sits below everything the reader
+           came for. -->
+      <picture class="seo-capa">
+        <source srcset="/assets/tools/video-editor-cover.webp" type="image/webp">
+        <img src="/assets/tools/video-editor-cover.jpg" width="1535" height="1024" loading="lazy" decoding="async"
+          alt="Illustration of a video editing workspace: a media library, a preview player with transport controls, a properties panel and a timeline of clips with a title and a music track">
+      </picture>
+    </section>
+
+    <h2>Instructions</h2>
+
+    <h4 class="sublinhado">How the timeline works</h4>
+    <p>Drop your files onto the upload area and they appear as a list. The list <em>is</em> the timeline: clips play in
+      the order shown, back to back, with no gaps. Drag a clip by the handle on the left, or use the up and down arrows
+      on its row. Between any two rows there is a plus: it asks whether you want a file or a text card and drops it at
+      exactly that position, which is usually where a title belongs. "Add text card" at the top appends one at the end
+      instead, and any clip can be duplicated with the copy button — useful when you want the same footage twice at two
+      different speeds.</p>
+
+    <h4 class="sublinhado">Watching it before you export</h4>
+    <p>"Preview" plays the whole timeline as it stands, without writing anything. It is not an approximation: every
+      frame goes through the same function the encoder uses, so the cuts, the speed, the fades, the zooms, the captions
+      and any replaced or continued sound are exactly what will end up in the file. The one thing it cannot show is
+      volume levelling, which is measured from an analysis and applied sample by sample while exporting.</p>
+    <p>Under the picture is the clip currently on screen, with its settings open — so you can watch a zoom land, change
+      how far it pushes in, and see the difference on the next pass without leaving the preview. Under that is a strip of
+      every clip in order, each showing its first frame. It scrolls sideways when there are more clips than fit, follows
+      the playhead as the video runs, and any card can be dragged to a new position. Click a card to open that clip's
+      full editor, or use the small play button on it to jump the preview there.</p>
+
+    <h4 class="sublinhado">Settings for everything, then for one clip</h4>
+    <p>The panel at the top holds every setting there is, and it applies to every clip that has not been given settings
+      of its own. Open a clip with "Edit" and change anything inside it, and that clip quietly takes a copy of the
+      project's settings and keeps it — its row then says <strong>own settings</strong>. Tick "Follow the project
+      settings" inside the clip to hand it back, and it returns to whatever the project says, including anything you
+      changed while it was away.</p>
+    <p>There is no per-field inheritance and no third state on purpose. "Which of these eleven numbers is still following
+      the project?" is a question nobody should have to answer in the middle of editing.</p>
+
+    <h4 class="sublinhado">Cutting the silence, and cutting by hand</h4>
+    <p>Tick "Remove the silent stretches" and every clip that follows the project has its pauses found and removed. The
+      detection settings behind it are the ones from the Free Silence Cutter: how quiet counts as quiet, how long a pause
+      has to last before it is worth removing, and how much room is kept in front of and after each word. Press "Listen
+      to this clip" inside a clip to see the result on a waveform before exporting — and if you do not, the clips that
+      need listening to are listened to automatically when you press Export.</p>
+    <p>On the waveform you can drag across any stretch to cut it by hand, whether or not it is silent, which is how you
+      remove a false start or a section you simply do not want. Click a marked stretch to take it back. A stretch you
+      drew disappears when you click it; a pause the detector found is only switched off, so it stays off the next time
+      the clip is listened to.</p>
+
+    <h4 class="sublinhado">Zooming in after a long pause</h4>
+    <p>When a pause is removed, the two halves it joined were filmed with the same framing, so the join shows up as a
+      jump. Tick <strong>Automatic zoom after long pauses</strong> and the picture pushes in slightly on whatever
+      follows, which hides the jump and gives the edit a rhythm.</p>
+    <p>Only pauses that stand out are used: the tool takes the average length of everything it removed from that clip and
+      zooms after the ones at least 30% longer than average, so an ordinary gap between two sentences is left alone. The
+      gear beside the checkbox opens the settings — how far above average a pause has to be, how far the picture pushes
+      in (10% to 20% by default), whether that amount is picked at random inside the range or in proportion to how long
+      the pause was, how long the push-in takes and how long it is held. You can also switch the rule to
+      <strong>every so many cuts</strong>, which zooms by a fixed amount on a count rather than on the content — that is
+      the one to use on a densely cut stretch where every pause is much the same length, so none of them stands out.
+      The random choice is seeded from the clip itself, so the same footage always gets the same zooms and a second
+      export never differs from the first. Nothing is stretched: the picture is enlarged and the edges are cropped.</p>
+
+    <h4 class="sublinhado">Speed</h4>
+    <p>Every clip can play from half speed to ten times, in half steps. Speed is applied after the cuts, so a clip whose
+      pauses were removed and which is then run at double speed lasts half of what survived. The sound is resampled
+      along with the picture, which means its pitch rises as it speeds up and falls as it slows down, exactly as a tape
+      does — nothing here tries to hold the pitch steady.</p>
+
+    <h4 class="sublinhado">Replacing the sound</h4>
+    <p>Inside a clip, set <strong>Sound</strong> to "Replace it with a file" and choose an audio file — or a video you
+      only want the audio from. The clip's own soundtrack is discarded and the file plays in its place. The clip's length
+      is what decides: sound longer than the clip is cut at its end, and sound shorter than it is followed by real
+      silence, so nothing after it drifts out of sync. "Silence it" removes the sound without replacing it, and does so
+      by writing real silence rather than leaving a hole, which is what keeps every later clip in place.</p>
+    <p>A clip that brought no sound of its own — footage shot with the microphone off, a silent screen capture, a still
+      photograph — falls back to the project's default sound rather than to silence. If a supplied track is already
+      running when that clip starts, the track simply keeps running through it, which is better than dropping out for one
+      shot and starting the same file again from the top on the next. Silencing a clip on purpose is untouched by any of
+      this: it stays silent. Text cards are too — a title never had sound to lose, so music arriving under one is a
+      decision you make rather than inherit.</p>
+
+    <h4 class="sublinhado">Evening out the volume</h4>
+    <p>Clips recorded on different days sit at different levels, and inside a single clip a speaker drifts — leaning in,
+      turning away, dropping their voice at the end of a sentence. <strong>Even out the volume across the project</strong>
+      measures how loud the speech actually is in each clip and applies the gain that brings it to a stated target, so
+      every clip arrives at the same level. Behind the gear you can also ask it to follow the drift inside each clip,
+      with a gain that moves slowly enough not to be heard as pumping.</p>
+    <p>It will not lift silence. Room tone, breathing and microphone hiss all sit below the noise floor, and boosting
+      them to speech level is the single most recognisable way to make an edit sound processed — so anything under the
+      floor keeps the gain of the speech around it instead. A limiter rounds off anything that would overshoot rather
+      than letting it square off into distortion.</p>
+
+    <h4 class="sublinhado">Captions and text cards</h4>
+    <p>Each clip can carry a caption along its bottom edge. It is always white, with a black outline and a soft shadow,
+      because the one job a caption has is to stay readable over footage of any colour — you choose the size, how far it
+      sits from the bottom, and whether it fades in and out on its own clock, which can differ from the clip's.</p>
+    <p>A text card is different: it is a clip in its own right, full screen, with its own background colour or
+      photograph, and it takes the animations from the Text Video Maker — a typewriter, rising letters, words arriving
+      out of focus, or a wipe reveal with a slow zoom. Use a caption to label footage, and a text card to introduce a
+      section.</p>
+
+    <h4 class="sublinhado">Fades</h4>
+    <p>Any clip can ease in from black and silence and out again. The picture and the sound ramp together, and the audio
+      ramp is applied sample by sample rather than packet by packet, because holding one volume across a
+      twenty-millisecond packet turns a smooth fade into a staircase you can hear as clicks. A clip too short for two
+      full fades splits itself in half so the two ramps meet instead of overlapping, and no fade ever spills into the
+      clip beside it.</p>
+
+    <h4 class="sublinhado">Exporting</h4>
+    <p>"Export video" writes a single file in the format you chose — MP4 and MOV for anything that has to play
+      everywhere, WebM for smaller files at the same quality, MKV for archiving. "Export audio only" writes the same
+      edit without a picture, in M4A, MP3, OGG or WAV, which is how you turn an edited interview into a podcast episode.
+      If your browser supports it you will be asked where to save before the work starts, and the file is then written
+      straight to disk as it is produced rather than being held in memory — which is what lets a long project export in
+      a tab that has only a few hundred megabytes to spare.</p>
+
+    <h4 class="sublinhado">What happens to your files</h4>
+    <p>Nothing is uploaded. Every file is read from your disk by the browser itself, decoded with WebCodecs, and written
+      back out locally. There is no account, no queue and no server involved, which also means the work is limited by
+      your own machine — a long project on a phone will be slower than the same project on a desktop.</p>
+  </div>
+</app-help-panel>
+
+<!-- ------------------------------------------------------ choosing a sound -->
+
+<!-- One dialog for every sound in the tool: the project's soundtrack, a clip's
+     replacement, a card's music, a narration recorded over a photograph. It sits
+     last in the file because it is the one thing that can be opened from on top
+     of another dialog. -->
+@if (audioSource; as request) {
+  <app-audio-source-dialog
+    [heading]="request.heading"
+    [subheading]="request.subheading"
+    [suggestedName]="request.name"
+    (chosen)="onAudioChosen($event)"
+    (chosenSource)="onAudioHandle($event)"
+    (cancelled)="closeAudioSource()" />
+}
+
+
+<!-- --------------------------------------------------- choosing a transition -->
+
+<!-- ------------------------------------------------------ designing a tag -->
+
+@if (tagEditor; as request) {
+  <app-tag-dialog
+    [tag]="request.tag"
+    [clip]="request.clip"
+    [heading]="request.heading"
+    [removable]="request.removable"
+    (saved)="onTagSaved($event)"
+    (removed)="onTagRemoved()"
+    (cancelled)="closeTagEditor()" />
+}
+
+@if (transitionEditor; as request) {
+  <app-transition-dialog
+    [settings]="request.settings"
+    [before]="request.before"
+    [after]="request.after"
+    [heading]="request.heading"
+    [removable]="request.removable"
+    (saved)="onTransitionSaved($event)"
+    (removed)="onTransitionRemoved()"
+    (cancelled)="closeTransitionEditor()" />
+}
+
+<!-- ------------------------------------------------------- the presets --- -->
+
+@if (presetChooser) {
+  <div class="dialogo-fundo" appBodyPortal (click)="closePresets()">
+    <div class="dialogo dialogo-estreito" role="dialog" aria-modal="true" aria-labelledby="preset-titulo"
+      (click)="$event.stopPropagation()">
+
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">bookmarks</mat-icon>
+          <h2 id="preset-titulo">Ways of working, saved under a name</h2>
+        </div>
+        <button mat-icon-button (click)="closePresets()" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo">
+        <p class="ajuda">
+          A preset holds every project setting and no clips: how eagerly the pauses are found, whether the clips are
+          levelled, the fades, the transition between shots, the picture size and shape, and the formats. Applying one
+          changes the project and every clip still following it — a clip you gave settings of its own keeps them.
+        </p>
+
+        <div class="campo campo-largo">
+          <label for="preset-nome">Name this set of settings</label>
+          <input id="preset-nome" type="text" maxlength="60" [(ngModel)]="presetName"
+            placeholder="Weekly explainer, vertical short, podcast…"
+            (keydown.enter)="saveCurrentAsPreset()">
+        </div>
+
+        <div class="linha-acoes">
+          <button mat-raised-button color="primary" (click)="saveCurrentAsPreset()">
+            <mat-icon>save</mat-icon> Save the current settings
+          </button>
+        </div>
+
+        @if (savingPreset && !presetName.trim()) {
+          <p class="ajuda ajuda-alerta">Give it a name first — that is how you will recognise it here later.</p>
+        }
+
+        @if (presets.length) {
+          <h3 class="preset-titulo-lista">Saved</h3>
+          <ul class="preset-lista">
+            @for (preset of presets; track preset.id) {
+              <li class="preset-item">
+                <div class="preset-texto">
+                  <strong>{{ preset.name }}</strong>
+                  <span class="preset-resumo">{{ presetSummary(preset) }}</span>
+                </div>
+                <button mat-stroked-button (click)="applyPreset(preset)">Use it</button>
+                <button mat-icon-button (click)="deletePreset(preset)"
+                  [attr.aria-label]="'Delete the preset ' + preset.name" title="Delete this preset">
+                  <mat-icon>delete_outline</mat-icon>
+                </button>
+              </li>
+            }
+          </ul>
+        } @else {
+          <p class="ajuda">Nothing saved yet. Set the project up the way you like it, then save it here.</p>
+        }
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-button (click)="closePresets()">Done</button>
+      </footer>
+    </div>
+  </div>
+}

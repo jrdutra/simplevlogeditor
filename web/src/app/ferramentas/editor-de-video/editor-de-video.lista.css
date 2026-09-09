@@ -1,0 +1,164 @@
+/* Clip modules: a graphite chassis, inset media and a separate control bank.
+   Scoped to the queue so preview, dialogs and export controls keep their layout. */
+.lista-clipes {
+  padding: 10px;
+  gap: 8px;
+  border: 1px solid #15131d;
+  border-radius: 14px;
+  background: linear-gradient(120deg, #202029, #272631);
+  box-shadow: inset 0 2px 5px #0006, 0 1px 0 #ffffff18;
+}
+
+.item-clipe {
+  position: relative;
+  gap: 16px;
+  padding: 14px;
+  border: 1px solid #121018;
+  border-radius: 12px;
+  background: linear-gradient(125deg, #393744, #2d2b37 55%, #292733);
+  box-shadow: inset 0 1px 0 #8f829b66, inset 1px 0 0 #ffffff0a,
+    0 1px 0 #6b617877, 0 3px 6px #0004;
+  transition: border-color 150ms ease, box-shadow 150ms ease;
+}
+
+.item-clipe:hover {
+  border-color: #8d6a9d;
+  box-shadow: inset 0 1px 0 #ad92bd66, 0 2px 7px #0005;
+}
+
+.item-clipe.tem-override,
+.item-clipe.tem-som-externo,
+.item-clipe.tem-som-externo.tem-override {
+  border: 1px solid #121018;
+  background: linear-gradient(125deg, #393744, #2d2b37 55%, #292733);
+}
+
+.item-clipe.tem-override { border-left: 3px solid #9674b1; }
+.item-clipe.tem-som-externo.tem-override { border-left: 3px solid var(--som-externo); }
+
+.item-clipe.item-atual,
+.item-clipe.tem-som-externo.item-atual {
+  border-color: #d376f4;
+  background: linear-gradient(115deg, #493251, #322a3c 45%, #2a2734);
+  box-shadow: inset 0 0 0 2px #201626, inset 0 1px 0 #f1c0ff,
+    0 0 0 1px #bd4be733, 0 0 12px #c34de72b, 0 3px 6px #0005;
+}
+
+.item-clipe .item-inicio { gap: 8px; align-items: flex-start; }
+.item-clipe .drag-handle { margin-top: 5px; color: #8e819d; }
+.item-clipe .posicao {
+  margin-top: 3px;
+  width: 26px;
+  min-height: 26px;
+  border: 1px solid #16121d;
+  border-radius: 6px;
+  color: #cdbbdc;
+  background: #211c2a;
+  box-shadow: inset 0 2px 3px #0006, 0 1px 0 #ffffff1c;
+  font-variant-numeric: tabular-nums;
+}
+.item-clipe.item-atual .posicao {
+  color: #f6d6ff;
+  border-color: #ab59ca;
+  background: linear-gradient(#67337a, #392143);
+  box-shadow: inset 0 1px 0 #efa6ff66, 0 0 8px #d657f933;
+}
+
+.item-clipe .miniatura {
+  width: 144px;
+  min-height: 90px;
+  border: 3px solid #19161f;
+  border-radius: 8px;
+  box-sizing: border-box;
+  background-color: #17141e;
+  box-shadow: 0 1px 0 #7d6f8866, 0 0 0 1px #100e16;
+}
+.item-clipe.item-atual .miniatura { border-color: #392043; box-shadow: 0 0 0 1px #c367e4; }
+.item-clipe.item-atual .tipo-icone { color: #de8df8; }
+.item-clipe .item-texto { gap: 7px; padding: 2px 0; }
+.item-clipe .nome-clipe { font-weight: 600; font-size: 0.92rem; letter-spacing: 0.01em; }
+.item-clipe .detalhe-clipe { color: #b5a8c3; font-size: 0.73rem; font-variant-numeric: tabular-nums; }
+.item-clipe .selos { gap: 5px; margin-top: 0; }
+.item-clipe .selo,
+.item-clipe.tem-som-externo .selo {
+  padding: 3px 8px;
+  border: 1px solid #52475e;
+  border-radius: 5px;
+  background: linear-gradient(#302937, #25212e);
+  box-shadow: inset 0 1px 0 #ffffff08;
+  color: #cbbbd9;
+  font-size: 0.67rem;
+  line-height: 1.35;
+}
+.item-clipe .selo.selo-timelapse { color: #aacaff; border-color: #4b6086; background: #263044; }
+.item-clipe .aviso-clipe { line-height: 1.5; align-items: flex-start; }
+.item-clipe .aviso-clipe mat-icon { margin-top: 2px; }
+.item-clipe .som-externo {
+  margin-top: 0;
+  padding: 4px 8px;
+  border-left: 2px solid var(--som-externo);
+  border-radius: 3px;
+  background: #211b21;
+  box-sizing: border-box;
+}
+
+.item-clipe .item-acoes {
+  padding: 6px;
+  gap: 5px;
+  border: 1px solid #17131e;
+  border-radius: 9px;
+  background: linear-gradient(#23202c, #282430);
+  box-shadow: inset 0 2px 4px #0004, 0 1px 0 #ffffff16;
+}
+.item-clipe .item-acoes .mat-mdc-icon-button {
+  width: 36px;
+  height: 36px;
+  padding: 6px;
+  border: 1px solid #15111c;
+  border-radius: 7px;
+  background: linear-gradient(#43384f, #2b2534);
+  box-shadow: inset 0 1px 0 #8d789866, 0 2px 2px #0004;
+}
+.item-clipe .item-acoes .btn-preview {
+  border-radius: 50%;
+  border-color: #a45cc2;
+  background: radial-gradient(circle at 40% 20%, #75418b, #36203f 75%);
+  box-shadow: inset 0 0 0 2px #211429, 0 0 8px #bc43eb33;
+}
+.item-clipe .btn-editar { margin-right: 0; }
+.item-clipe .btn-mover {
+  border-color: #4d405b;
+  background: linear-gradient(#3c3447, #282130);
+  height: 20px;
+  border-radius: 4px;
+}
+.item-clipe .btn-mover:disabled { opacity: 0.3; }
+.item-clipe .item-acoes .btn-remover:hover:not(:disabled) { border-color: #e17b99; background: #512d3f; }
+.lista-clipes .inserir { height: 24px; }
+.lista-clipes .inserir::before { opacity: 0.55; background: linear-gradient(90deg, transparent, #62516f, transparent); }
+.lista-clipes .inserir-botao {
+  width: 28px;
+  height: 28px;
+  opacity: 0.85;
+  border-color: #675275;
+  background: linear-gradient(#41324e, #282030);
+  box-shadow: inset 0 1px 0 #b292c544, 0 2px 4px #0005;
+  color: #d7afea;
+}
+.lista-clipes .inserir-botao:disabled { opacity: 0.25; }
+
+@media (max-width: 1100px) {
+  .item-clipe { flex-wrap: wrap; gap: 12px; }
+  .item-clipe .item-acoes { justify-content: flex-end; margin-left: auto; }
+}
+@media (max-width: 600px) {
+  .lista-clipes { padding: 6px; }
+  .item-clipe { padding: 10px; gap: 10px; }
+  .item-clipe .item-inicio { gap: 4px; }
+  .item-clipe .miniatura { width: 76px; min-height: 68px; }
+  .item-clipe .drag-handle { width: 18px; font-size: 18px; }
+  .item-clipe .posicao { width: 22px; }
+  .item-clipe .item-acoes { flex: 1 1 100%; flex-wrap: wrap; }
+  .item-clipe .item-acoes .mat-mdc-icon-button { width: 44px; height: 44px; padding: 10px; }
+  .item-clipe .detalhe-clipe { white-space: normal; overflow-wrap: anywhere; }
+}

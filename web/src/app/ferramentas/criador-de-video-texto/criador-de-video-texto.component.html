@@ -1,0 +1,414 @@
+<div class="container">
+
+  <section class="palco" aria-label="Preview">
+    <h2>Preview</h2>
+    <div class="preview-frame">
+      <canvas #preview class="preview"></canvas>
+    </div>
+
+    <div class="palco-controles">
+      <button mat-icon-button type="button" (click)="togglePlay()" [attr.aria-label]="playing ? 'Pause preview' : 'Play preview'">
+        <mat-icon>{{ playing ? 'pause' : 'play_arrow' }}</mat-icon>
+      </button>
+      <button mat-icon-button type="button" (click)="restart()" aria-label="Restart preview">
+        <mat-icon>replay</mat-icon>
+      </button>
+
+      <input
+        class="scrub"
+        type="range"
+        min="0"
+        [max]="duration"
+        step="0.01"
+        [value]="previewTime"
+        (input)="onScrub($any($event.target).value)"
+        aria-label="Scrub the preview">
+
+      <span class="tempo">{{ formatSeconds(previewTime) }} / {{ formatSeconds(duration) }}</span>
+    </div>
+  </section>
+
+  <div class="paineis">
+
+    <!-- ------------------------------------------------------------ text -->
+    <section class="painel painel-texto">
+      <h2>Text</h2>
+
+      <label class="campo">
+        <span>Your words</span>
+        <textarea rows="3" [value]="text" (input)="onText($any($event.target).value)"
+          placeholder="Type the text — press Enter for a new line"></textarea>
+      </label>
+
+      <div class="grade">
+        <label class="campo">
+          <span>Typeface</span>
+          <select [(ngModel)]="fontId" name="font">
+            @for (font of fonts; track font.id) { <option [value]="font.id">{{ font.label }}</option> }
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Weight</span>
+          <select [(ngModel)]="fontWeight" name="weight">
+            @for (weight of weights; track weight.value) { <option [ngValue]="weight.value">{{ weight.label }}</option> }
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Colour</span>
+          <input type="color" [(ngModel)]="color" name="color">
+        </label>
+
+        <label class="campo">
+          <span>Size · {{ (fontScale * 100).toFixed(1) }}% of height</span>
+          <input type="range" [min]="limits.fontScale.min" [max]="limits.fontScale.max" [step]="limits.fontScale.step"
+            [value]="fontScale" (input)="onNumber('fontScale', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Line height · {{ lineHeight.toFixed(2) }}</span>
+          <input type="range" [min]="limits.lineHeight.min" [max]="limits.lineHeight.max" [step]="limits.lineHeight.step"
+            [value]="lineHeight" (input)="onNumber('lineHeight', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Letter spacing · {{ letterSpacing.toFixed(2) }}em</span>
+          <input type="range" [min]="limits.letterSpacing.min" [max]="limits.letterSpacing.max"
+            [step]="limits.letterSpacing.step" [value]="letterSpacing"
+            (input)="onNumber('letterSpacing', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Readability</span>
+          <select [(ngModel)]="legibility" name="legibility">
+            @for (option of legibilityOptions; track option.id) { <option [value]="option.id">{{ option.label }}</option> }
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Edge margin · {{ (margin * 100).toFixed(1) }}%</span>
+          <input type="range" [min]="limits.margin.min" [max]="limits.margin.max" [step]="limits.margin.step"
+            [value]="margin" (input)="onNumber('margin', $any($event.target).value)">
+        </label>
+      </div>
+
+      <fieldset class="alinhamento">
+        <legend>Position</legend>
+        <div class="grade-alinhamento" role="group" aria-label="Text position">
+          @for (row of [{ v: 'top', label: 'Top' }, { v: 'middle', label: 'Middle' }, { v: 'bottom', label: 'Bottom' }]; track row.v) {
+            @for (col of [{ h: 'left', label: 'left' }, { h: 'center', label: 'centre' }, { h: 'right', label: 'right' }]; track col.h) {
+              <button
+                type="button"
+                class="celula"
+                [class.ativa]="vertical === row.v && align === col.h"
+                [attr.aria-label]="row.label + ' ' + col.label"
+                [attr.aria-pressed]="vertical === row.v && align === col.h"
+                [title]="row.label + ' ' + col.label"
+                (click)="setVertical($any(row.v)); setAlign($any(col.h))">
+                <span class="marca" [class]="'marca-' + col.h"></span>
+              </button>
+            }
+          }
+        </div>
+        <small>The margin above is kept clear at every edge, whichever corner you choose.</small>
+      </fieldset>
+    </section>
+
+    <!-- ------------------------------------------------------ background -->
+    <section class="painel painel-midias" aria-label="Background and sound">
+      <div class="grupo-midia">
+      <h2>Background</h2>
+
+      <div class="fundo-acoes">
+        <button mat-raised-button color="primary" type="button" (click)="bgInput.click()">
+          <span class="btn-conteudo">
+            <mat-icon aria-hidden="true">perm_media</mat-icon><span>Choose an image or a video</span>
+          </span>
+        </button>
+        <input hidden #bgInput type="file" accept="image/*,video/*" (change)="onBackgroundFile($event)">
+
+        @if (backgroundName) {
+          <span class="arquivo" [title]="backgroundName">{{ backgroundName }}</span>
+          <button type="button" class="link-acao" (click)="clearBackground()">Use a colour instead</button>
+        }
+      </div>
+
+      @if (!backgroundName) {
+        <label class="campo">
+          <span>Background colour</span>
+          <input type="color" [(ngModel)]="backgroundColor" name="bg">
+        </label>
+      } @else if (backgroundVideoFile) {
+        <p class="nota">
+          The video plays behind the text, scaled until it fills the frame and cropped — never stretched. The clip has
+          been set to its length; change the hold below if you want it shorter, and the background holds on its last
+          frame if you make it longer.
+        </p>
+      } @else {
+        <p class="nota">
+          The picture is scaled until it fills the frame and the overflow is cropped — it is never stretched, so
+          nothing in it is distorted when the output shape differs from the photo's.
+        </p>
+      }
+
+      </div>
+
+      <div class="grupo-midia">
+      <h2>Sound</h2>
+      <div class="fundo-acoes">
+        <button mat-raised-button color="primary" type="button" (click)="audioInput.click()">
+          <span class="btn-conteudo"><mat-icon aria-hidden="true">audiotrack</mat-icon><span>Add background sound</span></span>
+        </button>
+        <input hidden #audioInput type="file" accept="audio/*,video/*" (change)="onAudioFile($event)">
+
+        @if (audioName) {
+          <span class="arquivo" [title]="audioName">{{ audioName }}</span>
+          <button type="button" class="link-acao" (click)="clearAudio()">Remove</button>
+        }
+      </div>
+      @if (audioName) {
+        <p class="nota">Cut at the end of the clip if it is longer, followed by silence if it is shorter.</p>
+      } @else if (backgroundVideoFile) {
+        <p class="nota">
+          <mat-icon class="nota-icone" aria-hidden="true">info_outline</mat-icon>
+          No sound chosen, so the background video's own soundtrack is used. Add one here to replace it.
+        </p>
+      }
+      </div>
+    </section>
+
+    <!-- ------------------------------------------------------- animation -->
+    <section class="painel painel-animacao">
+      <h2>Animation</h2>
+
+      <label class="campo">
+        <span>How the text arrives</span>
+        <select [value]="animation" (change)="onAnimation($any($event.target).value)">
+          @for (option of animations; track option.id) { <option [value]="option.id">{{ option.label }}</option> }
+        </select>
+        <small>{{ animationNote }}</small>
+      </label>
+
+      <div class="grade">
+        <label class="campo">
+          <span>Reveal time</span>
+          <input type="number" [min]="limits.reveal.min" [max]="limits.reveal.max" [step]="limits.reveal.step"
+            [value]="revealSeconds" (change)="onReveal($any($event.target).value)">
+          <small>Suggested from the amount of text until you change it.</small>
+        </label>
+
+        <label class="campo">
+          <span>Hold after</span>
+          <input type="number" [min]="limits.hold.min" [max]="limits.hold.max" [step]="limits.hold.step"
+            [value]="holdSeconds" (change)="onNumber('holdSeconds', $any($event.target).value)">
+          <small>The finished frame stays on screen for this long.</small>
+        </label>
+      </div>
+
+      <p class="nota destaque">The clip lasts {{ formatSeconds(duration) }} — {{ frameCount }} frames at {{ frameRate }} fps.</p>
+
+      <div class="checks">
+        <label class="check">
+          <input type="checkbox" [(ngModel)]="fadeIn" name="fadeIn"><span>Fade in</span>
+        </label>
+        <label class="check">
+          <input type="checkbox" [(ngModel)]="fadeOut" name="fadeOut"><span>Fade out</span>
+        </label>
+        <label class="campo estreito">
+          <span>Fade length</span>
+          <input type="number" [min]="limits.fade.min" [max]="limits.fade.max" [step]="limits.fade.step"
+            [value]="fadeSeconds" (change)="onNumber('fadeSeconds', $any($event.target).value)">
+        </label>
+      </div>
+      <small class="nota">Picture and sound fade together, from and to black and silence.</small>
+    </section>
+
+    <!-- ---------------------------------------------------------- output -->
+    <section class="painel painel-saida">
+      <h2>Output</h2>
+
+      <div class="grade">
+        <label class="campo">
+          <span>Resolution</span>
+          <select [value]="resolutionId" (change)="onResolution($any($event.target).value)">
+            @for (option of resolutions; track option.id) { <option [value]="option.id">{{ option.label }}</option> }
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Frame rate</span>
+          <select [(ngModel)]="frameRate" name="fps">
+            @for (rate of frameRates; track rate) { <option [ngValue]="rate">{{ rate }} fps</option> }
+          </select>
+        </label>
+
+        <label class="campo">
+          <span>Video format</span>
+          <select [(ngModel)]="videoFormatId" name="videoFormat">
+            @for (option of videoFormats; track option.id) { <option [value]="option.id">{{ option.label }}</option> }
+          </select>
+          <small>{{ videoNote }}</small>
+        </label>
+
+        <label class="campo">
+          <span>Image format</span>
+          <select [(ngModel)]="imageFormatId" name="imageFormat">
+            @for (option of imageFormats; track option.id) { <option [value]="option.id">{{ option.label }}</option> }
+          </select>
+          <small>{{ imageNote }}</small>
+        </label>
+
+        @if (imageFormatId !== 'png') {
+          <label class="campo">
+            <span>Image quality · {{ (imageQuality * 100).toFixed(0) }}%</span>
+            <input type="range" [min]="limits.quality.min" [max]="limits.quality.max" [step]="limits.quality.step"
+              [value]="imageQuality" (input)="onNumber('imageQuality', $any($event.target).value)">
+          </label>
+        }
+
+        @if (!imageKeepsAlpha) {
+          <label class="campo">
+            <span>Matte behind transparency</span>
+            <input type="color" [(ngModel)]="matte" name="matte">
+          </label>
+        }
+      </div>
+
+      <p class="nota">{{ stillLabel }}</p>
+
+      <div class="acoes">
+        <button mat-raised-button color="primary" type="button" (click)="renderVideo()" [disabled]="rendering !== null">
+          <span class="btn-conteudo">
+            @if (rendering === 'video') { <mat-spinner diameter="18"></mat-spinner> }
+            @else { <mat-icon aria-hidden="true">movie_filter</mat-icon> }
+            <span>{{ rendering === 'video' ? 'Rendering…' : 'Render and download video' }}</span>
+          </span>
+        </button>
+
+        <button mat-raised-button color="primary" type="button" (click)="renderImage()" [disabled]="rendering !== null">
+          <span class="btn-conteudo">
+            @if (rendering === 'image') { <mat-spinner diameter="18"></mat-spinner> }
+            @else { <mat-icon aria-hidden="true">photo_camera</mat-icon> }
+            <span>{{ rendering === 'image' ? 'Saving…' : 'Download image' }}</span>
+          </span>
+        </button>
+      </div>
+    </section>
+  </div>
+
+  @if (progress; as report) {
+    <div class="progresso">
+      <div class="progresso-topo">
+        <span>{{ stageLabel }}</span>
+        <button mat-button type="button" (click)="cancel()">Cancel</button>
+      </div>
+      <mat-progress-bar
+        [mode]="report.ratio === null ? 'indeterminate' : 'determinate'"
+        [value]="(report.ratio ?? 0) * 100"></mat-progress-bar>
+    </div>
+  }
+
+  @if (message) {
+    <div class="mensagem">
+      <mat-icon>check_circle_outline</mat-icon>
+      <span>{{ message }}</span>
+      @if (result) {
+        <button mat-button type="button" (click)="download()">Download again</button>
+      }
+    </div>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro">
+      <mat-icon>error_outline</mat-icon>
+      <span>
+        {{ errorMessage }}
+        @if (errorHint) { <small class="dica">{{ errorHint }}</small> }
+      </span>
+    </div>
+  }
+
+  @if (result; as done) {
+    <dl class="resumo">
+      <div><dt>Size</dt><dd>{{ done.width }} × {{ done.height }}</dd></div>
+      @if (done.kind === 'video') {
+        <div><dt>Length</dt><dd>{{ formatSeconds(done.durationSeconds) }}</dd></div>
+      }
+      <div><dt>File size</dt><dd>{{ formatSize(done.blob.size) }}</dd></div>
+    </dl>
+  }
+</div>
+
+<app-help-panel label="How the Text Video Maker works">
+  <div class="instrucoes">
+    <section class="seo-intro" aria-labelledby="text-video-seo-title">
+      <h1 id="text-video-seo-title">Free Online Text Video and Image Maker</h1>
+      <p>Turn a line of text into an animated video or a still image, over your own photo or a solid colour, without
+        installing anything and without uploading a single byte. Choose where the text sits, how it arrives, how long it
+        lasts, and download it as MP4, WebM, MKV, MOV, PNG, JPEG or WebP.</p>
+      <p>Everything runs inside your browser using canvas and WebCodecs, so your images never leave your computer.</p>
+
+      <!-- Dimensions on the element, not only in CSS: without them the browser
+           cannot reserve the space before the file arrives, and the page jumps
+           once it does. `lazy` because it sits below everything the reader came
+           for. -->
+      <picture class="seo-capa">
+        <source srcset="/assets/tools/text-video-maker-cover.webp" type="image/webp">
+        <img src="/assets/tools/text-video-maker-cover.jpg" width="1536" height="1024" loading="lazy" decoding="async"
+          alt="Illustration of text, pictures and an audio waveform flowing into an editor with a preview and separate text, picture and sound tracks, and out again as one finished video">
+      </picture>
+    </section>
+
+    <h2>Instructions</h2>
+
+    <h4 class="sublinhado">Backgrounds: a colour, a photograph or a video</h4>
+    <p>With nothing chosen, the text sits on a solid colour you pick. Choose a file and it can be either a photograph or
+      a video: both are scaled until they fill the frame and cropped, never stretched, so nothing in them is distorted
+      when the output shape differs from the source's.</p>
+    <p>A video background behaves like a photograph that moves. Choosing one sets the clip to the video's own length —
+      editable afterwards, and if you make the clip longer the background holds on its last frame rather than looping,
+      because a freeze is at least visibly a freeze. And if you have not chosen a background sound, the video's own
+      soundtrack is used, which is what dropping a clip in and pressing render plainly meant; adding a sound of your own
+      replaces it.</p>
+
+    <h4 class="sublinhado">The preview is the result</h4>
+    <p>The frame at the top is not a mock-up of the output — it is the output, drawn by the same code that will draw the
+      file, from the same settings. Play it, scrub it, and what you see is what you get. That also means it is worth
+      watching once before you render: a four-minute 4K clip takes a while, and the preview costs nothing.</p>
+
+    <h4 class="sublinhado">Background: a picture or a colour</h4>
+    <p>Pick an image or leave it on a solid colour. An image is never stretched to fit the output shape: it is scaled
+      until it covers the frame and the overflow is cropped away. Put a portrait photo in a 16:9 video and you lose some
+      of the top and bottom rather than seeing everything squashed sideways, which is what "do not distort" has to mean
+      when the shapes genuinely disagree.</p>
+
+    <h4 class="sublinhado">Placing the text</h4>
+    <p>The nine buttons under "Position" put the text in any corner, along any edge, or dead centre — vertically and
+      horizontally at once. Whichever you pick, the margin slider keeps a clear band at every edge, so text never runs
+      into the frame border and survives the safe-area cropping that social platforms apply.</p>
+    <p>If the text is hard to read over a busy photograph, "Readability" is the fix: a drop shadow is the gentlest, an
+      outline survives almost anything, and a translucent band behind the block guarantees contrast on any background.</p>
+
+    <h4 class="sublinhado">Animations</h4>
+    <p><strong>Typewriter</strong> reveals one letter at a time with a blinking cursor. <strong>Rising letters</strong>
+      floats each letter up into place. <strong>Words out of focus</strong> brings each word in slightly large and
+      blurred, then settles it — the opening-title look. <strong>Wipe reveal with slow zoom</strong> sweeps a band across
+      each line to uncover it while the background drifts closer, which is the most cinematic of the four.</p>
+    <p>The clip's length follows the animation: the reveal time plus however long you hold the finished frame. The reveal
+      time is proposed from the amount of text you typed and stays a suggestion — change it once and it is yours.</p>
+
+    <h4 class="sublinhado">Sound and fades</h4>
+    <p>Add a background track and it plays under the whole clip, cut at the end if it is longer and followed by real
+      silence if it is shorter. The two fade checkboxes ramp the picture out of and back into black; the sound follows
+      the identical ramp, computed by the same function, so they reach black and silence on the same instant instead of
+      approximately together.</p>
+
+    <h4 class="sublinhado">Video and image formats</h4>
+    <p>MP4 with H.264 plays on practically everything. WebM is smaller but refused by some older players. MKV is an
+      archival container, MOV is what Final Cut and Premiere expect. For stills, PNG is lossless and the only one here
+      that keeps transparency; JPEG is much smaller but flattens it onto the matte colour and softens sharp letters;
+      WebP sits between the two. The still is taken at the moment the text finishes arriving, so it is the composition at
+      its most complete.</p>
+  </div>
+</app-help-panel>

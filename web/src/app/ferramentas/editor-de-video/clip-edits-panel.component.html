@@ -1,0 +1,275 @@
+<!-- Every control on this panel sits in a titled group. Half of them used to
+     and half did not, which left the reader working out for themselves which
+     loose checkbox belonged to which idea — and "Fade length" three columns away
+     from "Fade in" was the worst of it. -->
+<div class="edits">
+
+  <fieldset class="grupo">
+    <legend class="grupo-titulo">Playback</legend>
+
+    <div class="linha-campos">
+    <div class="campo">
+      <label [attr.for]="id + '-speed'">
+        Speed
+        <app-help-hint label="What this speed does">
+          {{ edits.speed === 1
+            ? 'Plays at the speed it was recorded.'
+            : edits.speed > 1
+              ? 'Faster, so the clip lasts less. The pitch of the sound rises with it.'
+              : 'Slower, so the clip lasts longer. The pitch of the sound falls with it.' }}
+        </app-help-hint>
+      </label>
+      <!-- A reading rather than a menu, while the timelapse target owns this
+           clip's speed. The menu stops at ten and the target routinely asks for
+           forty, so there would be no option to select — and a select showing
+           nothing selected is worse than a number that says where it came from
+           and offers a way out of it. -->
+      @if (speedLocked) {
+        <div class="velocidade-travada">
+          <span class="velocidade-valor">{{ speedLockedLabel }}</span>
+          <button type="button" class="ligacao" [disabled]="disabled" (click)="speedRelease.emit()">
+            Set it myself
+          </button>
+        </div>
+      } @else {
+        <select [id]="id + '-speed'" [disabled]="disabled" [ngModel]="edits.speed"
+          (ngModelChange)="onSpeed($event)">
+          @for (option of speeds; track option) {
+            <option [ngValue]="option">{{ speedLabel(option) }}</option>
+          }
+        </select>
+      }
+      <!-- The number the setting above is actually for. A rate on its own is an
+           abstraction: what the reader is deciding is how long this clip runs,
+           and the answer changes under their hand as they change the rate. -->
+      @if (speedNote) {
+        <small class="campo-duracao">{{ speedNote }}</small>
+      }
+    </div>
+
+    @if (showAudio) {
+      <div class="campo">
+        <label [attr.for]="id + '-audio'">
+          Sound
+          <app-help-hint label="What this sound setting does">
+            {{ edits.audioMode === 'replace'
+            ? (hasOwnSound
+                ? 'Uses the file chosen below, or the one the project already has if this clip was given none of its own.'
+                : 'Uses the file chosen below, or the one the project already has if this card was given none of its own.')
+            : edits.audioMode === 'continue'
+              ? 'Picks up the file an earlier clip started, from exactly where it left off — one piece of music across a whole sequence. A clip with nothing to continue falls back to its own sound.'
+              : edits.audioMode === 'mute'
+                ? 'The picture plays over real silence, so nothing after it drifts out of sync.'
+                : (hasOwnSound
+                    ? 'The sound that came with the clip.'
+                    : "A title has none of its own, so it plays the project's soundtrack — or silence, if the project has none.") }}
+          </app-help-hint>
+        </label>
+        <select [id]="id + '-audio'" [disabled]="disabled" [ngModel]="edits.audioMode"
+          (ngModelChange)="onAudioMode($event)">
+          <!-- A text card never had a soundtrack, so "keep its own" would be a
+               choice with nothing behind it. The word changes; the value does
+               not, because the timeline resolves both to the same silence. -->
+          <option value="original">{{ hasOwnSound ? "Keep the clip's own sound" : 'No sound' }}</option>
+          <option value="replace">{{ hasOwnSound ? 'Replace it with a file' : 'Play a file under it' }}</option>
+          <option value="continue">Continue the sound from the previous clip</option>
+          <option value="mute">Silence it</option>
+        </select>
+      </div>
+    }
+
+    @if (showAudio) {
+      <!-- Beside the sound setting, because it is the same idea one step
+           further on: that one says *which* sound plays, this one says how loud
+           it is. A hundred per cent means "exactly as it already is", which is
+           the clip's own loudness, or the levelled one when levelling is on. -->
+      <div class="campo">
+        <label [attr.for]="id + '-volume'">
+          Volume
+          <app-help-hint label="What this volume does">
+            {{ edits.volumePercent === 100
+              ? 'Left exactly as it is — the clip\'s own loudness, or the levelled one when levelling is switched on.'
+              : edits.volumePercent === 0
+                ? 'Turned all the way down. Different from silencing it: the sound is still in the edit, at nothing.'
+                : edits.volumePercent > 100
+                  ? 'Turned up. The preview cannot go past its own full volume, so a setting above 100% is only fully heard in the exported file.'
+                  : 'Turned down, on top of whatever levelling decided.' }}
+          </app-help-hint>
+        </label>
+        <div class="com-unidade">
+          <input [attr.id]="id + '-volume'" type="range"
+            [min]="volumeLimits.min" [max]="volumeLimits.max" [step]="volumeLimits.step"
+            [disabled]="disabled" [value]="edits.volumePercent"
+            (input)="onVolume($any($event.target).value)">
+          <span class="unidade">{{ edits.volumePercent }}%</span>
+        </div>
+      </div>
+    }
+
+    </div>
+  </fieldset>
+
+  <!-- Where the project puts a setting that belongs beside Playback but not
+       inside a clip. The timelapse target lives on `ProjectSettings`, not on
+       `ClipEdits`, so it cannot be a field of this panel — but it answers the
+       same question as the speed above it and belongs in the same place. -->
+  <ng-content select="[afterPlayback]"></ng-content>
+
+  <fieldset class="grupo">
+    <legend class="grupo-titulo">Fades</legend>
+
+    <div class="linha-checks">
+      <label class="check">
+        <input type="checkbox" [checked]="edits.fadeIn" [disabled]="disabled"
+          (change)="patch({ fadeIn: $any($event.target).checked })">
+        <span>Fade in from black and silence</span>
+      </label>
+      <label class="check">
+        <input type="checkbox" [checked]="edits.fadeOut" [disabled]="disabled"
+          (change)="patch({ fadeOut: $any($event.target).checked })">
+        <span>Fade out to black and silence</span>
+      </label>
+    </div>
+
+    <!-- Beside the switches it belongs to, rather than three columns away in a
+         row of unrelated fields. -->
+    <div class="campo campo-curto">
+      <label [attr.for]="id + '-fade'">
+        Fade length
+        <app-help-hint>Seconds at each faded end. A clip too short for two full fades splits itself in half.</app-help-hint>
+      </label>
+      <input [id]="id + '-fade'" type="number" [min]="fadeLimits.min" [max]="fadeLimits.max"
+        [step]="fadeLimits.step" [value]="edits.fadeSeconds" [disabled]="disabled"
+        (change)="onFadeSeconds($any($event.target).value)">
+    </div>
+  </fieldset>
+
+  @if (showCuts) {
+    <fieldset class="grupo bloco-corte">
+      <legend class="grupo-titulo">Silence</legend>
+
+      <label class="check">
+        <input type="checkbox" [checked]="edits.cutSilence" [disabled]="disabled"
+          (change)="patch({ cutSilence: $any($event.target).checked })">
+        <span>Remove the silent stretches</span>
+      </label>
+
+      <button type="button" class="disclosure" [disabled]="disabled" (click)="cutsOpen = !cutsOpen"
+        [attr.aria-expanded]="cutsOpen">
+        <mat-icon>{{ cutsOpen ? 'expand_less' : 'expand_more' }}</mat-icon> Detection settings
+      </button>
+
+      @if (cutsOpen) {
+        <div class="painel-corte">
+          <div class="campo campo-largo">
+            <label [attr.for]="id + '-preset'">Starting point</label>
+            <select [id]="id + '-preset'" [disabled]="disabled" [ngModel]="preset"
+              (ngModelChange)="applyPreset($event)">
+              @for (option of presets; track option.id) {
+                <option [value]="option.id">{{ option.label }}</option>
+              }
+              <option value="custom" disabled>Custom</option>
+            </select>
+            <small>{{ preset === 'custom' ? 'Hand-tuned.' : '' }}</small>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-threshold'">
+              Silence below
+              <app-help-hint>Anything quieter than this may count as silence.</app-help-hint>
+            </label>
+            <div class="com-unidade">
+              <input [id]="id + '-threshold'" type="range" [min]="limits.thresholdDb.min"
+                [max]="limits.thresholdDb.max" [step]="limits.thresholdDb.step"
+                [value]="edits.silence.thresholdDb" [disabled]="disabled"
+                (input)="onSilenceNumber('thresholdDb', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.thresholdDb }} dBFS</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-minimum'">
+            Lasting at least
+            <app-help-hint>Shorter pauses are left alone, which is what keeps breaths intact.</app-help-hint>
+          </label>
+            <div class="com-unidade">
+              <input [id]="id + '-minimum'" type="range" [min]="limits.minimumSilenceMs.min"
+                [max]="limits.minimumSilenceMs.max" [step]="limits.minimumSilenceMs.step"
+                [value]="edits.silence.minimumSilenceMs" [disabled]="disabled"
+                (input)="onSilenceNumber('minimumSilenceMs', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.minimumSilenceMs }} ms</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-before'">
+            Keep before speech
+            <app-help-hint>Room left in front of a word so it does not start abruptly.</app-help-hint>
+          </label>
+            <div class="com-unidade">
+              <input [id]="id + '-before'" type="range" [min]="limits.keepBeforeMs.min"
+                [max]="limits.keepBeforeMs.max" [step]="limits.keepBeforeMs.step"
+                [value]="edits.silence.keepBeforeMs" [disabled]="disabled"
+                (input)="onSilenceNumber('keepBeforeMs', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.keepBeforeMs }} ms</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-after'">
+            Keep after speech
+            <app-help-hint>Room left after it, so the tail of the sentence survives.</app-help-hint>
+          </label>
+            <div class="com-unidade">
+              <input [id]="id + '-after'" type="range" [min]="limits.keepAfterMs.min"
+                [max]="limits.keepAfterMs.max" [step]="limits.keepAfterMs.step"
+                [value]="edits.silence.keepAfterMs" [disabled]="disabled"
+                (input)="onSilenceNumber('keepAfterMs', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.keepAfterMs }} ms</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-fragment'">
+            Absorb fragments under
+            <app-help-hint>A scrap of sound trapped between two pauses is usually a cough, not a word.</app-help-hint>
+          </label>
+            <div class="com-unidade">
+              <input [id]="id + '-fragment'" type="range" [min]="limits.minimumKeptSegmentMs.min"
+                [max]="limits.minimumKeptSegmentMs.max" [step]="limits.minimumKeptSegmentMs.step"
+                [value]="edits.silence.minimumKeptSegmentMs" [disabled]="disabled"
+                (input)="onSilenceNumber('minimumKeptSegmentMs', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.minimumKeptSegmentMs }} ms</span>
+            </div>
+          </div>
+
+          <div class="campo">
+            <label [attr.for]="id + '-crossfade'">
+            Cut smoothing
+            <app-help-hint>A few milliseconds of fade at each cut, which removes the click.</app-help-hint>
+          </label>
+            <div class="com-unidade">
+              <input [id]="id + '-crossfade'" type="range" [min]="limits.crossfadeMs.min"
+                [max]="limits.crossfadeMs.max" [step]="limits.crossfadeMs.step"
+                [value]="edits.silence.crossfadeMs" [disabled]="disabled"
+                (input)="onSilenceNumber('crossfadeMs', $any($event.target).value)">
+              <span class="valor">{{ edits.silence.crossfadeMs }} ms</span>
+            </div>
+          </div>
+        </div>
+      }
+    </fieldset>
+
+    <fieldset class="grupo">
+      <legend class="grupo-titulo">Framing</legend>
+
+      <app-auto-zoom-control
+        [id]="id + '-zoom'"
+        [settings]="edits.silence.autoZoom"
+        [disabled]="disabled"
+        [note]="zoomNote"
+        (settingsChange)="onAutoZoom($event)"></app-auto-zoom-control>
+    </fieldset>
+  }
+
+</div>

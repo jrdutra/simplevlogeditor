@@ -1,0 +1,15 @@
+{
+  "retrieved": "2026-09-08",
+  "models": [
+    {
+      "file": "silero-vad.onnx",
+      "bytes": 2327524,
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3"
+    },
+    {
+      "file": "dnsmos-p835.onnx",
+      "bytes": 1157965,
+      "sha256": "269fbebdb513aa23cddfbb593542ecc540284a91849ac50516870e1ac78f6edd"
+    }
+  ]
+}

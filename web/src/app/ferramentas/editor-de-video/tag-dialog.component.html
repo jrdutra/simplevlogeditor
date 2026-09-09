@@ -1,0 +1,488 @@
+<div class="fundo" appBodyPortal (click)="close()">
+  <div class="painel" role="dialog" aria-modal="true" aria-labelledby="tag-titulo"
+    (click)="$event.stopPropagation()">
+
+    <header class="topo">
+      <div class="titulo">
+        <mat-icon aria-hidden="true">sell</mat-icon>
+        <h2 id="tag-titulo">{{ heading }}</h2>
+      </div>
+      <button mat-icon-button (click)="close()" aria-label="Close">
+        <mat-icon>close</mat-icon>
+      </button>
+    </header>
+
+    <div class="corpo">
+
+      <!-- The picture half. The nine positions are drawn on the frame itself
+           rather than listed beside it: "bottom left" is a sentence, and the
+           corner of this shot is the thing the reader is actually choosing. -->
+      <div class="metade-palco">
+        <div class="palco" [style.aspect-ratio]="width + ' / ' + height">
+          @if (loading) {
+            <span class="carregando">Reading a frame from the clip…</span>
+          }
+          <canvas #stage class="tela" aria-label="Preview of the tag over the clip"></canvas>
+
+          <!-- The same nine choices as the control in the column, on the picture
+               they are about. Both are radio groups over the one value, so
+               either can be used and the other keeps up. -->
+          <div class="grade" role="radiogroup" aria-label="Where the tag sits in the frame">
+            @for (spot of positions; track spot) {
+              <button type="button" class="celula" role="radio"
+                [class.escolhida]="draft.position === spot"
+                [attr.aria-checked]="draft.position === spot"
+                [attr.aria-label]="positionLabels[spot]"
+                [title]="positionLabels[spot]"
+                (click)="choose(spot)">
+                <span class="ponto"></span>
+              </button>
+            }
+          </div>
+        </div>
+
+        <div class="sob-palco">
+          <button mat-button class="replay" (click)="restart()">
+            <span class="btn-conteudo"><mat-icon aria-hidden="true">replay</mat-icon><span>Play it again</span></span>
+          </button>
+          <button mat-button (click)="shuffle()">
+            <span class="btn-conteudo"><mat-icon aria-hidden="true">casino</mat-icon><span>Shuffle</span></span>
+          </button>
+          <span class="posicao-atual">{{ positionLabels[draft.position] }}</span>
+        </div>
+
+        <p class="ajuda">
+          The tag arrives {{ draft.startSeconds.toFixed(1) }}s into the clip and
+          @if (draft.exit === 'none' && !isQr) { stays until the clip ends. }
+          @else { leaves after {{ hold.toFixed(1) }}s. }
+          It is drawn into the exported file exactly as it is drawn here.
+        </p>
+      </div>
+
+      <!-- The settings half. -->
+      <div class="metade-controles">
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Content</legend>
+
+          <label class="linha">
+            <span class="rotulo">Text</span>
+            <input type="text" maxlength="120" [value]="draft.text"
+              (input)="onText($any($event.target).value)" placeholder="New">
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Font</span>
+            <select [value]="draft.fontId" (change)="patch({ fontId: $any($event.target).value })">
+              @for (font of fonts; track font.id) {
+                <option [value]="font.id" [selected]="font.id === draft.fontId">{{ font.label }}</option>
+              }
+            </select>
+          </label>
+
+          @if (isQr) {
+            <label class="linha" for="tag-qr-text">
+              <span class="rotulo">QR Code text</span>
+              <input id="tag-qr-text" type="text" [value]="draft.qrText ?? ''"
+                (input)="patch({ qrText: $any($event.target).value })"
+                placeholder="https://example.com" aria-describedby="tag-qr-help"
+                [attr.aria-invalid]="qrError ? 'true' : null">
+            </label>
+            <p id="tag-qr-help" class="nota" aria-live="polite">
+              {{ qrError ?? 'Encoded in the QR Code. The Text field above stays on the ribbon.' }}
+            </p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Size</span>
+            <input type="range" [min]="limits['fontScale'].min" [max]="limits['fontScale'].max"
+              [step]="limits['fontScale'].step" [value]="draft.fontScale"
+              (input)="onNumber('fontScale', $any($event.target).value)">
+            <span class="valor">{{ (draft.fontScale * 100).toFixed(1) }}%</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Weight</span>
+            <select [value]="draft.weight" (change)="onNumber('weight', $any($event.target).value)">
+              <option value="400" [selected]="draft.weight === 400">Regular</option>
+              <option value="500" [selected]="draft.weight === 500">Medium</option>
+              <option value="600" [selected]="draft.weight === 600">Semibold</option>
+              <option value="700" [selected]="draft.weight === 700">Bold</option>
+              <option value="900" [selected]="draft.weight === 900">Black</option>
+            </select>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Tracking</span>
+            <input type="range" [min]="limits['tracking'].min" [max]="limits['tracking'].max"
+              [step]="limits['tracking'].step" [value]="draft.tracking"
+              (input)="onNumber('tracking', $any($event.target).value)">
+            <span class="valor">{{ draft.tracking.toFixed(3) }}em</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Text X</span>
+            <input type="range" [min]="limits['textX'].min" [max]="limits['textX'].max"
+              [step]="limits['textX'].step" [value]="draft.textX"
+              (input)="onNumber('textX', $any($event.target).value)">
+            <span class="valor">{{ draft.textX > 0 ? '+' : '' }}{{ draft.textX }}%</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Text Y</span>
+            <input type="range" [min]="limits['textY'].min" [max]="limits['textY'].max"
+              [step]="limits['textY'].step" [value]="draft.textY"
+              (input)="onNumber('textY', $any($event.target).value)">
+            <span class="valor">{{ draft.textY > 0 ? '+' : '' }}{{ draft.textY }}%</span>
+          </label>
+
+          @if (draft.textX !== 0 || draft.textY !== 0) {
+            <div class="linha">
+              <span class="rotulo"></span>
+              <button type="button" class="recentrar" (click)="centreText()">Back to centre</button>
+              <span class="valor"></span>
+            </div>
+          }
+
+          <label class="linha linha-check">
+            <input type="checkbox" [checked]="draft.caps" (change)="patch({ caps: $any($event.target).checked })">
+            <span>ALL CAPS</span>
+          </label>
+        </fieldset>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Shape and place</legend>
+
+          <div class="linha">
+            <span class="rotulo">Position</span>
+            <div class="matriz" role="radiogroup" aria-label="Where the tag sits in the frame">
+              @for (spot of positions; track spot) {
+                <button type="button" class="quadro" role="radio"
+                  [class.escolhido]="draft.position === spot"
+                  [attr.aria-checked]="draft.position === spot"
+                  [attr.aria-label]="positionLabels[spot]"
+                  [title]="positionLabels[spot]"
+                  (click)="choose(spot)"><span></span></button>
+              }
+            </div>
+            <span class="valor">{{ positionLabels[draft.position] }}</span>
+          </div>
+
+          <label class="linha">
+            <span class="rotulo">Shape</span>
+            <select [value]="draft.shape" (change)="onShape($any($event.target).value)">
+              <optgroup label="Customisable">
+                @for (item of shapes; track item.id) {
+                  <option [value]="item.id" [selected]="item.id === draft.shape">{{ item.label }}</option>
+                }
+              </optgroup>
+              @for (group of specialGroups; track group.group) {
+                <optgroup [label]="'Ready made \u2014 ' + group.group">
+                  @for (item of group.items; track item.id) {
+                    <option [value]="item.id" [selected]="item.id === draft.shape">{{ item.label }}</option>
+                  }
+                </optgroup>
+              }
+            </select>
+          </label>
+
+          @if (isSpecial) {
+            <label class="linha">
+              <span class="rotulo">Size</span>
+              <input type="range" [min]="limits['scale'].min" [max]="limits['scale'].max"
+                [step]="limits['scale'].step" [value]="draft.scale"
+                (input)="onNumber('scale', $any($event.target).value)">
+              <span class="valor">{{ draft.scale }}%</span>
+            </label>
+
+            <p class="nota">
+              A ready-made tag is a finished design, so it keeps its own proportion,
+              colours and movement. Size scales the whole piece; the text, its type
+              and its animation are still yours.
+            </p>
+          } @else {
+            <label class="linha">
+              <span class="rotulo">Width</span>
+              <input type="range" [min]="limits['padX'].min" [max]="limits['padX'].max"
+                [step]="limits['padX'].step" [value]="draft.padX"
+                (input)="onNumber('padX', $any($event.target).value)">
+              <span class="valor">{{ draft.padX }}</span>
+            </label>
+
+            <label class="linha">
+              <span class="rotulo">Height</span>
+              <input type="range" [min]="limits['padY'].min" [max]="limits['padY'].max"
+                [step]="limits['padY'].step" [value]="draft.padY"
+                (input)="onNumber('padY', $any($event.target).value)">
+              <span class="valor">{{ draft.padY }}</span>
+            </label>
+
+            <label class="linha">
+              <span class="rotulo">Margin</span>
+              <input type="range" [min]="limits['margin'].min" [max]="limits['margin'].max"
+                [step]="limits['margin'].step" [value]="draft.margin"
+                (input)="onNumber('margin', $any($event.target).value)">
+              <span class="valor">{{ (draft.margin * 100).toFixed(1) }}%</span>
+            </label>
+          }
+        </fieldset>
+
+        <fieldset class="grupo" [disabled]="isSpecial">
+          <legend class="grupo-titulo">Depth</legend>
+
+          @if (isSpecial) {
+            <p class="nota">This design is drawn with its own relief, lighting and thickness.</p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Finish</span>
+            <select [value]="draft.finish" (change)="patch({ finish: $any($event.target).value })">
+              @for (item of finishes; track item.id) {
+                <option [value]="item.id" [selected]="item.id === draft.finish">{{ item.label }}</option>
+              }
+            </select>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Thickness</span>
+            <input type="range" [min]="limits['depth'].min" [max]="limits['depth'].max"
+              [step]="limits['depth'].step" [value]="draft.depth"
+              (input)="onNumber('depth', $any($event.target).value)">
+            <span class="valor">{{ draft.depth }}</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Light</span>
+            <input type="range" [min]="limits['lightAngle'].min" [max]="limits['lightAngle'].max"
+              [step]="limits['lightAngle'].step" [value]="draft.lightAngle"
+              (input)="onNumber('lightAngle', $any($event.target).value)">
+            <span class="valor">{{ draft.lightAngle }}°</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Shading</span>
+            <input type="range" [min]="limits['darken'].min" [max]="limits['darken'].max"
+              [step]="limits['darken'].step" [value]="draft.darken"
+              (input)="onNumber('darken', $any($event.target).value)">
+            <span class="valor">{{ draft.darken }}%</span>
+          </label>
+
+          <!-- The light every finish paints with. It was white and fixed, which
+               is why a bevelled tag had a sheen nobody could reach. -->
+          <label class="linha">
+            <span class="rotulo">Highlight</span>
+            <input type="range" [min]="limits['sheen'].min" [max]="limits['sheen'].max"
+              [step]="limits['sheen'].step" [value]="draft.sheen"
+              (input)="onNumber('sheen', $any($event.target).value)">
+            <span class="valor">{{ draft.sheen }}%</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Its colour</span>
+            <input type="color" [value]="draft.sheenColor"
+              (input)="patch({ sheenColor: $any($event.target).value })">
+            <span class="valor">{{ draft.sheenColor }}</span>
+          </label>
+
+          @if (draft.sheen === 0) {
+            <p class="nota">With the highlight out, every finish is flat colour — the raised look is the light.</p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Turn sideways</span>
+            <input type="range" [min]="limits['tiltY'].min" [max]="limits['tiltY'].max"
+              [step]="limits['tiltY'].step" [value]="draft.tiltY"
+              (input)="onNumber('tiltY', $any($event.target).value)">
+            <span class="valor">{{ draft.tiltY }}°</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Tip forward</span>
+            <input type="range" [min]="limits['tiltX'].min" [max]="limits['tiltX'].max"
+              [step]="limits['tiltX'].step" [value]="draft.tiltX"
+              (input)="onNumber('tiltX', $any($event.target).value)">
+            <span class="valor">{{ draft.tiltX }}°</span>
+          </label>
+        </fieldset>
+
+        <fieldset class="grupo" [disabled]="isSpecial">
+          <legend class="grupo-titulo">Colour and outline</legend>
+
+          @if (isSpecial) {
+            <p class="nota">This design comes with its own palette, including the colour it writes in.</p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Tag</span>
+            <input type="color" [value]="draft.color" (input)="patch({ color: $any($event.target).value })">
+            <span class="valor">{{ draft.color }}</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Text</span>
+            <input type="color" [value]="draft.textColor" (input)="patch({ textColor: $any($event.target).value })">
+            <span class="valor">{{ draft.textColor }}</span>
+          </label>
+
+          @if (textColourIgnored) {
+            <p class="nota">That text animation paints the letters itself, so the text colour only tints it.</p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Outline</span>
+            <input type="color" [value]="draft.outlineColor" (input)="patch({ outlineColor: $any($event.target).value })">
+            <span class="valor">{{ draft.outlineColor }}</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Outer</span>
+            <input type="range" [min]="limits['ring'].min" [max]="limits['ring'].max"
+              [step]="limits['ring'].step" [value]="draft.ring"
+              (input)="onNumber('ring', $any($event.target).value)">
+            <span class="valor">{{ draft.ring }}</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Inner</span>
+            <input type="range" [min]="limits['strokeIn'].min" [max]="limits['strokeIn'].max"
+              [step]="limits['strokeIn'].step" [value]="draft.strokeIn"
+              (input)="onNumber('strokeIn', $any($event.target).value)">
+            <span class="valor">{{ draft.strokeIn }}</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Shadow</span>
+            <input type="range" [min]="limits['shadow'].min" [max]="limits['shadow'].max"
+              [step]="limits['shadow'].step" [value]="draft.shadow"
+              (input)="onNumber('shadow', $any($event.target).value)">
+            <span class="valor">{{ draft.shadow }}</span>
+          </label>
+        </fieldset>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Timing</legend>
+
+          <label class="linha">
+            <span class="rotulo">Starts at</span>
+            <input type="number" class="numero" [min]="limits['startSeconds'].min" [max]="limits['startSeconds'].max"
+              [step]="limits['startSeconds'].step" [value]="draft.startSeconds"
+              (change)="onNumber('startSeconds', $any($event.target).value)">
+            <span class="valor">s into the clip</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Stays for</span>
+            <input type="number" class="numero" [min]="limits['holdSeconds'].min" [max]="limits['holdSeconds'].max"
+              [step]="limits['holdSeconds'].step" [value]="hold" [disabled]="draft.holdAuto || !endsOnItsOwn"
+              (change)="onHold($any($event.target).value)">
+            <span class="valor">s</span>
+          </label>
+
+          <label class="linha linha-check">
+            <input type="checkbox" [checked]="draft.holdAuto" [disabled]="!endsOnItsOwn"
+              (change)="onHoldAuto($any($event.target).checked)">
+            <span>work it out from the text length</span>
+          </label>
+
+          @if (!endsOnItsOwn) {
+            <p class="nota">With no exit the tag stays until the clip ends, so there is nothing to time.</p>
+          }
+        </fieldset>
+
+        <fieldset class="grupo" [disabled]="isSpecial">
+          <legend class="grupo-titulo">Animation</legend>
+
+          @if (isSpecial) {
+            <p class="nota">This design arrives and leaves the way it was choreographed. The seconds it stays are still yours, under Timing.</p>
+          }
+
+          <label class="linha">
+            <span class="rotulo">Arrives</span>
+            <select [value]="draft.anim" (change)="patch({ anim: $any($event.target).value })">
+              <optgroup label="None"><option value="none" [selected]="draft.anim === 'none'">None</option></optgroup>
+              @for (group of animGroups; track group.group) {
+                <optgroup [label]="group.group">
+                  @for (item of group.items; track item.id) {
+                    <option [value]="item.id" [selected]="item.id === draft.anim">{{ item.label }}</option>
+                  }
+                </optgroup>
+              }
+            </select>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Over</span>
+            <input type="range" [min]="limits['animSeconds'].min" [max]="limits['animSeconds'].max"
+              [step]="limits['animSeconds'].step" [value]="draft.animSeconds"
+              (input)="onNumber('animSeconds', $any($event.target).value)">
+            <span class="valor">{{ draft.animSeconds.toFixed(2) }}s</span>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Leaves</span>
+            <select [value]="draft.exit" (change)="patch({ exit: $any($event.target).value })">
+              <optgroup label="None">
+                <option value="none" [selected]="draft.exit === 'none'">Stays on screen</option>
+              </optgroup>
+              @for (group of exitGroups; track group.group) {
+                <optgroup [label]="group.group">
+                  @for (item of group.items; track item.id) {
+                    <option [value]="item.id" [selected]="item.id === draft.exit">{{ item.label }}</option>
+                  }
+                </optgroup>
+              }
+            </select>
+          </label>
+
+          @if (draft.exit !== 'none') {
+            <label class="linha">
+              <span class="rotulo">Over</span>
+              <input type="range" [min]="limits['exitSeconds'].min" [max]="limits['exitSeconds'].max"
+                [step]="limits['exitSeconds'].step" [value]="draft.exitSeconds"
+                (input)="onNumber('exitSeconds', $any($event.target).value)">
+              <span class="valor">{{ draft.exitSeconds.toFixed(2) }}s</span>
+            </label>
+          }
+        </fieldset>
+
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">Text animation</legend>
+
+          <label class="linha">
+            <span class="rotulo">Letters</span>
+            <select [value]="draft.textAnim" (change)="patch({ textAnim: $any($event.target).value })">
+              <optgroup label="None"><option value="none" [selected]="draft.textAnim === 'none'">None</option></optgroup>
+              @for (group of textGroups; track group.group) {
+                <optgroup [label]="group.group">
+                  @for (item of group.items; track item.id) {
+                    <option [value]="item.id" [selected]="item.id === draft.textAnim">{{ item.label }}</option>
+                  }
+                </optgroup>
+              }
+            </select>
+          </label>
+
+          <label class="linha">
+            <span class="rotulo">Stagger</span>
+            <input type="range" [min]="limits['stagger'].min" [max]="limits['stagger'].max"
+              [step]="limits['stagger'].step" [value]="draft.stagger"
+              (input)="onNumber('stagger', $any($event.target).value)">
+            <span class="valor">{{ draft.stagger.toFixed(3) }}s</span>
+          </label>
+        </fieldset>
+
+      </div>
+    </div>
+
+    <footer class="rodape">
+      @if (removable) {
+        <button mat-button class="remover" (click)="remove()">
+          <span class="btn-conteudo"><mat-icon aria-hidden="true">delete_outline</mat-icon><span>Remove the tag</span></span>
+        </button>
+      }
+      <span class="espaco"></span>
+      <button mat-button (click)="close()">Cancel</button>
+      <button mat-raised-button color="primary" [disabled]="qrError !== null" (click)="apply()">Use this tag</button>
+    </footer>
+  </div>
+</div>

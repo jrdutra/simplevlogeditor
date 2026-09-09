@@ -1,0 +1,208 @@
+<!-- Moved to <body> for the same reason every other dialog here is: the page's
+     card opens a stacking context, and no z-index written inside one can lift a
+     modal over the site menu. -->
+<div class="fundo" appBodyPortal (click)="onBackdrop()">
+  <div class="painel" role="dialog" aria-modal="true" aria-labelledby="fonte-som-titulo"
+    (click)="$event.stopPropagation()">
+
+    <header class="topo">
+      <div class="titulo">
+        <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+        <div>
+          <h2 id="fonte-som-titulo">{{ heading }}</h2>
+          @if (subheading) { <p class="subtitulo">{{ subheading }}</p> }
+        </div>
+      </div>
+      <!-- Shut while recording, like the footer's Cancel and unlike the backdrop
+           only by accident before this: it sits thirty pixels from Stop, and one
+           click on it used to throw away everything that had been said. The way
+           out of a recording is Stop, which keeps it, or "Throw it away", which
+           says what it does.
+           Open while the cleanup runs, though. Cleaning up ten minutes of
+           narration is a long wait behind a backdrop that covers the whole page,
+           and a recording is written to disk whether or not this dialog is still
+           on screen when it finishes. -->
+      <button mat-icon-button (click)="close()" aria-label="Close"
+        [disabled]="stage === 'recording'"
+        [title]="working ? 'Close. A recording is still saved to your computer when this finishes.' : 'Close'">
+        <mat-icon>close</mat-icon>
+      </button>
+    </header>
+
+    <div class="corpo">
+      @switch (stage) {
+
+        <!-- ------------------------------------------------------- choosing -->
+        @case ('choose') {
+          <div class="escolhas">
+            <button mat-raised-button color="primary" (click)="choose(fileInput)">
+              <span class="btn-conteudo">
+                <mat-icon aria-hidden="true">upload_file</mat-icon>
+                <span>Upload a sound file</span>
+              </span>
+            </button>
+
+            <button mat-stroked-button (click)="startRecording()" [disabled]="!canRecord">
+              <span class="btn-conteudo">
+                <mat-icon aria-hidden="true">mic</mat-icon>
+                <span>Record it now</span>
+              </span>
+            </button>
+          </div>
+
+          <input hidden #fileInput type="file" [accept]="accepted" (change)="onFile($event)">
+
+          <p class="ajuda">
+            @if (canRecord) {
+              Either way you will be able to take the background noise out and cut the pauses before it is used.
+              A recording is saved to your computer as soon as you stop.
+            } @else {
+              This browser cannot open a microphone, so recording is not available here. A file you already have
+              works exactly the same way.
+            }
+          </p>
+        }
+
+        <!-- ------------------------------------------------------ recording -->
+        @case ('recording') {
+          <div class="gravando">
+            <div class="gravando-cabeca">
+              <span class="ponto" [class.pausado]="paused" aria-hidden="true"></span>
+              <span class="relogio">{{ formatTime(elapsed) }}</span>
+              <span class="estado">{{ paused ? 'Paused' : 'Recording' }}</span>
+            </div>
+
+            <!-- The meter is not decoration. Recording into a tab with nothing to
+                 show for it is how four minutes of a muted microphone happen. -->
+            <div class="medidor" role="img" [attr.aria-label]="'Input level ' + levelPercent + ' percent'">
+              <span class="medidor-barra" [style.width.%]="levelPercent"></span>
+            </div>
+
+            <p class="ajuda">
+              @if (level < 0.01 && !paused && elapsed > 2) {
+                Nothing is reaching the microphone. Check that the right one is selected and that it is not muted.
+              } @else {
+                Speak normally. When you stop, the recording is cleaned up and saved to your computer straight away.
+              }
+            </p>
+
+            <div class="gravando-acoes">
+              <button mat-raised-button color="primary" (click)="stopRecording()">
+                <span class="btn-conteudo"><mat-icon aria-hidden="true">stop</mat-icon><span>Stop</span></span>
+              </button>
+              <button mat-stroked-button (click)="togglePause()">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">{{ paused ? 'play_arrow' : 'pause' }}</mat-icon>
+                  <span>{{ paused ? 'Carry on' : 'Pause' }}</span>
+                </span>
+              </button>
+              <button mat-button (click)="discardRecording()">Throw it away</button>
+            </div>
+          </div>
+        }
+
+        <!-- --------------------------------------------------------- review -->
+        @case ('review') {
+          <div class="revisao">
+            <p class="nome-som">
+              <mat-icon aria-hidden="true">{{ recorded ? 'mic' : 'audiotrack' }}</mat-icon>
+              <span>{{ report?.file?.name || sourceName }}</span>
+              @if (resultNote) { <span class="nota">{{ resultNote }}</span> }
+            </p>
+
+            @if (previewUrl; as url) {
+              <audio class="previa" controls [src]="url"></audio>
+            }
+
+            <fieldset class="ajustes" [disabled]="working">
+              <legend>Before it is used</legend>
+
+              <label class="check">
+                <input type="checkbox" [checked]="settings.removeNoise"
+                  (change)="onRemoveNoise($any($event.target).checked)">
+                <span>
+                  Take the background out
+                  <small>Fans, hiss, the room itself — measured from the quiet moments and subtracted.</small>
+                </span>
+              </label>
+
+              <label class="check">
+                <input type="checkbox" [checked]="settings.cutSilence"
+                  (change)="onCutSilence($any($event.target).checked)">
+                <span>
+                  Cut the pauses
+                  <small>The same detector the Silence Cutter uses, so it behaves the way you already know.</small>
+                </span>
+              </label>
+
+              @if (settings.cutSilence) {
+                <label class="linha-preset">
+                  <span>How hard</span>
+                  <!-- `[selected]` on the options rather than `[value]` on the
+                       select: a value bound to the parent element is applied
+                       before the options inside it exist, so it lands on an empty
+                       list and is quietly dropped. -->
+                  <select (change)="onPreset($any($event.target).value)" [title]="presetNote">
+                    @for (preset of presets; track preset.id) {
+                      <option [value]="preset.id" [selected]="preset.id === settings.preset">{{ preset.label }}</option>
+                    }
+                  </select>
+                </label>
+              }
+            </fieldset>
+
+            @if (working) {
+              <div class="progresso">
+                <mat-progress-bar mode="determinate" [value]="workPercent"></mat-progress-bar>
+                <span>{{ workPercent }}% — working on the sound, nothing leaves your browser</span>
+              </div>
+            }
+
+            <div class="revisao-acoes">
+              <button mat-stroked-button (click)="apply()" [disabled]="working">
+                <span class="btn-conteudo">
+                  <mat-icon aria-hidden="true">auto_fix_high</mat-icon>
+                  <span>{{ report ? 'Apply again' : 'Apply' }}</span>
+                </span>
+              </button>
+
+              @if (report) {
+                <button mat-button (click)="download()" [disabled]="working" [title]="downloadName">
+                  <span class="btn-conteudo">
+                    <mat-icon aria-hidden="true">download</mat-icon>
+                    <span>{{ downloaded ? 'Download again' : 'Download it' }}</span>
+                  </span>
+                </button>
+              }
+            </div>
+
+            @if (downloaded) {
+              <p class="salvo">
+                <mat-icon aria-hidden="true">check_circle</mat-icon>
+                <span>Saved to your computer as "{{ downloadName }}".</span>
+              </p>
+            }
+          </div>
+        }
+      }
+
+      @if (errorMessage) {
+        <p class="erro">
+          <mat-icon aria-hidden="true">error_outline</mat-icon>
+          <span>{{ errorMessage }} @if (errorHint) { <small>{{ errorHint }}</small> }</span>
+        </p>
+      }
+    </div>
+
+    <footer class="rodape">
+      @if (stage === 'review') {
+        <button mat-button (click)="back()" [disabled]="working">Choose something else</button>
+        <button mat-raised-button color="primary" (click)="use()" [disabled]="working || needsApply">
+          Use this sound
+        </button>
+      } @else {
+        <button mat-button (click)="close()" [disabled]="stage === 'recording'">Cancel</button>
+      }
+    </footer>
+  </div>
+</div>

@@ -1,0 +1,62 @@
+{
+  "name": "simplevlogeditor-desktop",
+  "productName": "SimpleVlogEditor",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SimpleVlogEditor as a Windows desktop application.",
+  "author": "simplevlogeditor.com",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build:web": "npm --prefix ../web run build:site",
+    "dist": "npm --prefix ../web run build",
+    "pack": "electron-builder --win && node scripts/publish-installer.js"
+  },
+  "devDependencies": {
+    "electron": "^44.3.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.simplevlogeditor.desktop",
+    "productName": "SimpleVlogEditor",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../web/dist/browser",
+        "to": "site",
+        "filter": [
+          "**/*",
+          "!assets/download/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "../web/src/assets/icons/icon-256.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

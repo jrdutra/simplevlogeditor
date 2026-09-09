@@ -1,0 +1,80 @@
+<div class="fundo" appBodyPortal (click)="close()">
+  <div class="painel" role="dialog" aria-modal="true" aria-labelledby="transicao-titulo"
+    (click)="$event.stopPropagation()">
+
+    <header class="topo">
+      <div class="titulo">
+        <mat-icon aria-hidden="true">animation</mat-icon>
+        <h2 id="transicao-titulo">{{ heading }}</h2>
+      </div>
+      <button mat-icon-button (click)="close()" aria-label="Close">
+        <mat-icon>close</mat-icon>
+      </button>
+    </header>
+
+    <div class="corpo">
+      <!-- The list is the smaller half of this dialog. Twenty-five transitions
+           described in words are twenty-five guesses; the same twenty-five played
+           between the reader's own two shots are a decision. -->
+      <label class="linha">
+        <span class="rotulo">Animation</span>
+        <select [value]="kind" (change)="onKind($any($event.target).value)">
+          @for (group of groups; track group.group) {
+            <optgroup [label]="group.group">
+              @for (item of group.items; track item.id) {
+                <option [value]="item.id" [selected]="item.id === kind">{{ item.label }}</option>
+              }
+            </optgroup>
+          }
+        </select>
+      </label>
+
+      <p class="descricao">{{ definition.description }}</p>
+
+      <div class="palco" [style.aspect-ratio]="width + ' / ' + height">
+        @if (loading) {
+          <span class="carregando">Reading a frame from each shot…</span>
+        }
+        <canvas #stage class="tela" aria-label="Preview of the transition"></canvas>
+      </div>
+
+      <div class="controles">
+        <label class="linha">
+          <span class="rotulo">How long</span>
+          <input type="range" [min]="limits.min" [max]="limits.max" [step]="limits.step"
+            [value]="seconds" (input)="onSeconds($any($event.target).value)">
+          <span class="valor">{{ seconds.toFixed(2) }}s</span>
+        </label>
+
+        @if (showsColour) {
+          <label class="linha">
+            <span class="rotulo">Colour of the brush</span>
+            <input type="color" [value]="colour" (input)="onColour($any($event.target).value)">
+            <span class="valor">{{ colour }}</span>
+          </label>
+        }
+
+        <button mat-button class="replay" (click)="restart()">
+          <span class="btn-conteudo"><mat-icon aria-hidden="true">replay</mat-icon><span>Play it again</span></span>
+        </button>
+      </div>
+
+      <p class="ajuda">
+        A transition is paid for out of the silence at the end of the shot before it and the start of the one after —
+        silence the cut would otherwise throw away. Where there is not enough, the animation plays over what is there.
+        {{ count }} animations to choose from.
+      </p>
+    </div>
+
+    <footer class="rodape">
+      @if (removable) {
+        <button mat-button class="remover" (click)="remove()">
+          <span class="btn-conteudo"><mat-icon aria-hidden="true">delete_outline</mat-icon><span>Remove</span></span>
+        </button>
+      }
+      <span class="espaco"></span>
+      <button mat-button (click)="close()">Cancel</button>
+      <button mat-raised-button color="primary" (click)="apply()">Use this one</button>
+    </footer>
+  </div>
+</div>

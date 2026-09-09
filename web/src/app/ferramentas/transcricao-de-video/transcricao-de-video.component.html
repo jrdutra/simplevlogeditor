@@ -1,0 +1,266 @@
+<div class="container">
+
+  <!-- ------------------------------------------------------------- source -->
+  <section class="painel painel-fonte">
+    <h2>The recording</h2>
+
+    <div class="fonte">
+      <button mat-stroked-button type="button" (click)="picker.click()" [disabled]="sourceBusy">
+        <span class="btn-conteudo"><mat-icon>upload_file</mat-icon> Choose a video or audio file</span>
+      </button>
+      <input #picker type="file" class="oculto" accept="video/*,audio/*,.mp4,.m4a,.webm,.wav,.mp3,.ogg" [disabled]="sourceBusy" (change)="onFile($event)">
+
+      @if (fileName) {
+        <span class="arquivo" [title]="fileName">{{ fileName }}</span>
+        <span class="nota">{{ formatSize(fileSize) }}</span>
+        @if (!sourceBusy) {
+          <button class="link-acao" type="button" (click)="clearFile()">Remove</button>
+        }
+      }
+    </div>
+
+    <p class="nota">
+      Nothing is uploaded: the file is decoded and listened to inside this tab. Up to {{ maxMinutes }} minutes.
+      You can import audio or video recordings exported from Zoom, Teams, Meet or another meeting app.
+    </p>
+  </section>
+
+  <section class="painel painel-reuniao">
+    <h2>Record a meeting</h2>
+    <p class="nota">Choose the meeting tab and enable <strong>Share audio</strong> in the browser dialog.
+      Only audio is saved. Transcription starts after you stop recording; this is not live captioning.
+      For desktop meeting apps, audio sharing depends on your browser and operating system.</p>
+    <label class="meeting-option"><input type="checkbox" [(ngModel)]="includeMicrophone" [disabled]="sourceBusy">
+      Include my microphone</label>
+    <p class="nota">Use headphones when including your microphone to reduce echo. Let participants know you are recording.
+      Recording stops automatically after {{ maxMinutes }} minutes or when sharing ends. Keep this page open.</p>
+    <div class="acoes">
+      @if (capturing) {
+        <span role="status">Recording audio · {{ time(captureSeconds) }}</span>
+        <button mat-flat-button color="primary" type="button" (click)="stopMeeting()">Stop and transcribe</button>
+      } @else {
+        <button mat-stroked-button type="button" (click)="startMeeting()" [disabled]="sourceBusy || !captureSupported">
+          {{ captureStarting ? 'Waiting for audio sharing…' : 'Capture meeting audio' }}
+        </button>
+      }
+    </div>
+    @if (!captureSupported) { <p class="nota">Meeting audio capture is unavailable in this browser. Import an exported recording above.</p> }
+  </section>
+
+  <!-- ------------------------------------------------------------ setting -->
+  <div class="paineis">
+    <section class="painel">
+      <h2>Recognition</h2>
+
+      <label class="campo">
+        <span>Model</span>
+        <select [(ngModel)]="modelId" name="model" [disabled]="working">
+          @for (model of models; track model.id) {
+            <option [value]="model.id">{{ model.label }} · {{ model.megabytes }} MB</option>
+          }
+        </select>
+        <small>{{ chosenModel.note }}</small>
+      </label>
+
+      <label class="campo">
+        <span>Spoken language</span>
+        <select [(ngModel)]="language" name="language" [disabled]="working">
+          @for (item of languages; track item.code) {
+            <option [value]="item.code">{{ item.label }}</option>
+          }
+        </select>
+      </label>
+
+      @if (languageWarning) {
+        <p class="nota aviso">{{ languageWarning }}</p>
+      }
+
+      <p class="nota">
+        Model files are downloaded from Hugging Face and can be cached by your browser. Your recording stays on this device. Download sizes are approximate; loading and processing still take time.
+      </p>
+
+      <div class="acoes">
+        @if (!working) {
+          <button mat-flat-button color="primary" type="button" [disabled]="!file || sourceBusy || !!languageWarning" (click)="run()">
+            <span class="btn-conteudo"><mat-icon>graphic_eq</mat-icon> Transcribe</span>
+          </button>
+        } @else {
+          <button mat-stroked-button type="button" (click)="stop()">
+            <span class="btn-conteudo"><mat-spinner diameter="18"></mat-spinner> Stop</span>
+          </button>
+        }
+      </div>
+    </section>
+
+    <!-- --------------------------------------------------------- shaping -->
+    <section class="painel">
+      <h2>Caption shape</h2>
+
+      <div class="grade">
+        <label class="campo">
+          <span>Line width · {{ shape.lineLength }} characters</span>
+          <input type="range" [min]="limits.lineLength.min" [max]="limits.lineLength.max"
+            [step]="limits.lineLength.step" [value]="shape.lineLength"
+            (input)="onShape('lineLength', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Lines per caption · {{ shape.maxLines }}</span>
+          <input type="range" [min]="limits.maxLines.min" [max]="limits.maxLines.max" [step]="limits.maxLines.step"
+            [value]="shape.maxLines" (input)="onShape('maxLines', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Shortest · {{ shape.minSeconds.toFixed(1) }} s</span>
+          <input type="range" [min]="limits.minSeconds.min" [max]="limits.minSeconds.max"
+            [step]="limits.minSeconds.step" [value]="shape.minSeconds"
+            (input)="onShape('minSeconds', $any($event.target).value)">
+        </label>
+
+        <label class="campo">
+          <span>Longest · {{ shape.maxSeconds.toFixed(1) }} s</span>
+          <input type="range" [min]="limits.maxSeconds.min" [max]="limits.maxSeconds.max"
+            [step]="limits.maxSeconds.step" [value]="shape.maxSeconds"
+            (input)="onShape('maxSeconds', $any($event.target).value)">
+        </label>
+      </div>
+
+      <p class="nota">
+        These change the file, not the recognition — move them and the transcript is rebuilt at once, without
+        listening again.
+      </p>
+    </section>
+  </div>
+
+  <!-- ----------------------------------------------------------- progress -->
+  @if (progress && working) {
+    <div class="progresso">
+      <div class="progresso-topo">
+        <span>{{ stageLabel }}@if (progress.detail) {<span class="detalhe"> · {{ progress.detail }}</span>}</span>
+        @if (!indeterminate) { <span>{{ percent }}%</span> }
+      </div>
+      <mat-progress-bar [mode]="indeterminate ? 'indeterminate' : 'determinate'" [value]="percent"></mat-progress-bar>
+    </div>
+  }
+
+  @if (message && !errorMessage) {
+    <div class="mensagem"><mat-icon>check_circle</mat-icon><span>{{ message }}</span></div>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro">
+      <mat-icon>error_outline</mat-icon>
+      <span>
+        {{ errorMessage }}
+        @if (errorHint) { <small class="dica">{{ errorHint }}</small> }
+      </span>
+    </div>
+  }
+
+  @if (mediaUrl) {
+    <section class="painel media-review">
+      <h2>Listen and review</h2>
+      <video #player [src]="mediaUrl" controls preload="metadata" [class.sem-imagem]="audioOnly"
+        (loadedmetadata)="onMediaLoaded()" (timeupdate)="playbackTime = player.currentTime"
+        aria-label="Original recording"></video>
+      <a [href]="mediaUrl" [download]="fileName">Download original recording</a>
+      <div class="live-caption" aria-label="Current caption">{{ activeCaption || 'Captions will appear here during playback.' }}</div>
+    </section>
+  }
+  <!-- ------------------------------------------------------------- result -->
+  @if (cues.length) {
+    <section class="painel painel-transcricao">
+      <h2>The transcript</h2>
+
+      <dl class="resumo">
+        <div><dt>Captions</dt><dd>{{ cues.length }}</dd></div>
+        <div><dt>Words</dt><dd>{{ words }}</dd></div>
+        <div><dt>Speech</dt><dd>{{ spoken }}</dd></div>
+        <div><dt>Ends at</dt><dd>{{ covered }}</dd></div>
+      </dl>
+
+      <label class="campo">
+        <span>File format</span>
+        <select [(ngModel)]="formatId" name="format">
+          @for (item of formats; track item.id) {
+            <option [value]="item.id">{{ item.label }} (.{{ item.extension }})</option>
+          }
+        </select>
+        <small>{{ format.note }}</small>
+      </label>
+
+      <div class="acoes">
+        <button mat-flat-button color="primary" type="button" (click)="download()">
+          <span class="btn-conteudo"><mat-icon>download</mat-icon> Download {{ downloadName }}</span>
+        </button>
+        <button mat-stroked-button type="button" (click)="copy()">
+          <span class="btn-conteudo"><mat-icon>content_copy</mat-icon> Copy</span>
+        </button>
+      </div>
+
+      <pre class="saida" aria-label="The transcript as it will be saved">{{ preview.slice(0, 30000) }}</pre>
+      @if (preview.length > 30000) { <p class="nota">Preview shortened. Downloads contain the complete transcript.</p> }
+
+      <h2>Review captions</h2>
+      <p class="nota">Play each caption and correct text or timing before publishing. Times are in seconds.
+        Reading-speed notices identify layout issues; they are not recognition confidence scores.</p>
+      <ol class="linhas" [start]="page * pageSize + 1">
+        @for (cue of visibleCues; track $index) {
+          <li class="editable-cue">
+            <button mat-stroked-button type="button" (click)="seek(cue)" aria-label="Play this caption">{{ time(cue.start) }} ▶</button>
+            <div class="cue-fields">
+              <label class="speaker-field">Participant (manual)
+                <input type="text" maxlength="80" placeholder="e.g. Maria" [value]="cue.speaker || ''" [disabled]="working"
+                  (change)="editCue($index, 'speaker', $any($event.target).value); $any($event.target).value = cues[page * pageSize + $index].speaker || ''">
+              </label>
+              <div class="cue-times">
+                <label>Start <input type="number" min="0" step="0.001" [value]="cue.start" [disabled]="working"
+                  (change)="editCue($index, 'start', $any($event.target).value); $any($event.target).value = cues[page * pageSize + $index].start"></label>
+                <label>End <input type="number" min="0" step="0.001" [value]="cue.end" [disabled]="working"
+                  (change)="editCue($index, 'end', $any($event.target).value); $any($event.target).value = cues[page * pageSize + $index].end"></label>
+              </div>
+              <textarea [value]="cue.text" [disabled]="working" rows="2" aria-label="Caption text"
+                (change)="editCue($index, 'text', $any($event.target).value); $any($event.target).value = cues[page * pageSize + $index].text"></textarea>
+              @if (warnings(cue)) { <small class="aviso">{{ warnings(cue) }}</small> }
+            </div>
+          </li>
+        }
+      </ol>
+      <div class="acoes">
+        <button mat-stroked-button (click)="page = page - 1" [disabled]="page === 0">Previous</button>
+        <span>Page {{ page + 1 }} of {{ pages }}</span>
+        <button mat-stroked-button (click)="page = page + 1" [disabled]="page + 1 >= pages">Next</button>
+      </div>
+    </section>
+  }
+</div>
+
+<app-help-panel label="How Video Transcription works">
+  <div class="instrucoes">
+    <h1>Video Transcription and Subtitle Generator</h1>
+    <p>Transcribe speech locally with Whisper and export SRT, SBV, WebVTT or plain and timed text.
+      Select the spoken language when you know it. Small is the default quality option; Base and Tiny
+      reduce download size and processing time. Large v3 Turbo requires much more memory.</p>
+    <h2>Recording a meeting</h2>
+    <p>Capture the meeting's audio without leaving the page: choose the tab or window in the browser dialog and
+      enable <strong>Share audio</strong>. The video is discarded and only the sound is kept, optionally mixed with
+      your microphone. Recording stops when you press stop, when sharing ends, after {{ maxMinutes }} minutes, or when
+      the recording grows too large; transcription then starts on its own. Whether the audio of a desktop meeting app
+      can be shared at all depends on your browser and operating system — where it cannot, export the recording from
+      the meeting app and import it above. Nothing is live: the transcript appears after the recording stops.</p>
+    <h2>Accuracy and review</h2>
+    <p>Recognition uses overlapping audio context and word alignment to assemble captions. Automatic
+      timestamps and words can still be wrong, particularly with music, multiple speakers, names or numbers.
+      Use the player and editable captions to check your recording. Assign participant names manually to each
+      caption; names are included in exports. Automatic speaker detection is not provided.</p>
+    <p>Caption shape changes reformat existing text. Timing takes priority when a minimum display time
+      would overlap the next caption. Notices flag fast reading or captions outside your preferred shape.
+      Manual edits remain in the transcript when you change the shape.</p>
+    <h2>Processing and export</h2>
+    <p>Recordings up to {{ maxMinutes }} minutes are decoded in bounded blocks. Recognition runs in a worker;
+      Stop cancels it and keeps completed captions. Model downloads use the network, but your audio is not uploaded.
+      Speed depends on your processor and model; long recordings can take a substantial time.</p>
+    <p>Use SRT or SBV for caption uploads, WebVTT for web players, or text for a readable transcript.
+      Downloaded files include your edits. Review the result before publishing.</p>
+  </div>
+</app-help-panel>

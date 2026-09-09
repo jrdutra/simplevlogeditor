@@ -1,0 +1,491 @@
+:host {
+  display: block;
+  min-width: 0;
+}
+
+*, *::before, *::after { box-sizing: border-box; }
+
+.container {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.5rem);
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+  grid-template-areas:
+    "preview text"
+    "media text"
+    "animation output";
+  gap: 1rem;
+  /* Stretching is left on: the panels of a row end on one line, and the text
+     panel, which spans two rows, is the height of both of them. */
+  align-items: stretch;
+}
+
+/* ----------------------------------------------------------------- stage */
+
+.palco {
+  grid-area: preview;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  background: rgba(20, 19, 28, 0.35);
+}
+
+.preview-frame {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  height: clamp(220px, 29vw, 400px);
+}
+
+/* Sized from the canvas's own pixels, so the frame can never be distorted by
+   the layout; the chequerboard is what shows through a transparent background. */
+.preview {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 100%;
+  margin: 0 auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  background:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.06) 75%),
+    #05121f;
+  background-position: 0 0, 12px 12px;
+  background-size: 24px 24px;
+}
+
+.palco-controles {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.palco-controles button { color: var(--aqua) !important; flex-shrink: 0; }
+
+.scrub {
+  flex: 1;
+  accent-color: var(--aqua);
+  min-width: 0;
+}
+
+.tempo {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+.paineis {
+  display: contents;
+}
+
+.painel-texto { grid-area: text; }
+.painel-midias { grid-area: media; }
+.painel-animacao { grid-area: animation; }
+.painel-saida { grid-area: output; }
+
+.painel {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  background: rgba(43, 42, 55, 0.45);
+}
+
+.painel h2,
+.palco h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--aqua);
+}
+
+.painel h2:not(:first-child) { margin-top: 0.5rem; }
+
+.grade {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.painel-midias {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+}
+
+.grupo-midia {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.grupo-midia + .grupo-midia {
+  border-left: 1px solid var(--line-soft);
+  padding-left: 1rem;
+}
+
+.container > .progresso,
+.container > .mensagem,
+.container > .resumo {
+  grid-column: 1 / -1;
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.campo > span {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.campo small {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.campo.estreito { max-width: 7rem; }
+
+.campo textarea,
+.campo select,
+.campo input[type="number"] {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.campo input[type="range"] { accent-color: var(--aqua); width: 100%; }
+
+.campo input[type="color"] {
+  width: 100%;
+  height: 2.1rem;
+  padding: 0.15rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  cursor: pointer;
+}
+
+.campo textarea:focus-visible,
+.campo select:focus-visible,
+.campo input:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------------- alignment */
+
+.alinhamento {
+  min-width: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.6em;
+  padding: 0.6rem 0.75rem 0.75rem;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.alinhamento legend {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  padding: 0 0.3rem;
+}
+
+.grade-alinhamento {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.3rem;
+  width: 11rem;
+  max-width: 100%;
+}
+
+.celula {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 2.1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.4em;
+  background: rgba(20, 19, 28, 0.7);
+  cursor: pointer;
+  padding: 0;
+}
+
+.celula:hover { border-color: rgba(209, 96, 255, 0.5); }
+
+.celula.ativa {
+  border-color: var(--aqua);
+  background: rgba(209, 96, 255, 0.12);
+}
+
+.marca {
+  display: block;
+  height: 2px;
+  width: 60%;
+  background: var(--text-muted);
+  border-radius: 2px;
+}
+
+.celula.ativa .marca { background: var(--aqua); }
+.marca-left { margin-right: auto; margin-left: 0.35rem; }
+.marca-right { margin-left: auto; margin-right: 0.35rem; }
+
+/* ------------------------------------------------------------ file rows */
+
+.fundo-acoes {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.arquivo {
+  font-size: 0.76rem;
+  color: var(--aqua);
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-acao {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aqua);
+  font-size: 0.74rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-acao:hover { color: var(--text-main); }
+
+.nota {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.nota.destaque { color: var(--text-main); font-size: 0.8rem; }
+
+.checks {
+  display: flex;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.8rem;
+  color: var(--text-main);
+  cursor: pointer;
+}
+
+.check input { accent-color: var(--aqua); cursor: pointer; margin: 0; }
+
+/* --------------------------------------------------------------- actions */
+
+.acoes {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+
+.acoes button,
+.fundo-acoes button {
+  max-width: 100%;
+  height: auto;
+  min-height: 2.5rem;
+  padding-block: 0.65rem;
+  white-space: normal;
+}
+
+.btn-conteudo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  line-height: 1.3;
+}
+
+.btn-conteudo mat-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  font-size: 1.2rem;
+  line-height: 1.2rem;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.btn-conteudo mat-spinner { margin: 0; flex: 0 0 auto; }
+
+.progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(43, 42, 55, 0.55);
+}
+
+.progresso-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-main);
+}
+
+.mensagem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(209, 96, 255, 0.08);
+  border: 1px solid rgba(209, 96, 255, 0.2);
+  color: var(--aqua);
+  font-size: 0.9rem;
+}
+
+.mensagem-erro {
+  background: rgba(244, 67, 54, 0.08);
+  border-color: rgba(244, 67, 54, 0.3);
+  color: #f44336;
+  align-items: flex-start;
+}
+
+.mensagem .dica {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  opacity: 0.85;
+}
+
+.resumo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+  padding: 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(43, 42, 55, 0.45);
+}
+
+.resumo dt {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.resumo dd {
+  margin: 0.15rem 0 0;
+  font-size: 0.95rem;
+  color: var(--text-main);
+}
+
+@media (max-width: 1000px) {
+  .container {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "preview text"
+      "media text"
+      "animation output";
+  }
+
+  .painel-midias { grid-template-columns: minmax(0, 1fr); }
+  .grupo-midia + .grupo-midia {
+    border-left: 0;
+    border-top: 1px solid var(--line-soft);
+    padding-left: 0;
+    padding-top: 1rem;
+  }
+}
+
+@media (max-width: 760px) {
+  .container {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "preview" "text" "media" "animation" "output";
+  }
+
+  .preview-frame { height: clamp(180px, 50vw, 340px); }
+  .arquivo { max-width: 8rem; }
+}
+
+@media (max-width: 380px) {
+  .grade { grid-template-columns: minmax(0, 1fr); }
+  .palco, .painel { padding: 0.75rem; }
+  .palco-controles { flex-wrap: wrap; }
+  .tempo { margin-left: auto; }
+}
+
+/* ------------------------------------------------------------- the cover */
+
+.seo-capa {
+  display: block;
+  margin: 18px 0 4px;
+}
+
+.seo-capa img {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  height: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+/* Keep the composition compact while the application header stays fixed.
+
+   The panels no longer ask to be stretched one by one — the grid stretches all
+   of them — so what is left here is what each does with the height. The stage
+   gives it to the picture, which is the one thing on this page that is better
+   for being bigger; the text panel, which is the tallest box and sets the
+   height of the two rows it spans, keeps its alignment row on the bottom edge
+   so it lines up with the foot of the stage beside it; and the closing note or
+   button row of any panel rides the bottom for the same reason. */
+.preview-frame { flex: 1 1 auto; height: auto; min-height: clamp(220px, 34vh, 380px); }
+.painel-texto .alinhamento { margin-top: auto; }
+.painel > .nota:last-child,
+.painel > .acoes:last-child { margin-top: auto; }
+@media (max-width: 760px) {
+  .preview-frame { min-height: clamp(180px, 50vw, 340px); }
+  .painel-texto .alinhamento { margin-top: 0; }
+}

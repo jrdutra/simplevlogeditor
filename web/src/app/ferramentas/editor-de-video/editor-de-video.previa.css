@@ -1,0 +1,944 @@
+/*
+ * The preview: the picture, its transport, and the card describing whatever is
+ * playing. The strip of thumbnails that used to sit under it is gone — the list
+ * of clips further down the page was already the place to see and reorder them,
+ * and two rows saying the same thing cost the preview its height.
+ *
+ * The second half of what was one stylesheet; see the note at the top of
+ * `editor-de-video.component.css`. This half is loaded after that one and the
+ * order matters, so nothing here should be moved into the other file without
+ * checking what it would then come before.
+ *
+ * It also carries the sections that grew up around the preview rather than
+ * around the page: what the browser is keeping of the project, the failure
+ * messages, the presets drawer, and the controls added to the preview itself.
+ */
+
+/* -------------------------------------------------------------- preview */
+
+.btn-previa { white-space: nowrap; }
+
+.previa {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 18px 0 6px;
+  padding: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+  background: var(--panel-dark);
+}
+
+.previa-palco {
+  /* Positioned so the hidden decoder is contained by the stage rather than by
+     whatever happens to be the nearest positioned ancestor of the page. */
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  border-radius: 10px;
+  background: #000;
+}
+
+/* A box that is exactly the picture.
+   The stage is as wide as the pane and the picture is only as wide as its own
+   shape allows — a vertical project leaves black down both sides. Anything that
+   belongs *on the video* has to be anchored here rather than to the stage, or
+   it lands on that margin. It shrink-wraps because a flex item is sized by its
+   content, and the canvas keeps its own proportion under the two maximums. */
+.previa-quadro {
+  position: relative;
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.previa-tela {
+  display: block;
+  max-width: 100%;
+  /* The one number the handle under the stage changes. Unset, it is the 46vh
+     the picture always had — a little under half the window, which leaves the
+     transport, the lengths and the clip's own card on screen with it. */
+  max-height: var(--altura-video, 46vh);
+  width: auto;
+  height: auto;
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------ the handle under it --- */
+
+/* The vertical divider between the two panes, laid on its side: the same
+   dashed hairline, the same thin column of space around it, the same invisible
+   reach into what is above and below so there is something to grab. */
+.divisor-altura {
+  position: relative;
+  align-self: stretch;
+  height: 0.3rem;
+  margin: -0.35rem 0;
+  border: 0;
+  padding: 0;
+  /* `--line-hard` and two pixels, not `--line-soft` and one: a hairline at 22%
+     alpha is a fine border around a panel the eye already knows is there, and
+     nothing at all when it is the only mark on a dark field — dashed, less than
+     half of it is even ink. This has to be seen to be grabbed. */
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--line-hard) 0 5px,
+    transparent 5px 11px
+  );
+  background-size: 100% 2px;
+  background-position: center;
+  background-repeat: no-repeat;
+  transition: background-size 120ms ease;
+  cursor: row-resize;
+  touch-action: none;
+}
+
+.divisor-altura::before {
+  content: "";
+  position: absolute;
+  inset: -4px 0;
+  cursor: row-resize;
+}
+
+.divisor-altura:hover,
+.divisor-altura:focus-visible {
+  background-image: repeating-linear-gradient(
+    to right,
+    var(--aqua) 0 5px,
+    transparent 5px 11px
+  );
+  background-size: 100% 3px;
+  outline: none;
+}
+
+/* On the screen given over to the picture the height is the window's to decide,
+   so there is nothing here to move. */
+.previa-cheia .divisor-altura { display: none; }
+
+/* The decoder and the soundtrack still have to be in the document to play, so
+   they are hidden rather than removed — `display: none` would stop some
+   browsers from decoding at all. */
+.previa-oculto {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.previa-transporte {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.previa-botao {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--aqua);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.previa-botao:hover { background: rgba(209, 96, 255, 0.1); border-color: var(--aqua); }
+.previa-botao:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+
+.previa-tempo {
+  flex-shrink: 0;
+  min-width: 5ch;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.previa-total { text-align: right; }
+
+.previa-barra {
+  flex: 1 1 auto;
+  min-width: 0;
+  accent-color: var(--aqua);
+  cursor: pointer;
+}
+
+/* ------------------------------------------- the card under the preview */
+
+.previa-cartao {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(209, 96, 255, 0.28);
+  border-radius: 12px;
+  background: rgba(20, 19, 28, 0.5);
+}
+
+.previa-cartao-topo {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.previa-cartao-topo mat-icon { color: var(--aqua); flex-shrink: 0; }
+
+.previa-cartao-nome {
+  min-width: 0;
+  flex: 1 1 12rem;
+  color: var(--text-main);
+  font-size: 0.92rem;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.previa-cartao-posicao {
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  white-space: nowrap;
+}
+
+.previa-cartao input[type='text'] {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.6);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+.previa-cartao input[type='text']:focus { outline: 1px solid var(--aqua); }
+
+@media (max-width: 720px) {
+  .previa-tela { max-height: 34vh; }
+}
+
+/* ------------------------------------------------------------- the cover */
+
+.seo-capa {
+  display: block;
+  margin: 18px 0 4px;
+}
+
+.seo-capa img {
+  display: block;
+  width: 100%;
+  max-width: 760px;
+  height: auto;
+  border: 1px solid var(--line-soft);
+  border-radius: 12px;
+}
+
+/* ------------------------------------------------- project storage & errors */
+
+.reconectar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.85rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid rgba(255, 189, 89, 0.45);
+  border-radius: 10px;
+  background: rgba(255, 189, 89, 0.07);
+}
+
+.reconectar > mat-icon { color: #ffbd59; flex: 0 0 auto; }
+
+/* The paragraph beside it is what gives way when the row is narrow — the
+   button keeps its size and drops to a line of its own. */
+.reconectar-texto { flex: 1 1 18rem; }
+
+.reconectar-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 0;
+  font-size: 0.85rem;
+  color: var(--text-main);
+}
+
+.reconectar-texto span { color: var(--text-muted); }
+
+.reconectar-nomes {
+  font-size: 0.78rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.estado-salvo {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin: 0;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.estado-salvo mat-icon {
+  font-size: 1rem;
+  width: 1rem;
+  height: 1rem;
+}
+
+.estado-salvo-limpar { margin-left: auto; }
+
+.estado-salvo-parado { color: #ffbd59; }
+.estado-salvo-parado mat-icon { color: #ffbd59; }
+
+/* Set apart from Save and Open project: it is the one button in that group
+   that destroys something. */
+.btn-cache { color: #ff8a80; }
+
+.projeto-devolver { margin-left: 0.35rem; }
+
+.erro-clipe {
+  display: block;
+  margin-bottom: 0.15rem;
+  color: var(--text-main);
+}
+
+.erro-detalhe-botao {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  margin-top: 0.45rem;
+  padding: 0.15rem 0.35rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 0.78rem;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.erro-detalhe-botao:hover { opacity: 1; }
+
+.erro-detalhe-botao mat-icon {
+  font-size: 1.05rem;
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* The trace is the one place on this page where wrapping would hurt: a stack
+   frame broken across three lines is harder to read than one that scrolls. */
+.erro-detalhe {
+  margin: 0.4rem 0 0;
+  padding: 0.6rem 0.7rem;
+  max-height: 15rem;
+  overflow: auto;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.32);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.45;
+  white-space: pre;
+  color: var(--text-muted);
+}
+
+.aviso-aguardando { color: #ffbd59; }
+
+.texto-transporte { margin-top: -0.4rem; }
+
+/*
+ * A button in a flex row never gives up its label.
+ *
+ * Flex items shrink below their content by default, and a Material button
+ * answers that by folding its label into two or three lines rather than
+ * overflowing — so nothing looks broken to the layout engine while "Add the
+ * files" reads as three stacked words. Every row here would rather wrap, or
+ * squeeze the prose next to the button, than do that.
+ */
+.reconectar button,
+.linha-acoes button,
+.estado-salvo button,
+.acoes-baixo button,
+.previa-cartao-topo button {
+  flex: 0 0 auto;
+}
+
+/* `nowrap` only where the label is a few words. `.linha-acoes` is left out on
+   purpose — "Choose the sound for this clip" is long enough that on a narrow
+   phone wrapping is better than overflowing the dialog. `flex: 0 0 auto` above
+   is what actually stops the fold; this is belt and braces. `white-space` is
+   inherited, so it reaches Material's own label span without naming a class
+   this component does not own. */
+.reconectar button,
+.estado-salvo button,
+.acoes-baixo button,
+.previa-cartao-topo button {
+  white-space: nowrap;
+}
+
+/*
+ * Every field this component owns measures its padding *inside* its width.
+ *
+ * The site has no global `box-sizing` reset, so a field set to `width: 100%`
+ * with ten pixels of padding and a one-pixel border came out twenty-two pixels
+ * wider than the box holding it — and a field in a flex column, which stretches
+ * to the column on its own, did the same without anyone writing `100%` at all.
+ * That is the whole reason the inputs were hanging off the right edge of the
+ * card. A bare element selector is scoped to this component's own template by
+ * the emulated encapsulation, so it reaches the dialogs too and nothing else.
+ */
+input,
+select,
+textarea {
+  box-sizing: border-box;
+  max-width: 100%;
+}
+
+/* A number field has an intrinsic width of its own — wider than a narrow grid
+   track — and `min-width: auto` on a flex item refuses to go below it. */
+.com-unidade input,
+.campo input,
+.campo select {
+  min-width: 0;
+}
+
+/* ------------------------------------------------- the soundtrack's ramps */
+
+.som-fade {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.som-fade .linha-checks {
+  align-items: center;
+  row-gap: 0.4rem;
+}
+
+.campo-estreito { max-width: 8rem; }
+
+/* ------------------------------------------ marks, warnings and the card */
+
+.previa-ajustes {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--line-soft);
+}
+
+.previa-cartao-abrir { margin-left: auto; }
+
+.selo-mudo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-color: rgba(185, 200, 219, 0.4);
+  color: var(--text-muted);
+}
+
+.selo-mudo mat-icon {
+  font-size: 0.95rem;
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+/* The one warning on this page that is a problem rather than a note: part of
+   the clip will be silent, and nothing on the timeline shows it. */
+.aviso-som,
+.aviso-som-curto {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.4rem;
+  margin: 0;
+  color: #ff8a80;
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.aviso-som mat-icon,
+.aviso-som-curto mat-icon {
+  font-size: 1.05rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  flex-shrink: 0;
+  color: #ff8a80;
+}
+
+.progresso-percentual {
+  margin-right: 0.35rem;
+  color: var(--aqua);
+  font-variant-numeric: tabular-nums;
+}
+
+.check-silencio { margin-top: 0.5rem; }
+
+/* A button that reads as a link, for an action inside a sentence. */
+.ligacao {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--aqua);
+  font: inherit;
+  font-size: inherit;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.item-clipe.sem-som {
+  outline: 2px solid rgba(255, 138, 128, 0.85);
+  outline-offset: 1px;
+}
+
+.item-clipe.sem-som .tipo-icone { color: #ff8a80; }
+
+/* Louder than the amber `.aviso-clipe` it borrows its shape from: the others
+   are things to know about, this one is something to fix. */
+.aviso-sem-som,
+.aviso-sem-som mat-icon { color: #ff8a80; }
+
+.item-juncao {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  /* Inset on both sides so it reads as sitting *between* the rows rather than
+     as one more of them. */
+  margin: 0.15rem 1.6rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px dashed rgba(209, 96, 255, 0.35);
+  border-radius: 8px;
+  background: rgba(209, 96, 255, 0.05);
+  cursor: pointer;
+}
+
+.item-juncao:hover { background: rgba(209, 96, 255, 0.1); }
+
+/* The list's placeholder is 62px tall and full width, which is a clip. A join is
+   neither, and dropping one used to make the whole list settle. */
+.item-juncao .drag-placeholder {
+  height: 38px;
+  margin: 0.15rem 1.6rem;
+}
+.item-juncao:focus-visible { outline: 2px solid var(--aqua, #00ffd1); outline-offset: 2px; }
+
+.juncao-icone {
+  flex: 0 0 auto;
+  color: var(--aqua, #00ffd1);
+}
+
+.juncao-texto {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.juncao-nome {
+  font-size: 0.82rem;
+  color: var(--text-main, #e8f0fb);
+}
+
+.juncao-detalhe {
+  font-size: 0.72rem;
+  color: var(--text-muted, #9fb2c9);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The two things worth saying in red: it is joining nothing, or it is playing
+   over content because there was not enough silence to pay for it. */
+.juncao-aviso { color: #ffb74d; }
+
+.item-juncao.juncao-orfa{
+  border-color: rgba(255, 138, 128, 0.6);
+  background: rgba(255, 138, 128, 0.08);
+}
+
+.item-juncao.juncao-orfa .juncao-icone{ color: #ff8a80; }
+.item-juncao.juncao-orfa .juncao-aviso { color: #ff8a80; }
+
+.item-juncao.juncao-sobre-conteudo{
+  border-color: rgba(255, 189, 89, 0.55);
+  background: rgba(255, 189, 89, 0.07);
+}
+
+.som-anexo-vazio { color: var(--text-muted, #9fb2c9); }
+
+/* The transition row's own buttons.
+   Plain rather than Material, and shaped like the reorder arrows above: this
+   row is slimmer than a clip's, and a 48px Material touch target would stretch
+   it back out. Without these they fell through to the browser's default button
+   — a white box with a dark glyph, which is the one thing on this page that
+   does not belong to it. */
+.btn-juncao {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.btn-juncao mat-icon {
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+  line-height: 17px;
+}
+
+.btn-juncao:hover:not(:disabled) {
+  color: var(--aqua, #00ffd1);
+  background: rgba(209, 96, 255, 0.1);
+}
+
+.btn-juncao-remover:hover:not(:disabled) {
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.12);
+}
+
+/* No `cursor` here: the site's global stylesheet sets `not-allowed !important`
+   on every disabled button, and an author rule cannot outrank it. */
+.btn-juncao:disabled { opacity: 0.3; }
+
+.btn-juncao:focus-visible {
+  outline: 2px solid var(--aqua, #00ffd1);
+  outline-offset: 1px;
+}
+
+/* One box per idea, matching the groups inside the clip settings panel.
+   `fieldset` and `legend` rather than a div and a span: these really are groups
+   of controls, and a screen reader announces the group's name with every field
+   inside it — which is the whole reason the boxes are here. */
+.grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(20, 19, 28, 0.35);
+}
+
+.grupo-titulo {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* ------------------------------------------------------- undo and redo --- */
+
+/* Last in the menu row, a little apart from the worded buttons. The distance
+   is the whole separation — they are one control for "back and forward" rather
+   than two more things to do, and a drawn line to say so was one green stroke
+   more than the row needed. */
+.acoes-historico {
+  gap: 0;
+  margin-left: 0.5rem;
+}
+
+/* Stacked, the bar is a menu and the pair goes back to being a plain row on the
+   end of it — a rule across a full-width column would read as a divider between
+   sections rather than as a hairline beside two icons. */
+@media (max-width: 680px) {
+  .acoes-historico {
+    display: flex;
+    justify-content: flex-start;
+    margin-left: -8px;
+  }
+
+  /* The rule that stretches a worded button across its cell has to stop here.
+     An icon button has no label to fit, and two of them at full width are two
+     buttons the width of the screen sitting side by side — which is how the
+     pair walked off the edge of it. */
+  .acoes-historico .btn-historico { width: 36px; flex: 0 0 auto; }
+}
+
+/* A little smaller than Material's forty, so the pair stays on the row with the
+   six worded buttons over a wider range of widths before the bar has to wrap.
+   Still past the twenty-four a touch target needs. */
+.btn-historico {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+}
+
+.btn-historico mat-icon { font-size: 1.15rem; width: 1.15rem; height: 1.15rem; }
+
+.btn-historico { color: var(--aqua); }
+.btn-historico[disabled] { opacity: 0.35; }
+
+/* ------------------------------------------------- the restored project --- */
+
+.reconectar-acoes {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------- the preview --- */
+
+/* Fullscreen paints its own black behind the element, and the section is a
+   column of controls rather than a picture — so on the whole screen it becomes
+   a centred stack with the canvas taking whatever height is left. */
+.previa-cheia {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  width: 100vw;
+  height: 100vh;
+  padding: 16px;
+  background: var(--bg-deep);
+  overflow: hidden;
+}
+
+.previa-cheia .previa-palco { flex: 1 1 auto; min-height: 0; overflow: hidden; }
+
+/* Not `width: 100%` with `object-fit: contain`: that fills the stage with the
+   canvas *element* and letterboxes the drawing inside it, which puts the
+   element's corners back out on the black. Letting the canvas keep its own size
+   under a taller ceiling makes the element and the picture the same box again,
+   so the close button is over the video on the whole screen too. */
+/* Measured against the viewport rather than against the parent. A percentage
+   max-height needs a parent with a definite height, and the box that wraps the
+   canvas is sized by its content on purpose — so the allowance for the
+   transport row and the checkbox under it is subtracted here instead. The stage
+   clips, so an approximation that is a little generous costs nothing. */
+/* The dragged height is deliberately overridden here: fullscreen is the reader
+   asking for the largest picture the window allows, which is a different
+   question from how tall they like it beside the settings. */
+.previa-cheia .previa-tela { max-height: calc(100vh - 150px); }
+
+/* On a screen given over to the picture, the two lengths are a reading nobody
+   came for. */
+.previa-cheia .previa-tempos { display: none; }
+
+.previa-botao-menor { width: 32px; height: 32px; }
+
+/* ------------------------------------------------ in, out and push-ins --- */
+
+/* Three readings side by side rather than a sentence: they are numbers that are
+   compared with one another, and a paragraph would make the reader do the
+   comparing. */
+.corte-estado {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 26px;
+  margin-bottom: 4px;
+}
+
+.corte-valor {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.corte-valor strong {
+  color: var(--aqua);
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.corte-valor span {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.zoom-linha {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.zoom-linha:last-of-type { border-bottom: none; }
+
+.zoom-linha .campo-estreito { flex: 0 1 8.5rem; }
+.zoom-manter { padding-bottom: 6px; }
+
+/* --------------------------------------------------------- the presets --- */
+
+.preset-titulo-lista {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.preset-lista {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.preset-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.preset-texto {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.preset-texto strong {
+  color: var(--text-main);
+  font-size: 0.92rem;
+}
+
+.preset-resumo {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+.ajuda-alerta { color: #ffbd59; }
+
+/* ------------------------------------------------- stopping an export --- */
+
+.progresso-acoes {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+.plano-aviso-continuar { align-items: flex-start; margin-top: 6px; }
+
+.lista-ouvindo {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--aqua);
+  font-size: 0.78rem;
+}
+
+/*
+ * The one thing in this header that can be pressed, dressed as such.
+ *
+ * It was a flat Material button, which in this theme is muted text with a
+ * hover tint — indistinguishable from the sentence on the other side of the
+ * row that counts the clips. So the only control here read as a caption, and
+ * the reader below it was told their clip had not been listened to without
+ * anything on screen appearing to offer to do it.
+ *
+ * It is lit rather than merely outlined because of what it means: it exists
+ * only while there is work outstanding, and it takes it all in one press.
+ */
+.btn-ouvir {
+  flex-shrink: 0;
+  border: 1px solid var(--neon) !important;
+  background: linear-gradient(160deg, rgba(209, 96, 255, 0.3), rgba(164, 53, 224, 0.17)) !important;
+  color: #fff !important;
+  box-shadow: var(--glow-soft), var(--inset) !important;
+  transition: background 160ms ease, box-shadow 160ms ease, filter 160ms ease;
+}
+
+.btn-ouvir:hover:not([disabled]) {
+  background: linear-gradient(160deg, rgba(209, 96, 255, 0.44), rgba(164, 53, 224, 0.26)) !important;
+  color: #fff !important;
+  box-shadow: var(--glow-hard), var(--inset) !important;
+}
+
+.btn-ouvir:active:not([disabled]) {
+  filter: brightness(0.94);
+}
+
+.btn-ouvir .mat-icon {
+  color: var(--neon-bright);
+}
+
+/* ------------------------------------------------- closing the preview --- */
+
+/* Over the black preview stage, at the corner every player puts it.
+   Given a backdrop of its own rather than left as a bare icon: the stage is
+   black but the frame under it is whatever the reader filmed, and a muted grey
+   cross over a bright shot is a cross nobody can find. */
+.previa-fechar {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 50%;
+  background: rgba(3, 10, 22, 0.62);
+  backdrop-filter: blur(4px);
+  color: var(--text-main);
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 120ms ease, background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.previa-fechar mat-icon {
+  font-size: 1.15rem;
+  width: 1.15rem;
+  height: 1.15rem;
+}
+
+.previa-fechar:hover {
+  opacity: 1;
+  color: #ff8a80;
+  border-color: rgba(255, 138, 128, 0.6);
+  background: rgba(3, 10, 22, 0.85);
+}
+
+.previa-fechar:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--aqua);
+  outline-offset: 2px;
+}
+
+/* On the whole screen the corner is further away and the picture is larger, so
+   the button grows with it rather than staying a speck in the corner. */
+.previa-cheia .previa-fechar {
+  top: 16px;
+  right: 16px;
+  width: 40px;
+  height: 40px;
+}

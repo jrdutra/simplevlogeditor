@@ -1,0 +1,473 @@
+<div class="container" [class.inicial]="!items.length && !reading">
+
+  <p class="privacidade">
+    <mat-icon aria-hidden="true">lock</mat-icon>
+    <span><strong>Your files stay on your device.</strong> Nothing is uploaded to our servers — the media is read,
+      combined and exported entirely inside this browser tab.</span>
+  </p>
+
+  <div
+    class="upload-area"
+    [class.arrastando]="dragging"
+    (click)="fileInput.click()"
+    (dragover)="onDragOver($event)"
+    (dragleave)="onDragLeave($event)"
+    (drop)="onDrop($event)">
+    <mat-icon class="upload-icone">video_library</mat-icon>
+    <p class="upload-texto">Click or drag videos, audio and images here</p>
+    <p class="upload-hint">MP4, MOV, MKV, WebM, MP3, M4A, WAV, OGG, FLAC, PNG, JPEG, WebP — nothing leaves your browser</p>
+    <!-- The synthetic click from `fileInput.click()` bubbles back to the area
+         that opened it, which would ask for the dialog a second time. -->
+    <input
+      hidden
+      multiple
+      #fileInput
+      type="file"
+      [accept]="accepted"
+      (click)="$event.stopPropagation()"
+      (change)="onFileInput($event)">
+  </div>
+
+  @if (reading) {
+    <div class="lendo">
+      <mat-spinner diameter="18"></mat-spinner>
+      <span>Reading the files you added…</span>
+    </div>
+  }
+
+  @if (items.length) {
+    <div class="merge-workspace">
+    <section class="merge-media" aria-label="Media sequence">
+    <div class="acoes-topo">
+      <button mat-raised-button color="primary" (click)="fileInput2.click()" [disabled]="merging !== null">
+        <mat-icon>add</mat-icon> Add more
+      </button>
+      <input hidden multiple #fileInput2 type="file" [accept]="accepted" (change)="onFileInput($event)">
+      <button mat-button (click)="clear()" [disabled]="merging !== null">
+        <mat-icon>clear_all</mat-icon> Clear all
+      </button>
+    </div>
+
+    <div class="lista-cabecalho">
+      <span class="lista-info">
+        {{ items.length }} file(s) · {{ formatTime(totalDuration) }} total · drag to reorder
+      </span>
+
+      <div class="fade-mestre">
+        <label class="fade-check">
+          <input
+            type="checkbox"
+            [checked]="allFadeIn"
+            [indeterminate]="someFadeIn"
+            [disabled]="merging !== null"
+            (change)="setAllFades('in', $any($event.target).checked)"
+            aria-label="Fade every clip in">
+          <span>Fade in</span>
+        </label>
+        <label class="fade-check">
+          <input
+            type="checkbox"
+            [checked]="allFadeOut"
+            [indeterminate]="someFadeOut"
+            [disabled]="merging !== null"
+            (change)="setAllFades('out', $any($event.target).checked)"
+            aria-label="Fade every clip out">
+          <span>Fade out</span>
+        </label>
+      </div>
+    </div>
+
+    <div cdkDropList class="lista-arquivos" (cdkDropListDropped)="reorder($event)">
+      @for (item of items; track item.id; let i = $index) {
+        <div class="item-arquivo" cdkDrag [cdkDragDisabled]="merging !== null">
+          <mat-icon cdkDragHandle class="drag-handle">drag_indicator</mat-icon>
+          <span class="posicao">{{ i + 1 }}</span>
+
+          <mat-icon
+            class="tipo-icone"
+            [class.icone-video]="item.summary.kind === 'video'"
+            [class.icone-audio]="item.summary.kind === 'audio'"
+            [class.icone-imagem]="item.summary.kind === 'image'">
+            {{ item.summary.kind === 'video' ? 'movie' : item.summary.kind === 'image' ? 'image' : 'audiotrack' }}
+          </mat-icon>
+
+          <div class="item-texto">
+            <span class="nome-arquivo" [title]="item.summary.fileName">{{ item.summary.fileName }}</span>
+            <span class="detalhe-arquivo">
+              {{ formatTime(item.summary.durationSeconds) }} · {{ formatSize(item.summary.fileSize) }}
+              @if (describeTracks(item)) { <span> · {{ describeTracks(item) }}</span> }
+            </span>
+
+            @if (item.summary.kind === 'image') {
+              <span class="imagem-controles">
+                <label [attr.for]="'seconds-' + item.id">Show for</label>
+                <input
+                  [id]="'seconds-' + item.id"
+                  type="number"
+                  class="campo-segundos"
+                  [min]="imageLimits.min"
+                  [max]="imageLimits.max"
+                  [step]="imageLimits.step"
+                  [value]="item.summary.durationSeconds"
+                  [disabled]="merging !== null"
+                  (change)="onImageSeconds(item, $any($event.target).value)">
+                <span class="unidade">s</span>
+
+                @if (item.attachedAudio; as sound) {
+                  <span class="som-anexo" [title]="sound.summary.fileName">
+                    <mat-icon aria-hidden="true">audiotrack</mat-icon>{{ sound.summary.fileName }}
+                  </span>
+                  <button
+                    type="button"
+                    class="link-acao"
+                    [disabled]="merging !== null"
+                    (click)="detachAudio(item)">Remove sound</button>
+                } @else {
+                  <button
+                    type="button"
+                    class="link-acao"
+                    [disabled]="merging !== null"
+                    (click)="audioInput.click()">Add sound</button>
+                  <input
+                    hidden
+                    #audioInput
+                    type="file"
+                    [accept]="acceptedAudio"
+                    (change)="attachAudio(item, $event)">
+                }
+              </span>
+            }
+
+            @if (item.summary.warning) {
+              <span class="aviso-arquivo">
+                <mat-icon aria-hidden="true">warning_amber</mat-icon>{{ item.summary.warning }}
+              </span>
+            }
+          </div>
+
+          <div class="item-fade">
+            <label class="fade-check">
+              <input
+                type="checkbox"
+                [checked]="item.fadeIn"
+                [disabled]="merging !== null"
+                (change)="setFade(item, 'in', $any($event.target).checked)"
+                [attr.aria-label]="'Fade ' + item.summary.fileName + ' in'">
+              <span>In</span>
+            </label>
+            <label class="fade-check">
+              <input
+                type="checkbox"
+                [checked]="item.fadeOut"
+                [disabled]="merging !== null"
+                (change)="setFade(item, 'out', $any($event.target).checked)"
+                [attr.aria-label]="'Fade ' + item.summary.fileName + ' out'">
+              <span>Out</span>
+            </label>
+          </div>
+
+          <div class="item-ordenar">
+            <button
+              mat-icon-button
+              class="btn-mover"
+              (click)="move(i, -1)"
+              [disabled]="i === 0 || merging !== null"
+              [attr.aria-label]="'Move ' + item.summary.fileName + ' earlier'"
+              title="Move earlier">
+              <mat-icon>keyboard_arrow_up</mat-icon>
+            </button>
+            <button
+              mat-icon-button
+              class="btn-mover"
+              (click)="move(i, 1)"
+              [disabled]="i === items.length - 1 || merging !== null"
+              [attr.aria-label]="'Move ' + item.summary.fileName + ' later'"
+              title="Move later">
+              <mat-icon>keyboard_arrow_down</mat-icon>
+            </button>
+          </div>
+
+          <button
+            mat-icon-button
+            class="btn-preview"
+            (click)="openPreview(item)"
+            [attr.aria-label]="'Play ' + item.summary.fileName"
+            title="Play this clip">
+            <mat-icon>play_circle</mat-icon>
+          </button>
+
+          <button
+            mat-icon-button
+            class="btn-remover"
+            (click)="remove(i)"
+            [disabled]="merging !== null"
+            [attr.aria-label]="'Remove ' + item.summary.fileName"
+            title="Remove">
+            <mat-icon>close</mat-icon>
+          </button>
+
+          <div class="drag-placeholder" *cdkDragPlaceholder></div>
+        </div>
+      }
+    </div>
+
+    </section>
+
+    <section class="merge-output" aria-label="Output settings">
+    <h2 class="output-title">Output</h2>
+    <div class="opcoes">
+      <div class="campo">
+        <label for="resolucao">Picture size</label>
+        <select id="resolucao" [value]="settings.resolution" (change)="onResolution($any($event.target).value)"
+          [disabled]="merging !== null">
+          @for (option of resolutions; track option.value) {
+            <option [value]="option.value">{{ option.label }}</option>
+          }
+        </select>
+        <small>Clips that do not match are letterboxed, never cropped or stretched.</small>
+      </div>
+
+      <div class="campo">
+        <label for="fade">Fade length</label>
+        <input
+          id="fade"
+          type="number"
+          [min]="fadeLimits.min"
+          [max]="fadeLimits.max"
+          [step]="fadeLimits.step"
+          [value]="settings.fadeSeconds"
+          [disabled]="merging !== null"
+          (change)="onFadeSeconds($any($event.target).value)">
+        <small>Seconds at each end of a faded clip. A clip too short for two full fades splits itself in half.</small>
+      </div>
+
+      <div class="campo">
+        <label for="formato-video">Video format</label>
+        <select id="formato-video" [value]="settings.videoFormatId" (change)="onVideoFormat($any($event.target).value)"
+          [disabled]="merging !== null">
+          @for (option of videoFormats; track option.id) {
+            <option [value]="option.id">{{ option.label }}</option>
+          }
+        </select>
+        <small>{{ videoFormat.note }}</small>
+      </div>
+
+      <div class="campo">
+        <label for="formato-audio">Audio format</label>
+        <select id="formato-audio" [value]="settings.audioFormatId" (change)="onAudioFormat($any($event.target).value)"
+          [disabled]="merging !== null">
+          @for (option of audioFormats; track option.id) {
+            <option [value]="option.id">{{ option.label }}</option>
+          }
+        </select>
+        <small>{{ audioFormat.note }}</small>
+      </div>
+    </div>
+
+    @if (planWarning) {
+      <p class="plano-aviso"><mat-icon aria-hidden="true">info_outline</mat-icon>{{ planWarning }}</p>
+    }
+
+    <div class="acoes-baixo">
+      <!-- The icon is wrapped rather than left loose in the button: an element
+           inside an @if lives in a template, so it never reaches the button's
+           icon slot and would be laid out on the text baseline instead of the
+           centre. This span is the row that centres them together. -->
+      <button mat-raised-button color="primary" (click)="merge('video')" [disabled]="!canMergeVideo">
+        <span class="btn-conteudo">
+          @if (merging === 'video') {
+            <mat-spinner diameter="18"></mat-spinner>
+          } @else {
+            <mat-icon aria-hidden="true">movie_filter</mat-icon>
+          }
+          <span>{{ merging === 'video' ? 'Merging…' : 'Merge and download video' }}</span>
+        </span>
+      </button>
+
+      <button mat-raised-button color="primary" (click)="merge('audio')" [disabled]="!canMergeAudio">
+        <span class="btn-conteudo">
+          @if (merging === 'audio') {
+            <mat-spinner diameter="18"></mat-spinner>
+          } @else {
+            <mat-icon aria-hidden="true">graphic_eq</mat-icon>
+          }
+          <span>{{ merging === 'audio' ? 'Merging…' : 'Merge and download audio' }}</span>
+        </span>
+      </button>
+    </div>
+    </section>
+    </div>
+  }
+
+  @if (progress; as report) {
+    <div class="progresso">
+      <div class="progresso-topo">
+        <span>
+          {{ stageLabel }}
+          @if (report.itemName) {
+            <span class="progresso-item">· clip {{ report.itemIndex }} of {{ report.itemCount }}: {{ report.itemName }}</span>
+          }
+        </span>
+        <button mat-button (click)="cancel()">Cancel</button>
+      </div>
+      <mat-progress-bar
+        [mode]="report.ratio === null ? 'indeterminate' : 'determinate'"
+        [value]="(report.ratio ?? 0) * 100"></mat-progress-bar>
+    </div>
+  }
+
+  @if (notice) {
+    <div class="mensagem mensagem-nota">
+      <mat-icon>info_outline</mat-icon>{{ notice }}
+    </div>
+  }
+
+  @if (message) {
+    <div class="mensagem">
+      <mat-icon>check_circle_outline</mat-icon>
+      <span>{{ message }}</span>
+      @if (result?.blob) {
+        <button mat-button (click)="download()">Download again</button>
+      }
+    </div>
+  }
+
+  @if (errorMessage) {
+    <div class="mensagem mensagem-erro">
+      <mat-icon>error_outline</mat-icon>
+      <span>
+        {{ errorMessage }}
+        @if (errorHint) { <small class="dica">{{ errorHint }}</small> }
+      </span>
+    </div>
+  }
+
+  @if (result; as done) {
+    <dl class="resumo">
+      <div><dt>Length</dt><dd>{{ formatTime(done.plan.totalDuration) }}</dd></div>
+      @if (done.kind === 'video') {
+        <div><dt>Picture</dt><dd>{{ done.plan.width }} × {{ done.plan.height }} · {{ done.plan.frameRate }} fps</dd></div>
+      }
+      <div><dt>Sound</dt><dd>{{ done.plan.sampleRate / 1000 }} kHz · {{ done.plan.channelCount === 1 ? 'mono' : 'stereo' }}</dd></div>
+      @if (done.plan.fadeCount) {
+        <div><dt>Fades</dt><dd>{{ done.plan.fadeCount }} · {{ settings.fadeSeconds }}s each</dd></div>
+      }
+      @if (done.blob) {
+        <div><dt>File size</dt><dd>{{ formatSize(done.blob.size) }}</dd></div>
+      }
+    </dl>
+  }
+
+</div>
+
+@if (preview; as clip) {
+  <div class="preview-fundo" (click)="closePreview()">
+    <div class="preview-balao" (click)="$event.stopPropagation()">
+      <button mat-icon-button class="preview-fechar" (click)="closePreview()" aria-label="Close preview">
+        <mat-icon>close</mat-icon>
+      </button>
+      <div class="preview-topo">
+        <mat-icon>{{ clip.summary.kind === 'video' ? 'movie' : 'audiotrack' }}</mat-icon>
+        <span [title]="clip.summary.fileName">{{ clip.summary.fileName }}</span>
+      </div>
+      <div class="preview-moldura">
+        @switch (clip.summary.kind) {
+          @case ('video') {
+            <video [src]="clip.previewUrl" controls autoplay playsinline></video>
+          }
+          @case ('image') {
+            <img [src]="clip.previewUrl" [alt]="'Preview of ' + clip.summary.fileName">
+          }
+          @default {
+            <audio [src]="clip.previewUrl" controls autoplay></audio>
+          }
+        }
+      </div>
+    </div>
+  </div>
+}
+
+<app-help-panel label="How the Media Merger works">
+  <div class="instrucoes">
+    <section class="seo-intro" aria-labelledby="media-merger-seo-title">
+      <h1 id="media-merger-seo-title">Free Online Video, Audio and Image Merger</h1>
+      <p>Join videos, audio files and still images into one file, in the order you choose, without installing anything
+        and without uploading a single byte. Arrange the clips, fade them in and out, pick a format and download the
+        result as video or as audio only.</p>
+      <p>Everything runs inside your browser using WebCodecs, so your files never leave your computer.</p>
+
+      <!-- Dimensions on the element, not only in CSS: without them the browser
+           cannot reserve the space before the file arrives, and the page jumps
+           once it does. `lazy` because it sits below everything the reader came
+           for. -->
+      <picture class="seo-capa">
+        <source srcset="/assets/tools/media-merger-cover.webp" type="image/webp">
+        <img src="/assets/tools/media-merger-cover.jpg" width="1536" height="1024" loading="lazy" decoding="async"
+          alt="Illustration of a video and an audio waveform flowing into an editor with a preview and a timeline, and out again as one finished video">
+      </picture>
+    </section>
+
+    <h2>Instructions</h2>
+
+    <h4 class="sublinhado">How to merge videos, audio and images</h4>
+    <p>Click the upload area or drag your files onto it. Each file is read locally to find its length, resolution and
+      codecs, and then appears in the list. Press "Merge and download video" for a single video file, or
+      "Merge and download audio" for the soundtrack alone.</p>
+
+    <h4 class="sublinhado">Adding still images</h4>
+    <p>Drop a PNG, JPEG, WebP, GIF, AVIF or BMP into the queue and it becomes a clip like any other. An image has no
+      length of its own, so you set it: each image row has a "Show for" field, five seconds by default. Use "Add sound"
+      on the row to give the image a soundtrack — a music file, a narration, or a video you only want the audio from.
+      Attaching sound sets the image to the length of that sound, which is almost always what you want, and you can
+      still change it afterwards. If you shorten it, the sound is cut at the image's end; if you lengthen it, the rest
+      plays as silence. The image itself is never stretched: it is centred in the frame with black bars wherever the
+      aspect ratio differs, so a portrait photo between two landscape clips lands upright and uncropped.</p>
+
+    <h4 class="sublinhado">Fading clips in and out</h4>
+    <p>Every row has two checkboxes, "In" and "Out". The pair at the top of the list ticks or unticks the whole queue at
+      once, and shows a dash when only some clips are faded. A fade lasts one second by default; change it in the
+      "Fade length" field, which applies to every fade in the merge.</p>
+    <p>A fade always covers both halves of a clip at once. The picture eases out of and back into black — video frames
+      and still images alike — and the sound eases out of and back into silence at the same moment, whether it is a
+      music file, the soundtrack of a video, or the audio you attached to an image. The audio ramp is applied sample by
+      sample rather than packet by packet, because holding one volume across a twenty-millisecond packet turns a smooth
+      fade into a staircase you can hear as clicks. A clip too short for two full fades splits itself in half so the two
+      ramps meet instead of overlapping, and no fade ever spills into the clip next to it.</p>
+
+    <h4 class="sublinhado">How to change the order</h4>
+    <p>Drag any item by the handle on the left, or use the up and down arrows on each row. The order in the list is
+      exactly the order in the finished file — the first clip plays first. Remove a single file with the "X" on its
+      row, or empty the list with "Clear all".</p>
+
+    <h4 class="sublinhado">Mixing video, audio-only files and images</h4>
+    <p>An audio file placed between two videos keeps its full length and plays over a black screen, so nothing is
+      silently dropped and the timeline never jumps. A video without a soundtrack plays over real silence rather than a
+      gap, which keeps every later clip in sync — and the same goes for an image with no sound attached.</p>
+
+    <h4 class="sublinhado">Different resolutions and frame rates</h4>
+    <p>Clips rarely match. Choose a picture size — or leave it on "Match the largest clip" — and every clip is fitted
+      into that frame with black bars where the aspect ratio differs. Nothing is cropped and nothing is stretched. The
+      frame rate and the sample rate are normalised the same way, which is what stops audio from drifting away from
+      picture over a long merge.</p>
+
+    <h4 class="sublinhado">Which format should I pick</h4>
+    <p>MP4 with H.264 and AAC plays on practically everything and is the right default. WebM with VP9 and Opus produces
+      smaller files but is refused by some older players and editors. MKV is a flexible archival container, and MOV is
+      what Final Cut and Premiere expect on macOS. For audio, M4A is small and universal, MP3 is the most portable
+      format there is, OGG/Opus gives the best quality per kilobyte, and WAV is uncompressed — about 10 MB per minute.</p>
+
+    <h4 class="sublinhado">Large files and saving to disk</h4>
+    <p>When your browser supports it, you are asked where to save before the merge starts, and the result is written
+      straight to that file as it is produced instead of being held in memory. That is what makes merging hours of video
+      possible. If the dialog is dismissed or unavailable, the finished file is downloaded normally.</p>
+
+    <h2>How merging works</h2>
+    <p>Merging media is not the same as merging documents. Two video files cannot simply be placed one after the other:
+      each carries its own timeline, its own resolution and its own encoding, and a player has no way to guess where one
+      ends and the next begins. The clips have to be decoded, placed on a single new timeline and encoded again into one
+      container.</p>
+    <p>That is what this tool does. Each clip is decoded frame by frame, every timestamp is shifted by the total length
+      of the clips before it, and the frames are handed to a single encoder that writes one continuous track. Because
+      picture and sound are shifted by the same amount, they stay locked together no matter how many clips you join.</p>
+  </div>
+</app-help-panel>

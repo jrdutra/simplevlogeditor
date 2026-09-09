@@ -1,0 +1,376 @@
+.container {
+  max-width: none;
+  margin: 0;
+  padding: clamp(0.75rem, 1.5vw, 1.5rem);
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+/* ---------------------------------------------------------------- panels */
+
+/* Stretching is left on, so two panels side by side end at the same line. See
+   the note further down for what fills the height that buys. */
+.paineis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 1rem;
+}
+
+.painel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  padding: 1.1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.9em;
+  background: rgba(43, 42, 55, 0.45);
+}
+
+.painel h2 {
+  margin: 0;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--aqua);
+}
+
+.painel h2:not(:first-child) { margin-top: 0.5rem; }
+
+.grade {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+/* ---------------------------------------------------------------- fields */
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  min-width: 0;
+}
+
+.campo > span {
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.campo small {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.campo select {
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.5em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-size: 0.86rem;
+  font-family: inherit;
+}
+
+.campo input[type="range"] { accent-color: var(--aqua); width: 100%; }
+
+.campo select:focus-visible,
+.campo input:focus-visible {
+  outline: 2px solid var(--aqua);
+  outline-offset: 1px;
+}
+
+.campo select:disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ------------------------------------------------------------- the file */
+
+.fonte {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.oculto { display: none; }
+
+.arquivo {
+  font-size: 0.78rem;
+  color: var(--aqua);
+  max-width: 20rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.link-acao {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--aqua);
+  font-size: 0.74rem;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.link-acao:hover { color: var(--text-main); }
+
+.nota {
+  margin: 0;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+.nota.aviso {
+  color: #ffcf70;
+  border-left: 2px solid #ffcf70;
+  padding-left: 0.55rem;
+}
+
+/* --------------------------------------------------------------- actions */
+
+.acoes {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+}
+
+.btn-conteudo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  line-height: 1;
+}
+
+.btn-conteudo mat-icon {
+  width: 1.2rem;
+  height: 1.2rem;
+  font-size: 1.2rem;
+  line-height: 1.2rem;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
+.btn-conteudo mat-spinner { margin: 0; flex: 0 0 auto; }
+
+/* -------------------------------------------------------------- progress */
+
+.progresso {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(43, 42, 55, 0.55);
+}
+
+.progresso-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.85rem;
+  color: var(--text-main);
+}
+
+/* The stretch being listened to changes twice a second; without a fixed
+   digit width the line either side of it jitters as the numbers change. */
+.detalhe {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -------------------------------------------------------------- messages */
+
+.mensagem {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  background: rgba(209, 96, 255, 0.08);
+  border: 1px solid rgba(209, 96, 255, 0.2);
+  color: var(--aqua);
+  font-size: 0.9rem;
+}
+
+.mensagem-erro {
+  background: rgba(255, 99, 99, 0.08);
+  border-color: rgba(255, 99, 99, 0.3);
+  color: #ff9a9a;
+  align-items: flex-start;
+}
+
+.dica {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.4;
+}
+
+/* ---------------------------------------------------------------- result */
+
+.resumo {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.resumo div {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.resumo dt {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+}
+
+.resumo dd {
+  margin: 0;
+  font-size: 1.05rem;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}
+
+/* The file exactly as it will be saved, so it is monospaced and scrolls in
+   its own box rather than making the page as tall as the transcript. */
+.saida {
+  margin: 0;
+  max-height: 20rem;
+  overflow: auto;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line-soft);
+  border-radius: 0.6em;
+  background: rgba(20, 19, 28, 0.85);
+  color: var(--text-main);
+  font-family: 'Roboto Mono', ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.saida::-webkit-scrollbar,
+.linhas::-webkit-scrollbar { width: 10px; }
+
+.saida::-webkit-scrollbar-track,
+.linhas::-webkit-scrollbar-track { background: rgba(20, 19, 28, 0.6); }
+
+.saida::-webkit-scrollbar-thumb,
+.linhas::-webkit-scrollbar-thumb {
+  background: rgba(209, 96, 255, 0.28);
+  border-radius: 5px;
+}
+
+.saida::-webkit-scrollbar-thumb:hover,
+.linhas::-webkit-scrollbar-thumb:hover { background: rgba(209, 96, 255, 0.45); }
+
+.linhas {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 22rem;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+
+.linhas li {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr;
+  gap: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.4em;
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.linhas li:nth-child(odd) { background: rgba(20, 19, 28, 0.5); }
+
+.carimbo {
+  color: var(--aqua);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  padding-top: 0.05rem;
+}
+
+.fala {
+  color: var(--text-main);
+  white-space: pre-wrap;
+}
+.media-review video { display: block; width: 100%; max-height: 360px; background: #080c16; border-radius: 10px; }
+/* An audio file has no picture: keep the transport controls and drop the
+   empty black rectangle a video element would otherwise reserve for one. */
+.media-review video.sem-imagem { max-height: none; height: 54px; background: transparent; }
+.live-caption { min-height: 3em; padding: 16px; text-align: center; white-space: pre-line; color: var(--text-main); background: #101827; border-radius: 8px; }
+.cue-fields { display: grid; gap: 8px; min-width: 0; }
+.cue-times { display: flex; flex-wrap: wrap; gap: 12px; }
+.cue-times label { display: flex; gap: 8px; align-items: center; }
+.cue-times input { width: 100px; }
+.cue-fields textarea, .cue-times input { box-sizing: border-box; color: var(--text-main); background: #111b2e; border: 1px solid #53647d; border-radius: 6px; padding: 8px; font: inherit; }
+.cue-fields textarea { width: 100%; resize: vertical; }
+.linhas li.editable-cue { grid-template-columns: 100px minmax(0, 1fr); align-items: start; }
+@media (max-width: 600px) { .linhas li.editable-cue { grid-template-columns: 1fr; } }
+.meeting-option { display: flex; align-items: center; gap: 10px; }
+.speaker-field { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
+.speaker-field input { color: var(--text-main); background: #111b2e; border: 1px solid #53647d; border-radius: 6px; padding: 8px; font: inherit; max-width: 100%; }
+
+/* Responsive workspace inside the maximized application frame. */
+:host { display: block; min-width: 0; }
+.container { width: 100%; box-sizing: border-box; min-width: 0; }
+.container > *, .painel, .cartao, .campo, .grupo { min-width: 0; }
+.campo input, .campo select, .campo textarea { box-sizing: border-box; max-width: 100%; }
+@media (max-width: 760px) {
+  .grade, .campo-duplo { grid-template-columns: minmax(0, 1fr); }
+}
+.container { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; gap: 1rem; }
+.container > * { grid-column: 1 / -1; }
+.container > .painel-fonte, .container > .painel-reuniao { grid-column: span 1; }
+.paineis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.grade { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fonte button, .acoes button { max-width: 100%; height: auto; min-height: 40px; white-space: normal; padding-block: 0.6rem; }
+.btn-conteudo { line-height: 1.35; }
+.painel-transcricao .saida { max-height: 16rem; }
+@media (min-width: 1101px) {
+  /* The one box that does not take its row's height. It is sticky, and a box
+     already as tall as the row it sits on has nothing left to stick inside:
+     stretching it would silently undo the following that keeps the player
+     beside the caption being corrected. So it keeps its own height on purpose. */
+  .container:has(> .painel-transcricao) > .media-review {
+    grid-column: 1;
+    position: sticky;
+    top: 1rem;
+    align-self: start;
+  }
+  .container:has(> .media-review) > .painel-transcricao { grid-column: 2; }
+}
+@media (max-width: 760px) {
+  .container, .paineis, .grade { grid-template-columns: minmax(0, 1fr); }
+  .container > .painel-fonte, .container > .painel-reuniao { grid-column: 1 / -1; }
+  .cue-times label { min-width: 0; flex-wrap: wrap; }
+}
+
+
+/* ------------------------------------------------- boxes level with boxes
+
+   A row of panels ends on one line, because the grid stretches them and
+   nothing here switches that off. The closing note and the button row then
+   ride the bottom edge, so the room a short panel is given opens between its
+   controls and its footnote rather than trailing off the end of it — and the
+   footnotes of the panels beside each other sit on the same line. The file
+   chooser, in the panel that is short by nature, takes the room instead. */
+.painel > .nota:last-child,
+.painel > .acoes:last-child { margin-top: auto; }
+.painel-fonte > .fonte { flex: 1 1 auto; align-content: center; }

@@ -1,0 +1,18 @@
+Local noise analysis models, obtained 2026-09-08. Model weights are unmodified.
+
+Silero VAD, Silero Team / snakers4. MIT; see SILERO-LICENSE.txt.
+Source: https://github.com/snakers4/silero-vad
+Weights: https://raw.githubusercontent.com/snakers4/silero-vad/master/src/silero_vad/data/silero_vad.onnx
+
+DNSMOS P.835, Microsoft DNS Challenge. See DNS-CHALLENGE-LICENSE.txt
+(Creative Commons Attribution 4.0 International).
+Source: https://github.com/microsoft/DNS-Challenge/tree/master/DNSMOS
+Weights: https://raw.githubusercontent.com/microsoft/DNS-Challenge/master/DNSMOS/DNSMOS/sig_bak_ovr.onnx
+Reference: Reddy et al., DNSMOS P.835: A Non-Intrusive Perceptual Objective Speech
+Quality Metric to Evaluate Noise Suppressors, https://arxiv.org/abs/2110.01763
+
+The app uses the non-personalized P.835 calibration, 16 kHz input and 9.01-second
+windows. For browser efficiency, the analysis advances by 4.5 seconds and includes
+the final window instead of using the reference script's 1-second stride. It reports
+speech-containing window averages plus local intervals, not official benchmark scores.
+Diagnostic labels and sensitivity thresholds are app heuristics, not model probabilities.

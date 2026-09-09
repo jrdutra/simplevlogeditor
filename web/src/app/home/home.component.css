@@ -1,0 +1,316 @@
+:host {
+  display: block;
+  padding: clamp(1.5rem, 4vw, 3.5rem) clamp(1rem, 3vw, 2.5rem) 3rem;
+}
+
+/* ------------------------------------------------------------------- hero */
+
+.hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 1rem;
+  max-width: 60rem;
+  margin: 0 auto;
+}
+
+.hero__mark {
+  width: clamp(64px, 9vw, 96px);
+  height: auto;
+  filter: drop-shadow(0 0 26px rgba(209, 96, 255, 0.55));
+}
+
+.hero__title {
+  margin: 0;
+  font-size: clamp(2.1rem, 6.2vw, 4.4rem);
+  font-weight: 700;
+  line-height: 1.02;
+  letter-spacing: -0.035em;
+  color: #fff;
+  text-wrap: balance;
+  text-shadow: 0 0 30px rgba(209, 96, 255, 0.45);
+}
+
+/*
+ * The domain, one step quieter than the name.
+ *
+ * The title is the brand and the address at once. Colouring the suffix instead
+ * of shrinking it keeps the whole line on one baseline, which is what stops a
+ * long word from looking like two.
+ */
+.hero__tld {
+  color: var(--neon);
+  font-weight: 500;
+  text-shadow: 0 0 24px rgba(209, 96, 255, 0.8);
+}
+
+.hero__lead {
+  margin: 0;
+  max-width: 46rem;
+  font-size: clamp(0.98rem, 1.4vw, 1.12rem);
+  line-height: 1.65;
+  color: var(--text-muted);
+  text-wrap: pretty;
+}
+
+/* ------------------------------------------------------------------- grid */
+
+.grid-wrap {
+  max-width: 1180px;
+  margin: clamp(2.5rem, 6vw, 4rem) auto 0;
+}
+
+.grid-heading {
+  margin: 0 0 1.5rem;
+  text-align: center;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+
+/*
+ * Three across, then two, then one — and centred at every step.
+ *
+ * `auto-fit` with a max of 1fr would stretch the last row's cards to fill the
+ * width, so a row of one would be a card three times the width of its
+ * neighbours above. Capping the track and centring the whole grid keeps every
+ * card the same size no matter how the rows divide.
+ */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 340px));
+  justify-content: center;
+  gap: clamp(1rem, 2vw, 1.6rem);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.grid__cell {
+  display: flex;
+}
+
+/* ------------------------------------------------------------------- card */
+
+/*
+ * The card is the picture.
+ *
+ * Everything that used to sit under the image — a description, a badge, an
+ * "Open" — repeated what the picture already showed six times over. What is
+ * left is the artwork and the name of the tool, and the name is the only thing
+ * a reader cannot work out by looking.
+ */
+.card {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius);
+  background: var(--panel-well);
+  box-shadow: var(--lift);
+  text-decoration: none;
+  color: inherit;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.card:hover,
+.card:focus-visible {
+  transform: translateY(-4px);
+  border-color: var(--line-hard);
+  box-shadow: var(--lift), var(--glow-soft);
+}
+
+.card__shot {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 400ms ease;
+}
+
+.card:hover .card__shot {
+  transform: scale(1.04);
+}
+
+/*
+ * The title reads over whatever the artwork happens to be doing underneath, so
+ * it carries its own shade: a gradient that is opaque where the words are and
+ * gone by a third of the way down. A flat scrim over the whole card would dull
+ * the picture, which is the thing being shown.
+ */
+.card__title {
+  position: absolute;
+  inset: 0 0 auto;
+  z-index: 1;
+  padding: 0.85rem 1rem 1.6rem;
+  background: linear-gradient(180deg, rgba(12, 10, 20, 0.82), rgba(12, 10, 20, 0.45) 55%, transparent);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  text-shadow: 0 1px 10px rgba(0, 0, 0, 0.7);
+  pointer-events: none;
+}
+
+/* --------------------------------------------------------------- the link */
+
+/*
+ * The name, as the way back to the web.
+ *
+ * It has to look exactly like the heading it replaces — a link that announces
+ * itself with a rule under it, or a colour of its own, would put a second
+ * accent on the one line of the page that is meant to carry only the brand. At
+ * this size an underline is not a hint, it is a stripe across the page.
+ *
+ * So the hover is light: the title brightens, the glow behind it opens up a
+ * little, and the pointer says the rest. Keyboard focus still draws its ring,
+ * because a cue you can only get by hovering is no cue at all for someone who
+ * is not using a mouse.
+ */
+.hero__home {
+  color: inherit;
+  text-decoration: none;
+  transition: filter 180ms ease, text-shadow 180ms ease;
+}
+
+.hero__home:hover {
+  filter: brightness(1.06);
+  text-shadow: 0 0 38px rgba(209, 96, 255, 0.6);
+}
+
+.hero__home:focus-visible {
+  outline: 2px solid var(--neon-bright, #e88bff);
+  outline-offset: 6px;
+  border-radius: 6px;
+}
+
+/* ------------------------------------------------------ fitting the screen */
+
+/*
+ * The same page, measured against a height.
+ *
+ * A home page is normally a document: it is as long as it is and the reader
+ * scrolls. This one is a front door, and a front door that hides half its doors
+ * below the fold is doing the opposite of its job — the whole point of the grid
+ * is that six tools are visible at once.
+ *
+ * So on any screen with room for it, the column stops being sized by the width.
+ * The hero shrinks against the viewport *height*, the grid takes what is left,
+ * and the two rows split that between them. The card keeps its 16:9 and takes
+ * its width from the row it is in rather than from the column, which is what
+ * makes six cards fit a short window instead of overflowing it.
+ *
+ * The grid is capped at the size the cards have when there is room to spare, so
+ * a tall screen looks exactly as it always did — this only ever takes space
+ * away, never adds it.
+ *
+ * Below the query it is a document again, and that is deliberate. On a phone
+ * six cards fitting one screen would mean six cards nobody can see, and a page
+ * that scrolls is what a phone is for.
+ */
+@media (min-width: 900px) and (min-height: 600px) {
+  :host {
+    height: 100%;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    padding: clamp(0.7rem, 2.2vh, 3.5rem) clamp(1rem, 3vw, 2.5rem);
+    overflow: hidden;
+  }
+
+  .hero {
+    flex: none;
+    gap: clamp(0.3rem, 1.1vh, 1rem);
+  }
+
+  .hero__mark {
+    width: clamp(38px, 8vh, 96px);
+  }
+
+  .hero__title {
+    font-size: clamp(1.45rem, 7vh, 4.4rem);
+  }
+
+  .hero__lead {
+    font-size: clamp(0.76rem, 2vh, 1.12rem);
+    line-height: 1.5;
+  }
+
+  /* Heading and grid in one column: only the grid is elastic. */
+  .grid-wrap {
+    flex: 1;
+    min-height: 0;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    max-width: 1600px;
+    margin: clamp(0.6rem, 2.4vh, 4rem) auto 0;
+    overflow: hidden;
+  }
+
+  .grid-heading {
+    flex: none;
+    margin: 0 0 clamp(0.35rem, 1.4vh, 1.5rem);
+    font-size: clamp(0.6rem, 1.3vh, 0.82rem);
+  }
+
+  /*
+   * The grid takes the height it is given.
+   *
+   * Two rows share whatever is left after the hero, and the card takes its
+   * width from the row it sits in — height first, width from the ratio. So the
+   * cards are as large as the space allows instead of stopping at the size the
+   * scrolling layout draws them, and they are still exactly 16:9, which is what
+   * the artwork was made at.
+   *
+   * The cap is what keeps that from overflowing sideways. `--fit-column` is the
+   * widest a column can be in this viewport; a row is never taller than the
+   * 16:9 height of that, so three cards always fit across. When the cap binds —
+   * a tall window, a short one — a little space is left under the grid, and
+   * that is the honest answer: six landscape cards cannot fill a portrait hole
+   * without being cropped into something else.
+   */
+  .grid {
+    --fit-gap: clamp(0.45rem, 1.5vh, 1.6rem);
+    --fit-column: calc((min(1600px, 100vw - 2 * clamp(1rem, 3vw, 2.5rem)) - 2 * var(--fit-gap)) / 3);
+
+    flex: 1;
+    min-height: 0;
+    grid-template-columns: repeat(3, auto);
+    grid-template-rows: repeat(2, minmax(0, 1fr));
+    align-content: center;
+    gap: var(--fit-gap);
+    max-height: calc(var(--fit-column) * 9 / 16 * 2 + var(--fit-gap));
+  }
+
+  .grid__cell {
+    min-width: 0;
+    min-height: 0;
+    justify-content: center;
+  }
+
+  /* Height first, width from the ratio: the row decides how big a card is. */
+  .card {
+    height: 100%;
+    width: auto;
+    max-width: 100%;
+    aspect-ratio: 16 / 9;
+  }
+
+  /* Lifting a card inside a grid exactly as tall as its rows would clip the
+     lift. It brightens in place instead. */
+  .card:hover,
+  .card:focus-visible {
+    transform: none;
+  }
+
+  .card__title {
+    padding: clamp(0.4rem, 1.2vh, 0.85rem) clamp(0.55rem, 1.2vw, 1rem) clamp(0.9rem, 2.4vh, 1.6rem);
+    font-size: clamp(0.78rem, 1.9vh, 1.05rem);
+  }
+}

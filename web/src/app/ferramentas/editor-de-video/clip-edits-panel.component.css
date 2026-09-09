@@ -1,0 +1,243 @@
+.edits {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.linha-campos {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.campo-largo { grid-column: 1 / -1; }
+
+.campo label {
+  color: var(--text-main);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.campo small {
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.4;
+}
+
+.campo input,
+.campo select {
+  width: 100%;
+  min-width: 0;
+  /* The site has no global reset, so without this the padding and the border
+     are added *to* the 100% and the field hangs off the edge of its column. */
+  box-sizing: border-box;
+  padding: 8px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.6);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.88rem;
+}
+
+.campo input:disabled,
+.campo select:disabled { opacity: 0.5; }
+.campo input:focus,
+.campo select:focus { outline: 1px solid var(--aqua); }
+
+.com-unidade { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.com-unidade input { min-width: 0; }
+.com-unidade .unidade { color: var(--text-muted); font-size: 0.78rem; white-space: nowrap; }
+
+.linha-checks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 22px;
+}
+
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: var(--text-main);
+  font-size: 0.92rem;
+}
+
+.check input { accent-color: var(--aqua); cursor: pointer; }
+.check input:disabled { cursor: default; }
+
+.bloco-corte {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(20, 19, 28, 0.35);
+}
+
+.disclosure {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--aqua);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+.disclosure:disabled { opacity: 0.5; cursor: default; }
+.disclosure mat-icon { font-size: 18px; width: 18px; height: 18px; }
+
+.painel-corte {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px;
+}
+
+/* A slider needs the room a number field did not, and the chosen value has to
+   stay legible beside it — a bare track tells the reader nothing about where
+   they have landed. The readout is tabular and fixed-width so dragging the
+   handle does not shift the layout under the cursor. */
+.com-unidade input[type='range'] {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  accent-color: var(--aqua);
+  cursor: pointer;
+}
+
+.com-unidade input[type='range']:disabled { cursor: default; }
+
+.valor {
+  flex: 0 0 auto;
+  min-width: 7ch;
+  color: var(--text-main);
+  font-size: 0.78rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* One box per idea.
+   `fieldset` and `legend` rather than a div and a span: this is a form, these
+   really are groups of controls, and a screen reader announces the group's name
+   with every field inside it — which is the whole reason the boxes are here. The
+   browser's own fieldset styling is undone rather than worked around. */
+.grupo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(20, 19, 28, 0.35);
+}
+
+.grupo-titulo {
+  padding: 0 4px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+/* Already a box before the groups existed; now it is one of them. */
+.bloco-corte { padding: 14px; }
+
+/* A number of seconds does not need a whole column to itself. */
+.campo-curto { max-width: 220px; }
+
+/* Rótulos que carregam um "?" viram uma linha, para o botão ficar ao lado das
+   palavras em vez de empurrá-las para a linha de baixo. */
+.campo > label,
+.grupo-titulo,
+.check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* The reading under the speed control. Sits in the accent colour because it is
+   the answer to what the control above is being moved for, not a footnote. */
+.campo-duracao {
+  color: var(--aqua);
+  font-size: 0.74rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.4;
+}
+
+/* --------------------------------------------- a speed decided elsewhere --- */
+
+/* Where the menu would be, when the timelapse target owns this clip's speed.
+   Shaped like the select it replaces — same height, same border — so the field
+   does not jump when the reader takes the control back. */
+.velocidade-travada {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 34px;
+  padding: 4px 10px;
+  border: 1px dashed rgba(77, 163, 255, 0.55);
+  border-radius: 8px;
+  background: rgba(77, 163, 255, 0.07);
+}
+
+.velocidade-valor {
+  color: var(--text-main);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A button that reads as a link, for an action inside a sentence.
+   Written here rather than reused: view encapsulation means the host's copy of
+   this rule does not reach inside this component. */
+.ligacao {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--aqua);
+  font: inherit;
+  font-size: 0.74rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+  cursor: pointer;
+}
+
+.ligacao:disabled { opacity: 0.5; cursor: default; }
+
+/* Project settings use columns when wide; clip dialogs keep their own layout.
+
+   The groups on a row end at the same line: they are boxes read across, and one
+   stopping short of its neighbour reads as a box with something missing rather
+   than as a box with less to say. The help line at the foot of a group rides
+   the bottom edge, so the room that levelling buys opens between the controls
+   and the sentence explaining them. */
+:host([id="project"]) .edits {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  align-items: stretch;
+}
+:host([id="project"]) .grupo > .ajuda:last-child,
+:host([id="project"]) .grupo > .nota:last-child { margin-top: auto; }
+:host([id="project"]) .edits > * { min-width: 0; }

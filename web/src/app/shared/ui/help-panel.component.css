@@ -1,0 +1,128 @@
+:host {
+  display: contents;
+}
+
+/* ------------------------------------------------------------------- modal */
+
+/*
+ * `hidden` only works if nothing outranks it.
+ *
+ * The browser hides a [hidden] element with `display: none` from its own
+ * stylesheet, which any `display` in a page stylesheet beats — and the dialog
+ * below needs `display: flex` to be a column. So the two states are stated
+ * explicitly here rather than left to the browser's default.
+ */
+.help-scrim[hidden],
+.help-modal[hidden] {
+  display: none !important;
+}
+
+.help-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(8, 7, 14, 0.72);
+  backdrop-filter: blur(3px);
+  animation: help-fade 140ms ease-out;
+}
+
+.help-modal {
+  position: fixed;
+  z-index: 51;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+
+  width: min(56rem, calc(100vw - 2rem));
+  /*
+   * The dialog is a fixed-height column: a bar that stays put and a body that
+   * scrolls. Capping the whole dialog and letting the body take what is left is
+   * what gives the text its own scrollbar instead of the page's.
+   */
+  max-height: min(84vh, 52rem);
+  display: flex;
+  flex-direction: column;
+
+  border: 1px solid var(--line-hard);
+  border-radius: var(--radius);
+  background: linear-gradient(165deg, #2f3044, #1e1e2c);
+  box-shadow: 0 40px 90px rgba(0, 0, 0, 0.7), var(--glow-soft);
+  animation: help-in 170ms ease-out;
+  overflow: hidden;
+}
+
+@keyframes help-fade {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+@keyframes help-in {
+  from { opacity: 0; transform: translate(-50%, calc(-50% + 10px)); }
+  to   { opacity: 1; transform: translate(-50%, -50%); }
+}
+
+.help-modal__bar {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.9rem 0.75rem 0.9rem 1.25rem;
+  border-bottom: 1px solid var(--line-grey);
+  background: linear-gradient(180deg, rgba(58, 59, 80, 0.7), rgba(38, 38, 55, 0.5));
+}
+
+.help-modal__title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: var(--text-main);
+}
+
+.help-modal__close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--line-grey);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease;
+}
+
+.help-modal__close:hover {
+  color: #fff;
+  border-color: var(--neon);
+  background: rgba(209, 96, 255, 0.16);
+}
+
+.help-modal__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 1.25rem;
+}
+
+/*
+ * The prose block was written for a page, where it centres itself in a measure
+ * of its own. Inside the dialog the dialog is the measure, so those rules are
+ * handed back. ::ng-deep because the markup is projected from the tool
+ * component and carries that component's style scope, not this one's.
+ */
+:host ::ng-deep .help-modal__body .instrucoes {
+  max-width: none;
+  margin: 0;
+  padding: 1.25rem 0 1.75rem;
+}
+
+:host ::ng-deep .help-modal__body .seo-intro h1 {
+  font-size: 1.25em;
+}
