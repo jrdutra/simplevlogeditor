@@ -55,6 +55,13 @@ const MIN_MANUAL_RANGE = 0.01;
 
 /** Click tolerance when hitting a very narrow region, in CSS pixels. */
 const HIT_SLOP = 3;
+const EDGE_HIT_SLOP = 7;
+
+export interface RangeResize {
+  range: EditableRange;
+  start: number;
+  end: number;
+}
 
 /**
  * Where the playhead is placed when the view has to chase it, as a share of
@@ -126,8 +133,8 @@ const FOLLOW_LEAD = 0.1;
     </div>
 
     <p class="wf-hint">
-      Left-drag to mark a new region for removal, right-drag to slide the waveform, click a region to select it and
-      remove it with the ✕ button.
+      Left-drag to mark a new region for removal, drag either edge of a marked region to adjust it, right-drag to slide
+      the waveform, or click a region to remove it with the ✕ button.
       @if (zoom > 1) {
         <span> Showing {{ visibleLabel }} of {{ totalLabel }}, following the playhead until you scroll elsewhere.</span>
       }
@@ -280,6 +287,7 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   @Output() readonly rangeAdd = new EventEmitter<TimeRange>();
   /** Emitted when the reader deletes a region, automatic or hand-drawn. */
   @Output() readonly rangeRemove = new EventEmitter<EditableRange>();
+  @Output() readonly rangeResize = new EventEmitter<RangeResize>();
 
   @ViewChild('canvas') private canvasRef?: ElementRef<HTMLCanvasElement>;
   @ViewChild('surface') private surfaceRef?: ElementRef<HTMLElement>;
@@ -301,13 +309,16 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   private observer: ResizeObserver | null = null;
   private frame = 0;
 
-  private gesture: 'none' | 'pan' | 'select' = 'none';
+  private gesture: 'none' | 'pan' | 'select' | 'resize-start' | 'resize-end' = 'none';
   private gestureMoved = false;
   private dragOrigin = 0;
   private dragOffset = 0;
   private dragStartTime = 0;
   /** Region being drawn right now, painted but not yet committed. */
   private draft: TimeRange | null = null;
+  private resizeRange: EditableRange | null = null;
+  private resizeDraft: TimeRange | null = null;
+  private hoveredEdge: { range: EditableRange; edge: 'start' | 'end' } | null = null;
   /**
    * The last scroll position this component set itself.
    *
@@ -566,6 +577,28 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     return null;
   }
 
+  private edgeAt(time: number, tolerance: number): { range: EditableRange; edge: 'start' | 'end' } | null {
+    let best: { range: EditableRange; edge: 'start' | 'end'; distance: number } | null = null;
+    for (const range of this.silenceRanges) {
+      const start = Math.abs(time - range.start);
+      const end = Math.abs(time - range.end);
+      if (start <= tolerance && (!best || start < best.distance)) best = { range, edge: 'start', distance: start };
+      if (end <= tolerance && (!best || end < best.distance)) best = { range, edge: 'end', distance: end };
+    }
+    return best ? { range: best.range, edge: best.edge } : null;
+  }
+
+  private updateEdgeHover(event: PointerEvent): void {
+    const surface = this.surfaceRef?.nativeElement;
+    if (!surface || this.duration <= 0) return;
+    const tolerance = (EDGE_HIT_SLOP / Math.max(1, surface.clientWidth)) * this.visibleSpan;
+    const edge = this.edgeAt(this.timeAt(event.clientX), tolerance);
+    if (edge?.range === this.hoveredEdge?.range && edge?.edge === this.hoveredEdge?.edge) return;
+    this.hoveredEdge = edge;
+    surface.style.cursor = edge ? 'ew-resize' : 'crosshair';
+    this.scheduleDraw();
+  }
+
   private readonly onContextMenu = (event: MouseEvent): void => {
     // The right button pans; the browser menu would swallow the gesture.
     event.preventDefault();
@@ -581,12 +614,18 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     // Touch has no second button, so a finger drag pans rather than drawing.
     const pans = event.button === 2 || event.button === 1 || event.pointerType === 'touch';
 
-    this.gesture = pans ? 'pan' : 'select';
+    const tolerance = (EDGE_HIT_SLOP / Math.max(1, surface.clientWidth)) * this.visibleSpan;
+    const edge = !pans && event.button === 0 ? this.edgeAt(this.timeAt(event.clientX), tolerance) : null;
+
+    this.gesture = pans ? 'pan' : edge ? (edge.edge === 'start' ? 'resize-start' : 'resize-end') : 'select';
     this.gestureMoved = false;
     this.dragOrigin = event.clientX;
     this.dragOffset = this.offset;
     this.dragStartTime = this.timeAt(event.clientX);
     this.draft = null;
+    this.resizeRange = edge?.range ?? null;
+    this.resizeDraft = edge ? { start: edge.range.start, end: edge.range.end } : null;
+    if (edge) this.selected = edge.range;
 
     surface.setPointerCapture?.(event.pointerId);
     if (this.gesture === 'pan') surface.classList.add('is-panning');
@@ -598,7 +637,10 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   };
 
   private readonly onPointerMove = (event: PointerEvent): void => {
-    if (this.gesture === 'none' || !event.buttons) return;
+    if (this.gesture === 'none' || !event.buttons) {
+      this.updateEdgeHover(event);
+      return;
+    }
     const surface = this.surfaceRef?.nativeElement;
     if (!surface) return;
 
@@ -611,9 +653,14 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
       this.clampOffset();
       this.reviewFollowing();
       this.syncScrollbar();
-    } else {
+    } else if (this.gesture === 'select') {
       const now = this.timeAt(event.clientX);
       this.draft = { start: Math.min(this.dragStartTime, now), end: Math.max(this.dragStartTime, now) };
+    } else if (this.resizeRange) {
+      const now = this.timeAt(event.clientX);
+      this.resizeDraft = this.gesture === 'resize-start'
+        ? { start: Math.min(now, this.resizeRange.end - MIN_MANUAL_RANGE), end: this.resizeRange.end }
+        : { start: this.resizeRange.start, end: Math.max(now, this.resizeRange.start + MIN_MANUAL_RANGE) };
     }
 
     this.scheduleDraw();
@@ -624,10 +671,14 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     const gesture = this.gesture;
     const moved = this.gestureMoved;
     const draft = this.draft;
+    const resized = this.resizeRange;
+    const resizedTo = this.resizeDraft;
 
     this.gesture = 'none';
     this.gestureMoved = false;
     this.draft = null;
+    this.resizeRange = null;
+    this.resizeDraft = null;
     surface?.classList.remove('is-panning');
     try {
       // Throws when the capture was already released, as on `pointercancel`.
@@ -637,6 +688,12 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     }
 
     if (gesture === 'none') return;
+
+    if ((gesture === 'resize-start' || gesture === 'resize-end') && resized && resizedTo) {
+      this.zone.run(() => this.rangeResize.emit({ range: resized, start: resizedTo.start, end: resizedTo.end }));
+      this.scheduleDraw();
+      return;
+    }
 
     if (gesture === 'select' && moved && draft && draft.end - draft.start >= MIN_MANUAL_RANGE) {
       this.zone.run(() => this.rangeAdd.emit(draft));
@@ -796,8 +853,9 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
       if (range.end < from || range.start > from + visible) continue;
 
       const selected = range === this.selected;
-      const left = ((range.start - from) / visible) * width;
-      const right = ((range.end - from) / visible) * width;
+      const shown = range === this.resizeRange && this.resizeDraft ? this.resizeDraft : range;
+      const left = ((shown.start - from) / visible) * width;
+      const right = ((shown.end - from) / visible) * width;
       const boxWidth = Math.max(1, right - left);
 
       context.fillStyle = selected ? COLOURS.selectedFill : COLOURS.removedFill;
@@ -821,6 +879,23 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
       context.strokeStyle = selected ? COLOURS.selectedBorder : COLOURS.removedBorder;
       context.lineWidth = selected ? 2 : 1;
       context.strokeRect(left + 0.5, 0.5, Math.max(1, boxWidth - 1), waveHeight - 1);
+
+      if (this.hoveredEdge?.range === range || this.resizeRange === range) {
+        context.strokeStyle = selected ? COLOURS.selectedBorder : COLOURS.draftBorder;
+        context.lineWidth = 3;
+        if (this.hoveredEdge?.edge === 'start' || this.gesture === 'resize-start') {
+          context.beginPath();
+          context.moveTo(left, 0);
+          context.lineTo(left, waveHeight);
+          context.stroke();
+        }
+        if (this.hoveredEdge?.edge === 'end' || this.gesture === 'resize-end') {
+          context.beginPath();
+          context.moveTo(right, 0);
+          context.lineTo(right, waveHeight);
+          context.stroke();
+        }
+      }
     }
 
     context.restore();

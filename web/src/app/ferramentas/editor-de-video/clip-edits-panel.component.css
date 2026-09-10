@@ -111,9 +111,23 @@
    stay legible beside it — a bare track tells the reader nothing about where
    they have landed. The readout is tabular and fixed-width so dragging the
    handle does not shift the layout under the cursor. */
+/*
+ * The slider, made to be a slider.
+ *
+ * `width: 100%` from the field rule above lands on a range as well, and inside
+ * a flex row that resolves against a basis the browser works out from the
+ * control's own content — which for a range is the thumb. With `min-width: 0`
+ * allowing it to shrink to that, the volume control in the clip's dialog came
+ * out as a lone dot with a number beside it and no track to drag it along.
+ *
+ * A floor it may not go below, and an explicit height for the track, is what
+ * makes it the same control here as in the project's settings.
+ */
 .com-unidade input[type='range'] {
   flex: 1 1 auto;
-  min-width: 0;
+  width: auto;
+  min-width: 96px;
+  height: 20px;
   padding: 0;
   border: 0;
   background: transparent;

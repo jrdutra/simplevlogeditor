@@ -1,0 +1,1548 @@
+/*
+ * The queue drawn as a board: a card per shot, in the order the video plays
+ * them, joined by arrows.
+ *
+ * A fourth stylesheet rather than more of the third. `editor-de-video.lista.css`
+ * is the list's chassis and nothing in here belongs to it — the two are
+ * alternatives, never on the screen together, and keeping them apart is what
+ * lets either be read without the other. It is listed last in `styleUrls`, so
+ * everything here sits at the end of the cascade and can lean on the badge,
+ * warning and transition-button styles the earlier sheets already define.
+ *
+ * Sizes are in `px` throughout, and deliberately: the whole stage is scaled as
+ * one by the camera, so a card measured in anything relative would be measured
+ * against a font size the zoom does not touch, and the diagram would come apart
+ * the moment the reader zoomed out.
+ */
+
+/* ------------------------------------------------------ the view toggle */
+
+.vista-troca {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-well, #232332);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.35);
+}
+
+.vista-botao {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.vista-botao mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+}
+
+.vista-botao:hover:not(.ativa) { color: var(--text-main); }
+
+.vista-botao.ativa {
+  color: var(--aqua);
+  border-color: var(--line-hard);
+  background: linear-gradient(#3b2b48, #2a2135);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 10px rgba(209, 96, 255, 0.18);
+}
+
+.vista-botao:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+
+/* ------------------------------------------------------------ the frame */
+
+/*
+ * The window onto the diagram. It clips, it takes the wheel and the drag, and
+ * it is the box the fit is measured against — nothing inside it scrolls, so
+ * the camera is the only way the reader moves around.
+ */
+.board-fluxo {
+  position: relative;
+  overflow: hidden;
+  min-height: 420px;
+  height: clamp(420px, 58vh, 900px);
+  border: 1px solid #15131d;
+  border-radius: 14px;
+  background-color: #1a1922;
+  /* The same grid the flowchart board uses, at the fixed spacing a backdrop
+     wants: it says "this is a canvas" without competing with the cards. */
+  background-image:
+    linear-gradient(rgba(209, 96, 255, 0.055) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(209, 96, 255, 0.055) 1px, transparent 1px);
+  background-size: 26px 26px;
+  box-shadow: inset 0 2px 6px rgba(0, 0, 0, 0.45), 0 1px 0 rgba(255, 255, 255, 0.06);
+  cursor: grab;
+  touch-action: none;
+}
+
+.board-fluxo.arrastando { cursor: grabbing; }
+
+/* The one element the camera is written onto. Origin at its top left, because
+   the pan is worked out in the frame's coordinates and a centred origin would
+   put a second, invisible offset between the two. */
+.board-palco {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+/* The layer itself catches nothing — the board behind it has to stay draggable
+   through the gaps — and the hit paths and handles opt back in individually. */
+.board-setas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.board-seta {
+  fill: none;
+  stroke: rgba(209, 96, 255, 0.55);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+}
+
+/* An arrow carrying a transition is doing more than joining two shots, and the
+   chip on it is about to say so — the brighter line is what ties the two. */
+.board-seta.tem-juncao { stroke: var(--neon-bright, #e88bff); }
+
+/*
+ * The arrow's hit area: transparent, thick, and the only part of a line the
+ * pointer can reach. Its width is written from the component, divided by the
+ * zoom, so grabbing an arrow is the same gesture however far out the reader is.
+ */
+.board-seta-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-linecap: round;
+  pointer-events: stroke;
+  cursor: crosshair;
+}
+
+/* A bend the reader has put in. Sized from the component the same way, and
+   `non-scaling-stroke` so the ring around it does not thicken with the zoom. */
+.board-alca {
+  fill: #17141e;
+  stroke: var(--neon-bright, #e88bff);
+  stroke-width: 2;
+  vector-effect: non-scaling-stroke;
+  pointer-events: all;
+  cursor: grab;
+  transition: fill 120ms ease;
+}
+
+.board-alca:hover { fill: var(--neon-bright, #e88bff); }
+.board-alca:active { cursor: grabbing; }
+
+/*
+ * The light that runs down an arrow as the playhead crosses it.
+ *
+ * The path is declared one unit long (`pathLength="1"` in the template), so the
+ * dash and the offsets below are fractions of whatever arrow this is rather
+ * than pixel counts that would race down a short hop and crawl down a long
+ * bend. It fades in as it sets off and out as it arrives, which is what keeps
+ * the two ends from looking like the light was cut off mid-run.
+ */
+.board-seta-fluxo {
+  fill: none;
+  stroke: #ffffff;
+  stroke-width: 5;
+  stroke-linecap: round;
+  stroke-dasharray: 0.16 1;
+  filter: drop-shadow(0 0 5px var(--neon-bright, #e88bff)) drop-shadow(0 0 12px rgba(209, 96, 255, 0.7));
+  pointer-events: none;
+  animation: board-fluxo 850ms cubic-bezier(0.4, 0, 0.3, 1) both;
+}
+
+@keyframes board-fluxo {
+  0% { stroke-dashoffset: 0.16; opacity: 0; }
+  14% { opacity: 1; }
+  82% { opacity: 1; }
+  100% { stroke-dashoffset: -1; opacity: 0; }
+}
+
+/* A reader who has asked for less movement gets the arrow lit rather than a
+   light thrown down it — the crossing is still shown, it just does not travel. */
+@media (prefers-reduced-motion: reduce) {
+  .board-seta-fluxo {
+    stroke-dasharray: none;
+    stroke-width: 4;
+    animation: board-fluxo-parado 850ms ease-out both;
+  }
+
+  @keyframes board-fluxo-parado {
+    0%, 70% { opacity: 0.9; }
+    100% { opacity: 0; }
+  }
+}
+
+/* The two ends. Dashed because they lead nowhere: there is no shot before the
+   first or after the last, and a solid line would promise one. */
+.board-seta-toco {
+  fill: none;
+  stroke: rgba(209, 96, 255, 0.3);
+  stroke-width: 2;
+  stroke-dasharray: 5 5;
+  stroke-linecap: round;
+}
+
+/* ------------------------------------------------------------- the card */
+
+/*
+ * A storyboard frame: the still on top, what the clip has to say under it, the
+ * controls at the foot. Fixed size, because the arrows are drawn against this
+ * grid — a card that grew to fit a long warning would pull away from the line
+ * pointing at it.
+ */
+/*
+ * The volume is the list's chassis, said louder.
+ *
+ * The same four layers `.item-clipe` is built from — a lit top edge, a lit left
+ * edge, a dark rim inside the bottom, and a light line just under the card —
+ * with a real drop shadow beneath them. On the list those layers only have to
+ * lift a row off the panel behind it; here the card is an object lying on a
+ * board that the reader can pick up and move, and it has to look like one
+ * before they try.
+ */
+/*
+ * The edge is a light hairline, not the near-black the chassis started with.
+ *
+ * A card is an object lying on a dark board, and the bevel alone was only
+ * telling the eye where the *lit* edges were: the top caught a highlight, the
+ * bottom caught a shadow, and the two sides caught nothing at all — so a card
+ * had no findable outline against the board behind it. The pale line draws the
+ * whole boundary; the insets below still do the volume.
+ */
+.board-card {
+  position: absolute;
+  cursor: grab;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  border: 1px solid rgba(224, 212, 240, 0.28);
+  border-radius: 12px;
+  background: linear-gradient(160deg, #3d3b49, #2f2d39 55%, #2a2834);
+  box-shadow:
+    inset 0 1px 0 rgba(180, 166, 195, 0.5),
+    inset 1px 0 0 rgba(255, 255, 255, 0.06),
+    inset -1px 0 0 rgba(0, 0, 0, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.42),
+    0 1px 0 rgba(107, 97, 120, 0.5),
+    0 6px 12px rgba(0, 0, 0, 0.42),
+    0 14px 26px rgba(0, 0, 0, 0.3);
+  /* A drag that selects the filename instead of moving the card is the classic
+     way this gesture goes wrong. */
+  user-select: none;
+  /* Visible, not hidden: the rail of marks hangs off the top edge from inside
+     the card's own box, and clipping here would cut it off. Each of the three
+     parts inside rounds its own corners instead — the still and the body clip
+     themselves, and the control bar is given the radius directly. */
+  overflow: visible;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.board-card:hover {
+  border-color: #8d6a9d;
+  box-shadow:
+    inset 0 1px 0 rgba(185, 165, 200, 0.6),
+    inset 1px 0 0 rgba(255, 255, 255, 0.06),
+    inset -1px 0 0 rgba(0, 0, 0, 0.3),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(126, 113, 141, 0.55),
+    0 9px 18px rgba(0, 0, 0, 0.48),
+    0 20px 34px rgba(0, 0, 0, 0.32);
+}
+
+/* Off the board entirely while it is being carried, and no transition on the
+   shadow: the card has to keep up with the cursor, and an eased box-shadow
+   redrawn every frame is the one thing here expensive enough to show. */
+.board-card.card-arrastando {
+  cursor: grabbing;
+  z-index: 3;
+  border-color: #d376f4;
+  transition: none;
+  box-shadow:
+    inset 0 1px 0 rgba(200, 175, 215, 0.6),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 0 0 1px rgba(209, 96, 255, 0.35),
+    0 18px 30px rgba(0, 0, 0, 0.55),
+    0 34px 60px rgba(0, 0, 0, 0.4);
+}
+
+.board-card.card-arrastando * { pointer-events: none; }
+
+/* The same three marks the row carries, in the same three colours, so a reader
+   who learned them in the list does not learn them again here. */
+.board-card.tem-override { border-left: 3px solid #9674b1; }
+.board-card.tem-som-externo { border-left: 3px solid var(--som-externo); }
+
+/*
+ * The clip that is playing.
+ *
+ * Two classes, and the split matters. `card-atual` is the fact — this is the
+ * shot the playhead is in — and it is a border and a ground, said the same way
+ * the list's row says it. `card-aceso` is the light, and the light is on a
+ * journey of its own: it stays on the card it was on until it has slowed to a
+ * stop, goes out, runs down the arrow, and only then arrives here. For most of
+ * a video the two are the same card. During a crossing they are not, and that
+ * gap is the whole effect.
+ *
+ * Nothing below animates itself. The angle and the brightness are written onto
+ * the element by the component, a frame at a time, because a light that has to
+ * slow down and wind up again needs a speed — and a keyframe has no such thing.
+ */
+.board-card.card-atual {
+  border-color: #d376f4;
+  background: linear-gradient(160deg, #493251, #322a3c 45%, #2a2734);
+  box-shadow:
+    inset 0 0 0 2px #201626,
+    0 0 0 1px rgba(189, 75, 231, 0.28),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+/*
+ * The card wearing the light. Raised above its neighbours, and the stacking
+ * context the halo needs: a negative-z pseudo-element escapes upwards without
+ * one and is swallowed by the board's own background.
+ */
+/*
+ * The rail of marks, above the card and out of its light.
+ *
+ * These are the exceptions a clip carries — a setting of its own, a sound from
+ * elsewhere, a tag — one small button each, and each opens the place its
+ * setting is changed. They used to hang off the top edge from inside the card's
+ * own box, which put them inside everything that happens to the card: the glow
+ * when it is playing washed over them, and a row of controls that lights up
+ * with the picture reads as part of the picture rather than as something to
+ * press.
+ *
+ * So the rail is lifted clear of the card entirely. It is opaque, it carries a
+ * shadow of its own, and it stacks above the halo the lit card paints behind
+ * itself — three ways of saying the same thing, which is that these belong to
+ * the reader and not to the shot.
+ */
+.card-marcas {
+  position: absolute;
+  bottom: calc(100% + 7px);
+  left: 2px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.card-marca {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid #15111c;
+  border-radius: 6px;
+  background: linear-gradient(#43384f, #2b2534);
+  box-shadow:
+    inset 0 1px 0 rgba(141, 120, 152, 0.4),
+    0 2px 5px rgba(0, 0, 0, 0.5);
+  color: #c9bad7;
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.card-marca:hover:not(:disabled) {
+  border-color: #a45cc2;
+  color: #eed4fb;
+}
+
+.card-marca:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.card-marca mat-icon {
+  display: block;
+  margin: 0;
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+}
+
+.board-card.card-aceso {
+  z-index: 2;
+  /* The glow's reach grows with the brightness rather than its colour, so the
+     breathing needs no alpha arithmetic to be readable. */
+  box-shadow:
+    inset 0 0 0 2px #201626,
+    0 0 0 1px rgba(226, 140, 255, 0.55),
+    0 0 calc(12px + 26px * var(--board-brilho, 0.5)) rgba(209, 96, 255, 0.45),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* The halo. Behind the card, so only what spills past its edges is seen —
+   which is what a glow around something is. */
+.board-card.card-aceso::before {
+  content: '';
+  position: absolute;
+  inset: -16px;
+  z-index: -1;
+  border-radius: 26px;
+  background: radial-gradient(closest-side, rgba(209, 96, 255, 0.4), rgba(209, 96, 255, 0) 76%);
+  filter: blur(6px);
+  pointer-events: none;
+  opacity: var(--board-brilho, 0.5);
+  transform: scale(calc(0.98 + 0.04 * var(--board-brilho, 0.5)));
+}
+
+/*
+ * The lights sweeping round the edge.
+ *
+ * A conic gradient turned by `--glow-angle`, which the site's stylesheet
+ * already registers with `@property` as a real angle — so the value the
+ * component writes each frame is understood as an angle, not as a string.
+ * The two masks cut the middle out of it: what is left is a five-pixel ring in
+ * the margin, clear of everything the card is showing.
+ */
+.board-card.card-aceso::after {
+  content: '';
+  position: absolute;
+  inset: -5px;
+  padding: 5px;
+  border-radius: 17px;
+  background: conic-gradient(
+    from var(--glow-angle, 0deg),
+    rgba(232, 139, 255, 0) 0deg,
+    rgba(232, 139, 255, 0.95) 26deg,
+    rgba(232, 139, 255, 0) 62deg,
+    rgba(209, 96, 255, 0) 170deg,
+    rgba(209, 96, 255, 0.85) 196deg,
+    rgba(209, 96, 255, 0) 232deg,
+    rgba(232, 139, 255, 0) 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  /* Dim as it slows, so a stopped light looks stopped rather than parked. */
+  opacity: calc(0.2 + 0.8 * var(--board-brilho, 0.5));
+}
+
+/*
+ * Carrying the card wins.
+ *
+ * A card being dragged already has something to say about itself, and a shot
+ * that is playing while it is picked up would otherwise be glowing and
+ * sweeping under the cursor — two answers to "what is happening to this card",
+ * given at the same time.
+ */
+.board-card.card-aceso.card-arrastando::before,
+.board-card.card-aceso.card-arrastando::after { opacity: 0; }
+
+/*
+ * Picked out to be moved together.
+ *
+ * A ring outside the card rather than a change to its border: the border is
+ * already saying something — whether the clip has settings of its own, whether
+ * it is the one playing — and a selection that overwrote either of those would
+ * be taking a fact away in order to show a preference.
+ */
+.board-card.card-selecionado {
+  box-shadow:
+    0 0 0 2px var(--aqua),
+    0 0 0 5px rgba(209, 96, 255, 0.22),
+    0 6px 12px rgba(0, 0, 0, 0.42),
+    0 14px 26px rgba(0, 0, 0, 0.3);
+}
+
+/* Playing and picked out at once: both rings, with the glow outermost so it
+   still reads as a glow rather than as a third border. */
+.board-card.card-selecionado.card-aceso {
+  box-shadow:
+    inset 0 0 0 2px #201626,
+    0 0 0 2px var(--aqua),
+    0 0 0 5px rgba(209, 96, 255, 0.22),
+    0 0 calc(12px + 26px * var(--board-brilho, 0.5)) rgba(209, 96, 255, 0.45),
+    0 3px 8px rgba(0, 0, 0, 0.4);
+}
+
+/* The rubber band. Hidden until a drag turns it on, and never in the way of
+   the pointer that is drawing it. */
+.board-selecao {
+  position: absolute;
+  display: none;
+  z-index: 5;
+  border: 1px solid var(--aqua);
+  border-radius: 4px;
+  background: rgba(209, 96, 255, 0.12);
+  pointer-events: none;
+}
+
+/* --- the still --- */
+
+.board-thumb {
+  position: relative;
+  flex: 0 0 auto;
+  height: 120px;
+  /* Its own corners, the card no longer clipping them for it. */
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
+  background: #17141e;
+  border-bottom: 1px solid #14111c;
+  overflow: hidden;
+}
+
+.board-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.board-thumb-vazia {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+.board-thumb-vazia .tipo-icone {
+  font-size: 34px;
+  width: 34px;
+  height: 34px;
+  line-height: 34px;
+  color: #6f6483;
+}
+
+.board-card.card-atual .board-thumb-vazia .tipo-icone { color: #de8df8; }
+
+/* Over the picture rather than under it: both are one word long, and a card is
+   already as tall as it can afford to be. */
+.board-posicao {
+  position: absolute;
+  top: 7px;
+  left: 7px;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid #16121d;
+  border-radius: 6px;
+  color: #cdbbdc;
+  background: rgba(33, 28, 42, 0.88);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+}
+
+.board-posicao:hover:not(:disabled) { color: #f6d6ff; border-color: #ab59ca; }
+.board-posicao:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+.board-posicao:disabled { opacity: 0.45; }
+
+.board-card.card-atual .board-posicao {
+  color: #f6d6ff;
+  border-color: #ab59ca;
+  background: linear-gradient(#67337a, #392143);
+}
+
+.board-duracao {
+  position: absolute;
+  right: 7px;
+  bottom: 7px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(15, 13, 21, 0.82);
+  color: #e6dcf1;
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.board-play.mat-mdc-icon-button {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+}
+
+/* One play control in both representations of the queue. Explicit grid
+   centring removes Material's asymmetric icon-button padding, which made the
+   glyph sit low inside the circular bezel in the list. */
+/*
+ * One play control, everywhere a video can be played in this tool.
+ *
+ * It is the Text Video Maker's: a plain icon button in the site's own ink, with
+ * the same magenta wash under the pointer that every icon button on the site
+ * has. It used to be a lacquered purple disc here and a smaller, fainter copy
+ * of that disc on the monitor, and neither matched the button doing the same
+ * job one tool along — three drawings of one control, which is three chances
+ * for the reader to wonder whether they do different things.
+ *
+ * Explicit grid centring stays. Material lays an icon button out with a touch
+ * target and a line box rather than by centring anything, and the glyph
+ * otherwise sits low.
+ */
+.btn-preview.queue-play.mat-mdc-icon-button,
+.board-play.queue-play.mat-mdc-icon-button,
+.monitor-play {
+  display: inline-grid !important;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0 !important;
+  border: 0;
+  border-radius: 50%;
+  background: transparent !important;
+  box-shadow: none;
+  color: var(--aqua) !important;
+}
+
+.btn-preview.queue-play.mat-mdc-icon-button:hover:not(:disabled),
+.board-play.queue-play.mat-mdc-icon-button:hover:not(:disabled),
+.monitor-play:hover:not(:disabled) {
+  color: var(--neon) !important;
+  background: rgba(209, 96, 255, 0.12) !important;
+}
+
+.queue-play.mat-mdc-icon-button mat-icon,
+.monitor-play mat-icon {
+  display: block;
+  margin: 0 !important;
+  font-size: 24px;
+  width: 24px;
+  height: 24px;
+  line-height: 24px;
+}
+
+/* --- what the clip has to say --- */
+
+/*
+ * `min-height: 0` so this column, and not the card, is what runs out of room:
+ * a flex item defaults to refusing to shrink below its content, which would
+ * push the controls off the bottom of a card with three warnings on it.
+ */
+.board-corpo {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px 10px 4px;
+  overflow: hidden;
+}
+
+.board-nome {
+  font-weight: 600;
+  font-size: 0.85rem;
+  line-height: 1.25;
+  color: var(--text-main);
+  /* Two lines, then an ellipsis. A filename is often long and is rarely the
+     thing being looked for on a board; the full name is on the title. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.board-detalhe {
+  color: #b5a8c3;
+  font-size: 0.71rem;
+  line-height: 1.3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-detalhe .antes { margin-right: 4px; }
+
+.board-selos {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  overflow: hidden;
+  max-height: 42px;
+}
+
+.board-selos .selo {
+  padding: 2px 7px;
+  border: 1px solid #52475e;
+  border-radius: 5px;
+  background: linear-gradient(#302937, #25212e);
+  color: #cbbbd9;
+  font-size: 0.64rem;
+  line-height: 1.35;
+}
+
+.board-selos .selo.selo-timelapse { color: #aacaff; border-color: #4b6086; background: #263044; }
+
+.board-som {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border-left: 2px solid var(--som-externo);
+  border-radius: 3px;
+  background: #211b21;
+  color: #d8cbd3;
+  font-size: 0.69rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-som mat-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+}
+
+/* The short form of the sentences the row spells out in full. The title on the
+   element carries the whole thing, so nothing is lost — only folded. */
+.board-aviso {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.69rem;
+  line-height: 1.3;
+  color: #ffb74d;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.board-aviso mat-icon {
+  flex-shrink: 0;
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+}
+
+.board-aviso.aviso-sem-som,
+.board-aviso.aviso-sem-som mat-icon { color: #ff8a80; }
+
+/* --- the controls --- */
+
+.board-acoes {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 8px;
+  border-bottom-left-radius: 11px;
+  border-bottom-right-radius: 11px;
+  border-top: 1px solid #17131e;
+  background: linear-gradient(#23202c, #282430);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+.board-acoes .btn-editar {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 32px;
+  padding: 0 8px;
+  border-color: #52475e;
+  color: #e2d6ee;
+  font-size: 0.76rem;
+}
+
+.board-acoes .btn-editar mat-icon {
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+  line-height: 17px;
+  margin-right: 3px;
+}
+
+.board-acoes .mat-mdc-icon-button {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  padding: 5px;
+  border: 1px solid #15111c;
+  border-radius: 7px;
+  background: linear-gradient(#43384f, #2b2534);
+  box-shadow: inset 0 1px 0 rgba(141, 120, 152, 0.4);
+  color: #c9bad7;
+}
+
+.board-acoes .mat-mdc-icon-button mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+}
+
+.board-acoes .btn-remover:hover:not(:disabled) { border-color: #e17b99; background: #512d3f; }
+
+/* --------------------------------------------------------- what is on it */
+
+/*
+ * Everything that sits on an arrow, centred on its midpoint: the transition
+ * already at that join, and the plus that adds something there.
+ *
+ * Stacked rather than side by side, so a horizontal arrow and a vertical one
+ * can use the same block — the chip above the line, the plus on it.
+ */
+/*
+ * The block is exactly the plus button, centred on the arrow's midpoint, and
+ * the chip hangs off it. The chip is out of the flow deliberately: were the two
+ * stacked, the pair would be centred on the line and the plus — the thing the
+ * arrow is pointing through — would sit below it rather than on it.
+ *
+ * Transparent, with only the controls catching the pointer: left solid, the
+ * block would swallow the drag that pans the board wherever a join happens to
+ * be, and the background stays draggable right up to the edge of each control.
+ */
+.board-junta {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  line-height: 0;
+}
+
+.board-junta > * { pointer-events: auto; }
+
+.board-mais {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 50%;
+  background: #221f2c;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0.75;
+  transition: opacity 120ms ease, color 120ms ease, border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.board-mais mat-icon {
+  font-size: 20px;
+  width: 20px;
+  height: 20px;
+  line-height: 20px;
+}
+
+.board-mais:hover:not(:disabled) {
+  opacity: 1;
+  color: var(--aqua);
+  border-color: var(--aqua);
+  box-shadow: 0 0 10px rgba(209, 96, 255, 0.3);
+}
+
+.board-mais:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.board-mais:disabled { opacity: 0.25; }
+
+/* The stubs at the two ends have no chip and no line to sit on, so the plus
+   there is quieter until it is wanted. */
+.junta-ponta .board-mais { opacity: 0.5; }
+
+/* --- the transition, as a card of its own --- */
+
+/*
+ * A small card rather than a pill.
+ *
+ * A pill is one line, and one line on a join has to choose between saying which
+ * animation it is and carrying the two buttons that change it — so it said
+ * neither well. A card has rows: what this is, which animation, how long it
+ * got, and what can be done about it. It is built from the same four bevel
+ * layers the clip cards are, at the size a label deserves rather than the size
+ * a shot does.
+ *
+ * `--largura-juncao` is also known to the component, which measures the board
+ * with it. The two have to be changed together.
+ */
+.board-juncao {
+  --largura-juncao: 132px;
+  position: absolute;
+  bottom: calc(100% + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: var(--largura-juncao);
+  padding: 7px 8px 6px;
+  border: 1px solid rgba(224, 212, 240, 0.26);
+  border-radius: 10px;
+  background: linear-gradient(160deg, #3a2b47, #2c2338 55%, #272031);
+  box-shadow:
+    inset 0 1px 0 rgba(176, 140, 196, 0.5),
+    inset 1px 0 0 rgba(255, 255, 255, 0.05),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(112, 88, 130, 0.5),
+    0 5px 11px rgba(0, 0, 0, 0.42),
+    0 12px 22px rgba(0, 0, 0, 0.28);
+  user-select: none;
+  /* The action bar at the foot is pulled out to the card's edges by negative
+     margins; without this it is drawn square across the rounded corners. */
+  overflow: hidden;
+}
+
+/*
+ * On a join that drops from one row to the next the card goes out to the side.
+ * Above it there is a clip card barely a card's height away, and this one is
+ * tall enough now to be printed over it; beside the arrow, at a wrap, there is
+ * nothing at all — and the component adds its width to the board's, so "fit"
+ * still shows the whole of it.
+ */
+.junta-vertical .board-juncao {
+  bottom: auto;
+  top: 50%;
+  left: calc(100% + 12px);
+  transform: translateY(-50%);
+}
+
+.juncao-topo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.board-juncao .juncao-icone {
+  flex-shrink: 0;
+  font-size: 15px;
+  width: 15px;
+  height: 15px;
+  line-height: 15px;
+  color: var(--neon-bright, #e88bff);
+}
+
+/* What kind of thing this card is, said once and quietly — the loud line is
+   the name underneath, which is what the reader is actually looking for. */
+.juncao-rotulo {
+  /* Small, but not so small it disappears: at the zoom a whole board is read
+     at, 0.58rem was seven pixels of dark grey and might as well not have been
+     printed. */
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #bda6d0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.board-juncao .juncao-nome {
+  font-size: 0.76rem;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--text-main);
+  /* Two lines, then an ellipsis; the whole name is on the card's title. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.board-juncao .juncao-tempo {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.juncao-alerta {
+  font-size: 14px;
+  width: 14px;
+  height: 14px;
+  line-height: 14px;
+  color: #ffb74d;
+}
+
+/* A recessed bank at the foot, the way the clip card's controls are. */
+.juncao-acoes {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  margin: 3px -8px -6px;
+  padding: 3px 5px;
+  border-top: 1px solid #17131e;
+  background: linear-gradient(rgba(26, 22, 33, 0.6), rgba(35, 29, 44, 0.6));
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+.board-juncao .btn-juncao { width: 24px; height: 24px; }
+.board-juncao .btn-juncao mat-icon { font-size: 16px; width: 16px; height: 16px; line-height: 16px; }
+
+/* The same two things worth saying in colour that the row says. */
+.board-juncao.juncao-orfa {
+  border-color: rgba(255, 138, 128, 0.55);
+  background: linear-gradient(160deg, #46292f, #33222a 55%, #2a2029);
+}
+
+.board-juncao.juncao-orfa .juncao-icone,
+.board-juncao.juncao-orfa .juncao-alerta { color: #ff8a80; }
+
+.board-juncao.juncao-sobre-conteudo {
+  border-color: rgba(255, 189, 89, 0.5);
+  background: linear-gradient(160deg, #453520, #322820 55%, #2a2320);
+}
+
+.board-juncao.juncao-sobre-conteudo .juncao-icone { color: var(--som-externo); }
+
+/*
+ * The transition, while the video is crossing it.
+ *
+ * Lit for exactly as long as the light is running down the arrow it sits on,
+ * because that is the moment it describes: the shot before has stopped, the
+ * shot after has not started, and what is on the screen is this. Amber rather
+ * than the purple the cards use — a crossing is a different kind of event from
+ * a shot playing, and telling them apart at a glance is the point of a colour.
+ */
+.board-juncao.juncao-acesa {
+  border-color: rgba(255, 189, 89, 0.85);
+  background: linear-gradient(160deg, #4a3a1d, #362b1c 55%, #2c2419);
+  animation: board-juncao-acesa 850ms ease-in-out both;
+}
+
+.board-juncao.juncao-acesa .juncao-icone,
+.board-juncao.juncao-acesa .juncao-rotulo { color: #ffd28a; }
+
+@keyframes board-juncao-acesa {
+  0% {
+    box-shadow:
+      inset 0 1px 0 rgba(176, 140, 196, 0.5),
+      0 5px 11px rgba(0, 0, 0, 0.42);
+  }
+  40% {
+    box-shadow:
+      inset 0 1px 0 rgba(255, 214, 150, 0.6),
+      0 0 0 1px rgba(255, 189, 89, 0.6),
+      0 0 26px rgba(255, 189, 89, 0.55),
+      0 5px 11px rgba(0, 0, 0, 0.42);
+  }
+  100% {
+    box-shadow:
+      inset 0 1px 0 rgba(176, 140, 196, 0.5),
+      0 0 0 1px rgba(255, 189, 89, 0.25),
+      0 0 10px rgba(255, 189, 89, 0.18),
+      0 5px 11px rgba(0, 0, 0, 0.42);
+  }
+}
+
+/* Lit, but not flashing, for a reader who asked for less movement. */
+@media (prefers-reduced-motion: reduce) {
+  .board-juncao.juncao-acesa {
+    animation: none;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 214, 150, 0.5),
+      0 0 0 1px rgba(255, 189, 89, 0.5),
+      0 0 18px rgba(255, 189, 89, 0.35),
+      0 5px 11px rgba(0, 0, 0, 0.42);
+  }
+}
+
+/* ------------------------------------------------------- the camera bar */
+
+/* Floating over the board rather than in the layout, so the diagram keeps the
+   whole frame. Top right: the board lays its cards out from the top left and
+   grows downwards, so the corner the bar is least likely to ever cover is the
+   one it now sits in — and it is where the eye already goes for the control
+   that fills the window. */
+.board-controles {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 3px;
+  /* Eleven controls is more than a narrow board has room for in one line, and
+     a bar that runs off the right-hand edge takes the last of them — which is
+     the one that puts the board back into the page — with it. */
+  flex-wrap: wrap;
+  max-width: calc(100% - 20px);
+  padding: 4px;
+  border: 1px solid #15131d;
+  border-radius: 10px;
+  background: rgba(30, 28, 40, 0.92);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  backdrop-filter: blur(6px);
+}
+
+.board-controles button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 120ms ease, background 120ms ease, border-color 120ms ease;
+}
+
+.board-controles button mat-icon {
+  font-size: 18px;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+}
+
+.board-controles button:hover {
+  color: var(--aqua);
+  border-color: var(--line-hard);
+  background: rgba(209, 96, 255, 0.1);
+}
+
+.board-controles button:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+
+/* Groups the bar into what it does: history, notes, camera. */
+.board-controles-sep {
+  width: 1px;
+  height: 18px;
+  margin: 0 2px;
+  background: var(--line-soft);
+}
+
+.board-zoom {
+  min-width: 44px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * Filling the window.
+ *
+ * Portalled into `<body>` by the template, for the reason the dialogs are: the
+ * board sits inside a card that opens a stacking context of its own, and no
+ * `z-index` written in there can get above the site's menu bar. Below the
+ * dialogs at 4000, though — opening a clip's settings from a maximised board
+ * has to put the dialog on top, not behind.
+ */
+.board-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  padding: 10px;
+  box-sizing: border-box;
+  background: var(--bg-deep, #12121b);
+}
+
+.board-fluxo.maximizado {
+  height: 100%;
+  min-height: 0;
+  border-radius: 10px;
+}
+
+/* Marked while it is on, the way the view toggle marks the view in use. */
+.board-maximizar[aria-pressed='true'] {
+  color: var(--aqua);
+  border-color: var(--line-hard);
+  background: rgba(209, 96, 255, 0.12);
+}
+
+/* No `cursor` here: the site's global stylesheet sets `not-allowed !important`
+   on every disabled button, and an author rule cannot outrank it. */
+.board-controles button:disabled { opacity: 0.3; }
+
+/* -------------------------------------------------- notes on the board */
+
+/*
+ * A note the reader has written. Deliberately not a card: it is not in the
+ * queue and does not become anything, so it gets a flat, papery panel rather
+ * than the chassis and the lift that say "this is an object in the edit".
+ */
+.board-rotulo {
+  position: absolute;
+  z-index: 4;
+  box-sizing: border-box;
+  /* The size a note is until the reader drags its corner, at which point the
+     component writes both of these onto the element. */
+  width: 220px;
+  min-height: 40px;
+  /* Room on the left for the grip and on the right for the remove button. */
+  padding: 9px 26px 9px 26px;
+  border: 1px solid rgba(209, 96, 255, 0.28);
+  border-left: 3px solid rgba(209, 96, 255, 0.55);
+  border-radius: 8px;
+  background: rgba(32, 28, 42, 0.9);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+  color: #e3d8ef;
+  cursor: grab;
+  user-select: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease;
+}
+
+.board-rotulo:hover {
+  border-color: var(--line-hard);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.45);
+}
+
+.board-rotulo.rotulo-editando {
+  border-color: var(--aqua);
+  background: rgba(38, 32, 50, 0.98);
+  box-shadow: 0 0 0 1px rgba(209, 96, 255, 0.3), 0 6px 16px rgba(0, 0, 0, 0.5);
+}
+
+.rotulo-pegar {
+  position: absolute;
+  top: 8px;
+  left: 5px;
+  font-size: 16px;
+  width: 16px;
+  height: 16px;
+  line-height: 16px;
+  color: #6f6483;
+  cursor: grab;
+  transition: color 120ms ease;
+}
+
+.board-rotulo:hover .rotulo-pegar { color: #a795b8; }
+.board-rotulo:active .rotulo-pegar { cursor: grabbing; }
+
+.rotulo-texto {
+  font-size: 0.82rem;
+  line-height: 1.4;
+  /* The line breaks the reader typed are the ones they meant. */
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  outline: none;
+}
+
+/* Being typed into: the text has to be selectable, which the panel above turns
+   off so that dragging it does not select it instead. The panel itself keeps
+   the grab cursor — it is still the thing you pick the note up by. */
+.board-rotulo.rotulo-editando .rotulo-texto { user-select: text; cursor: text; }
+
+/* A note with nothing in it yet says what it is for, and the placeholder is
+   never part of the text — it is drawn by the stylesheet, not typed. */
+.rotulo-texto:empty::before {
+  content: 'Write a note…';
+  color: var(--text-dim, #7e768f);
+}
+
+.rotulo-remover {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-dim, #7e768f);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease;
+}
+
+.rotulo-remover mat-icon { font-size: 14px; width: 14px; height: 14px; line-height: 14px; }
+
+.board-rotulo:hover .rotulo-remover,
+.rotulo-remover:focus-visible { opacity: 1; }
+.rotulo-remover:hover { color: #f44336; background: rgba(244, 67, 54, 0.12); }
+.rotulo-remover:focus-visible { outline: 2px solid var(--aqua); outline-offset: 1px; }
+
+/* The corner that resizes it, drawn the same way the monitor's is so the two
+   read as the same gesture. */
+.rotulo-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  cursor: nwse-resize;
+  touch-action: none;
+  opacity: 0;
+  transition: opacity 120ms ease;
+  background-image: linear-gradient(
+    135deg,
+    transparent 0 48%,
+    rgba(209, 96, 255, 0.6) 48% 58%,
+    transparent 58% 72%,
+    rgba(209, 96, 255, 0.6) 72% 82%,
+    transparent 82%
+  );
+}
+
+.board-rotulo:hover .rotulo-resize,
+.board-rotulo.rotulo-editando .rotulo-resize { opacity: 1; }
+
+/* ------------------------------------------------- the floating monitor */
+
+/*
+ * A small picture of the preview, over the board, while the board is the
+ * window. Absolute inside the frame rather than fixed to the page: it belongs
+ * to the board, is clamped to it while being dragged, and goes away with it.
+ *
+ * Bottom left by default — the only corner of the board with nothing else in
+ * it, the camera bar having the other one. `left`/`top` are written onto the
+ * element by the drag, and until they are these two decide.
+ */
+.board-monitor {
+  position: absolute;
+  left: 12px;
+  top: auto;
+  bottom: 12px;
+  z-index: 6;
+  /* The starting width only. Once the panel exists the component writes this,
+     and the resize corner is what changes it. */
+  width: 288px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid rgba(224, 212, 240, 0.26);
+  border-radius: 12px;
+  background: linear-gradient(160deg, #35333f, #2a2834 60%, #26242f);
+  box-shadow:
+    inset 0 1px 0 rgba(160, 146, 175, 0.5),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.45),
+    0 1px 0 rgba(107, 97, 120, 0.45),
+    0 10px 22px rgba(0, 0, 0, 0.5),
+    0 26px 48px rgba(0, 0, 0, 0.36);
+  overflow: hidden;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;
+}
+
+.board-monitor:active { cursor: grabbing; }
+
+.monitor-barra {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Enough that the name is a line of text in a bar rather than a line of text
+     wedged against the top of the panel. */
+  min-height: 34px;
+  padding: 7px 10px;
+  border-bottom: 1px solid #17131e;
+  background: linear-gradient(#2f2c39, #272430);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  min-width: 0;
+}
+
+.monitor-pegar {
+  flex-shrink: 0;
+  font-size: 17px;
+  width: 17px;
+  height: 17px;
+  line-height: 17px;
+  color: #8e819d;
+}
+
+.monitor-titulo {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.monitor-numero {
+  flex-shrink: 0;
+  min-width: 22px;
+  padding: 2px 6px;
+  border: 1px solid #16121d;
+  border-radius: 5px;
+  background: linear-gradient(#67337a, #392143);
+  color: #f6d6ff;
+  font-size: 0.68rem;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.monitor-nome {
+  font-size: 0.78rem;
+  line-height: 1.3;
+  font-weight: 600;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.monitor-parado { color: var(--text-muted); font-weight: 500; }
+
+.monitor-tela {
+  position: relative;
+  background: #000;
+  line-height: 0;
+}
+
+.monitor-tela canvas { display: block; width: 100%; height: auto; }
+
+/*
+ * The scrubber, on a line of its own between the picture and the transport.
+ *
+ * A name of its own, and that is not cosmetic: it was `.monitor-barra`, which
+ * is also the title bar above the picture, and the two rule sets were landing
+ * on each other — the scrubber's `height: 14px; padding: 0` won on order and
+ * squashed the title into the top edge of the panel.
+ */
+.monitor-progresso {
+  width: 100%;
+  height: 14px;
+  margin: 0;
+  padding: 0;
+  accent-color: var(--aqua);
+  background: transparent;
+  cursor: pointer;
+}
+
+.monitor-progresso:disabled { opacity: 0.4; }
+.monitor-progresso:focus-visible { outline: 2px solid var(--aqua); outline-offset: -2px; }
+
+.monitor-progresso::-webkit-slider-runnable-track { height: 4px; border-radius: 2px; }
+.monitor-progresso::-moz-range-track { height: 4px; border-radius: 2px; }
+
+.monitor-progresso::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 11px;
+  height: 11px;
+  margin-top: -3.5px;
+  border: none;
+  border-radius: 50%;
+  background: var(--neon-bright, #e88bff);
+  box-shadow: 0 0 6px rgba(209, 96, 255, 0.6);
+}
+
+.monitor-progresso::-moz-range-thumb {
+  width: 11px;
+  height: 11px;
+  border: none;
+  border-radius: 50%;
+  background: var(--neon-bright, #e88bff);
+  box-shadow: 0 0 6px rgba(209, 96, 255, 0.6);
+}
+
+/* The shape rather than a height, so the empty state is the same size as the
+   picture it stands in for at whatever width the reader has dragged. */
+.monitor-vazio {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  aspect-ratio: 16 / 9;
+  padding: 0 16px;
+  color: var(--text-dim, #7e768f);
+  font-size: 0.72rem;
+  text-align: center;
+  line-height: 1.4;
+}
+
+.monitor-vazio mat-icon {
+  font-size: 26px;
+  width: 26px;
+  height: 26px;
+  line-height: 26px;
+}
+
+.monitor-transporte {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-top: 1px solid #17131e;
+  background: linear-gradient(#23202c, #282430);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.25);
+}
+
+/*
+ * The monitor's transport is the same control as the one on a card.
+ *
+ * It used to be a near-copy — same colours, four pixels smaller, a fainter glow
+ * and no hover — which is the worst of both: close enough to read as the same
+ * button and different enough to look like a mistake beside it. It now takes
+ * its shape from the rule above and keeps only what is genuinely its own.
+ */
+.monitor-play {
+  cursor: pointer;
+}
+
+.monitor-play:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.monitor-play:disabled { opacity: 0.35; }
+
+.monitor-tempo {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * The corner that resizes it.
+ *
+ * Two short rules rather than an icon: at 14px an icon is a smudge, and the
+ * diagonal pair is what a resizable corner has looked like for thirty years.
+ * The hit area is the whole square, which is larger than what is drawn.
+ */
+.monitor-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 18px;
+  height: 18px;
+  cursor: nwse-resize;
+  touch-action: none;
+  background-image: linear-gradient(
+    135deg,
+    transparent 0 46%,
+    rgba(209, 96, 255, 0.55) 46% 56%,
+    transparent 56% 70%,
+    rgba(209, 96, 255, 0.55) 70% 80%,
+    transparent 80%
+  );
+}
+
+.monitor-resize:hover { background-image: linear-gradient(
+    135deg,
+    transparent 0 46%,
+    var(--neon-bright, #e88bff) 46% 56%,
+    transparent 56% 70%,
+    var(--neon-bright, #e88bff) 70% 80%,
+    transparent 80%
+  ); }
+
+/* ---------------------------------------------------------- narrow room */
+
+@media (max-width: 900px) {
+  .board-fluxo { height: clamp(360px, 52vh, 700px); }
+  .board-fluxo.maximizado { height: 100%; }
+  .board-controles { right: 8px; top: 8px; }
+  .board-fundo { padding: 6px; }
+}

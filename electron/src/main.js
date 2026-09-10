@@ -168,6 +168,42 @@ function wireWindowControls() {
     const window = sender(event);
     return window ? stateOf(window) : { maximized: false, fullScreen: false, focused: true };
   });
+
+  /*
+   * Handing the page a gesture, so a project can open its own files.
+   *
+   * The editor keeps a durable reference to every file the reader added, and
+   * a restored project uses them to reopen the media without asking anybody
+   * anything. Two things stand in the way, and both are about permission:
+   * `queryPermission` answers "ask" on a window that has just started, and
+   * `requestPermission` — the answer to that — may only be called while a
+   * person is pressing something.
+   *
+   * The second is what this is for. `executeJavaScript` with `true` runs the
+   * page's own function inside a real user activation, which is the only way
+   * to make that call legal in a window nobody has touched yet. The permission
+   * itself is then granted by the handler below without a dialog, because in
+   * this window there is no address bar for anyone to answer from.
+   *
+   * The page names the function; if it is not there, nothing happens.
+   */
+  ipcMain.handle('files:reconnect', async (event) => {
+    const contents = event.sender;
+    if (!contents || contents.isDestroyed()) return false;
+
+    try {
+      await contents.executeJavaScript(
+        'window.__sveReconnectFiles ? window.__sveReconnectFiles() : null',
+        true
+      );
+      return true;
+    } catch {
+      // The page navigated, or its own reconnect threw. Neither is worth
+      // failing a launch over: the reader is simply asked for the files, which
+      // is what happened before any of this existed.
+      return false;
+    }
+  });
 }
 
 /**
@@ -179,13 +215,59 @@ function wireWindowControls() {
  * everything else — which, with external links opening elsewhere, is everything.
  */
 function wirePermissions(session) {
-  const ALLOWED = new Set(['media', 'clipboard-sanitized-write', 'clipboard-read', 'fullscreen', 'pointerLock']);
+  /*
+   * `fileSystem` is the File System Access API, and it is here for the project
+   * that reopens itself.
+   *
+   * The editor keeps a handle for every file the reader adds — a durable
+   * reference that survives the application being closed — and uses them to
+   * bring the media back when the project is restored. Each use asks this
+   * handler whether the page may read that file. Leaving it out of the set did
+   * not merely fail to help: it *denied* the request, which is why a project
+   * came back with every clip waiting and no way to explain itself.
+   *
+   * Granting it is not a widening of what the page can reach. A handle is not
+   * a path and cannot be invented: it exists only because the reader chose that
+   * exact file through a dialog or dropped it onto the window.
+   */
+  const ALLOWED = new Set([
+    'media',
+    'clipboard-sanitized-write',
+    'clipboard-read',
+    'fullscreen',
+    'pointerLock',
+    'fileSystem'
+  ]);
+
+  const fromUs = (contents) => {
+    const url = contents?.getURL?.() ?? '';
+    return url.startsWith(origin) || (DEV && url.startsWith(DEV_URL));
+  };
 
   session.setPermissionRequestHandler((contents, permission, callback) => {
-    const url = contents.getURL();
-    const ours = url.startsWith(origin) || (DEV && url.startsWith(DEV_URL));
-    callback(ours && ALLOWED.has(permission));
+    callback(fromUs(contents) && ALLOWED.has(permission));
   });
+
+  /*
+   * The same answer, to the question asked without a dialog.
+   *
+   * `queryPermission` — which is what a restored project calls before it has
+   * any gesture to spend — goes through this rather than through the handler
+   * above. Answering it here is what lets the media come back with nothing
+   * said at all; the gesture route in `files:reconnect` stays as the fallback
+   * for the builds where it does not.
+   */
+  if (typeof session.setPermissionCheckHandler === 'function') {
+    session.setPermissionCheckHandler((contents, _permission, requestingOrigin) => {
+      // Deliberately not filtered by `ALLOWED`. This handler answers a question
+      // asked *silently*, and narrowing it would take away capabilities the
+      // window has today — the screen picker's own check among them — in order
+      // to add one. The origin is the boundary that matters, and it is the same
+      // one the request handler above enforces.
+      if (contents) return fromUs(contents);
+      return typeof requestingOrigin === 'string' && requestingOrigin.startsWith(origin);
+    });
+  }
 
   /* `getDisplayMedia` needs a source, and the source has to be chosen by a
      person. Windows 11 has a picker of its own; where it is missing the request

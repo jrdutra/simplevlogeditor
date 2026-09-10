@@ -545,7 +545,7 @@ export function buildProjectPlan(
     if (!continuing) appendFades(audioFades, edits, outputStart, outputDuration, joined);
     if (kind === 'video') {
       appendZooms(zooms, clip, edits, keepRanges, outputStart, speed);
-      appendCaption(captions, clip, outputStart, outputDuration);
+      appendCaption(captions, clip, keepRanges, outputStart, outputDuration, speed);
     }
 
     // Outside the picture guard on purpose: a tag belongs to a *clip*, not to
@@ -1215,13 +1215,32 @@ function appendTag(
   tags.push({ start: at, end: Math.min(clipEnd, at + tagLifetime(tag)), tag });
 }
 
-function appendCaption(captions: CaptionSegment[], clip: EditorClip, start: number, duration: number): void {
+function appendCaption(
+  captions: CaptionSegment[],
+  clip: EditorClip,
+  keepRanges: readonly TimeRange[],
+  start: number,
+  duration: number,
+  speed: number
+): void {
   if (!isMediaClip(clip)) return;
 
-  const caption = clip.caption;
-  if (!caption || !caption.text.trim() || duration <= 0) return;
+  if (duration <= 0) return;
+  const bounds = clipBounds(clip);
+  const timed = clip.captions?.length
+    ? clip.captions
+    : clip.caption?.text.trim()
+      ? [{ ...clip.caption, startSeconds: bounds.start, durationSeconds: bounds.end - bounds.start }]
+      : [];
 
-  captions.push({ start, end: start + duration, caption });
+  for (const caption of timed) {
+    if (!caption.text.trim()) continue;
+    const sourceStart = Math.max(bounds.start, caption.startSeconds ?? bounds.start);
+    const sourceEnd = Math.min(bounds.end, sourceStart + Math.max(0, caption.durationSeconds ?? bounds.end - sourceStart));
+    const segmentStart = start + cutTimeOf(keepRanges, sourceStart) / speed;
+    const segmentEnd = Math.min(start + duration, start + cutTimeOf(keepRanges, sourceEnd) / speed);
+    if (segmentEnd - segmentStart > EPSILON) captions.push({ start: segmentStart, end: segmentEnd, caption });
+  }
 }
 
 /** The nearest rate the chosen codec actually accepts. */

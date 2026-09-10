@@ -165,13 +165,46 @@ export const IMAGE_SECONDS = { default: 5, min: 0.1, max: 3600, step: 0.5 } as c
 export const CAPTION_LIMITS = {
   fontScale: { min: 0.02, max: 0.12, step: 0.005 },
   bottomMargin: { min: 0, max: 0.3, step: 0.005 },
+  outlinePercent: { min: 0, max: 30, step: 1 },
   fadeSeconds: { min: 0.1, max: 5, step: 0.1 }
 } as const;
+
+export const CAPTION_FONTS: readonly { value: NonNullable<ClipCaption['fontFamily']>; label: string }[] = [
+  { value: 'sans', label: 'Clean sans serif' },
+  { value: 'rounded', label: 'Rounded' },
+  { value: 'serif', label: 'Editorial serif' },
+  { value: 'mono', label: 'Monospace' }
+];
+
+export const CAPTION_WEIGHTS = [400, 500, 600, 700, 800, 900] as const;
+
+export const CAPTION_PRESETS: readonly { id: string; label: string; style: Partial<ClipCaption> }[] = [
+  { id: 'classic', label: 'Classic · white, black outline + shadow', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'white-clean', label: 'Clean · white, black outline', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'yellow-shadow', label: 'Yellow · black outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'yellow-clean', label: 'Yellow · black outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'black-white-shadow', label: 'Black · white outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'black-white-clean', label: 'Black · white outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'cyan', label: 'Cyan · navy outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#54e7ff', outlineColor: '#071a38', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'pink', label: 'Pink · plum outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#ff82d8', outlineColor: '#3a082e', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'lime', label: 'Lime · black outline', style: { fontFamily: 'sans', fontWeight: 900, italic: false, textColor: '#baff3c', outlineColor: '#000000', outlinePercent: 18, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'editorial', label: 'Editorial · warm white serif', style: { fontFamily: 'serif', fontWeight: 700, italic: false, textColor: '#fff4dc', outlineColor: '#24180e', outlinePercent: 10, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'mono', label: 'Tech · green monospace', style: { fontFamily: 'mono', fontWeight: 700, italic: false, textColor: '#8dffad', outlineColor: '#07150c', outlinePercent: 13, shadowEnabled: true, shadowColor: '#000000' } }
+];
 
 export const DEFAULT_CAPTION: ClipCaption = {
   text: '',
   fontScale: 0.045,
   bottomMargin: 0.06,
+  stylePreset: 'classic',
+  fontFamily: 'sans',
+  fontWeight: 700,
+  italic: false,
+  textColor: '#ffffff',
+  outlineColor: '#000000',
+  outlinePercent: 16,
+  shadowEnabled: true,
+  shadowColor: '#000000',
   fadeIn: true,
   fadeOut: true,
   fadeSeconds: 0.5
@@ -333,6 +366,7 @@ export function clampCaption(caption: ClipCaption): ClipCaption {
     ...caption,
     fontScale: clamp(caption.fontScale, CAPTION_LIMITS.fontScale),
     bottomMargin: clamp(caption.bottomMargin, CAPTION_LIMITS.bottomMargin),
+    outlinePercent: clamp(caption.outlinePercent ?? DEFAULT_CAPTION.outlinePercent ?? 16, CAPTION_LIMITS.outlinePercent),
     fadeSeconds: clamp(caption.fadeSeconds, CAPTION_LIMITS.fadeSeconds)
   };
 }

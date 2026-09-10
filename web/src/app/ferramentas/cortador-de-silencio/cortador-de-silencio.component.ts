@@ -17,7 +17,7 @@ import { MediaRenderService, RenderDestination } from './media-render.service';
 import { ProcessingEngineSelectorService } from './processing-engine-selector.service';
 import { describeError, silenceLog } from './silence-cutter-log';
 import { keepRangesFor, mergeEditableRanges, totalDuration } from './silence-detector';
-import { SilenceWaveformComponent, formatDuration } from './waveform.component';
+import { RangeResize, SilenceWaveformComponent, formatDuration } from './waveform.component';
 import {
   CROSSFADE_OPTIONS,
   DETECTION_WINDOWS,
@@ -572,6 +572,16 @@ export class CortadorDeSilencioComponent implements OnInit, OnDestroy {
     });
 
     this.applyRanges(next);
+  }
+
+  /** Applies a boundary dragged on a cut without changing its origin. */
+  resizeCutRange(change: RangeResize): void {
+    const analysis = this.analysis;
+    if (!analysis || !analysis.silenceRanges.includes(change.range)) return;
+
+    this.applyRanges(analysis.silenceRanges.map((range) => range === change.range
+      ? { ...range, start: change.start, end: change.end }
+      : range));
   }
 
   /**

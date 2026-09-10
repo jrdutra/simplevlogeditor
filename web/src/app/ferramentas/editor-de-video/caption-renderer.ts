@@ -5,13 +5,9 @@
  * caption that sits differently in the exported file than it did on screen is
  * worse than no preview at all.
  *
- * The look is fixed on purpose — white letters, a black outline, a soft shadow —
- * and the reader can change only what has to change: how big it is, how far it
- * sits from the bottom edge, and whether it fades. Those three are the ones that
- * depend on the footage. The rest is what keeps text legible over a picture
- * nobody has seen yet: the outline survives a white sky, the shadow separates
- * the letters from a busy background, and together they work on footage that is
- * light in one corner and dark in the other.
+ * Every visual choice is carried by the caption itself. Presets only fill those
+ * values in the editor; this painter never needs to know whether the reader
+ * chose a preset or built the style by hand.
  */
 
 import { ClipCaption } from './video-editor.models';
@@ -19,16 +15,18 @@ import { ClipCaption } from './video-editor.models';
 export type CaptionContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
 /** Only stacks the browser already has: a font fetched late would draw twice. */
-const FONT_STACK = '"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif';
+const FONT_STACKS: Record<NonNullable<ClipCaption['fontFamily']>, string> = {
+  sans: '"Inter", "Segoe UI", "Helvetica Neue", Arial, sans-serif',
+  rounded: '"Arial Rounded MT Bold", "Trebuchet MS", "Segoe UI", sans-serif',
+  serif: 'Georgia, "Times New Roman", serif',
+  mono: 'Consolas, "Courier New", monospace'
+};
 
 /** Share of the frame width a caption line may occupy before it wraps. */
 const MAX_WIDTH_SHARE = 0.86;
 
 /** Line spacing, as a multiple of the type size. */
 const LINE_HEIGHT = 1.25;
-
-/** Outline thickness, as a share of the type size. */
-const OUTLINE_SHARE = 0.16;
 
 /**
  * Draws the caption, or does nothing when there is nothing to draw.
@@ -51,7 +49,9 @@ export function drawCaption(
 
   context.save();
   context.globalAlpha = Math.min(1, Math.max(0, opacity));
-  context.font = `700 ${fontSize}px ${FONT_STACK}`;
+  const family = FONT_STACKS[caption.fontFamily ?? 'sans'];
+  const weight = Math.min(900, Math.max(100, caption.fontWeight ?? 700));
+  context.font = `${caption.italic ? 'italic ' : ''}${weight} ${fontSize}px ${family}`;
   context.textAlign = 'center';
   context.textBaseline = 'alphabetic';
   context.lineJoin = 'round';
@@ -73,18 +73,32 @@ export function drawCaption(
     // The shadow is carried by the outline pass alone. Painting it under the
     // fill as well would darken the inside of every letter, since the fill sits
     // exactly on top of the stroke.
-    context.shadowColor = 'rgba(0, 0, 0, 0.6)';
-    context.shadowBlur = fontSize * 0.22;
-    context.shadowOffsetY = fontSize * 0.06;
-    context.lineWidth = fontSize * OUTLINE_SHARE;
-    context.strokeStyle = '#000000';
-    context.strokeText(line, x, y);
+    if (caption.shadowEnabled !== false) {
+      context.shadowColor = caption.shadowColor ?? '#000000';
+      context.shadowBlur = fontSize * 0.22;
+      context.shadowOffsetY = fontSize * 0.06;
+    } else {
+      context.shadowColor = 'transparent';
+      context.shadowBlur = 0;
+      context.shadowOffsetY = 0;
+    }
+    context.lineWidth = fontSize * Math.max(0, caption.outlinePercent ?? 16) / 100;
+    context.strokeStyle = caption.outlineColor ?? '#000000';
+    const hasOutline = context.lineWidth > 0.01;
+    if (hasOutline) context.strokeText(line, x, y);
 
+    // With an outline the shadow belongs to that pass; without one it belongs
+    // to the fill, so the shadow switch remains genuinely independent.
+    if (hasOutline) {
+      context.shadowColor = 'transparent';
+      context.shadowBlur = 0;
+      context.shadowOffsetY = 0;
+    }
+    context.fillStyle = caption.textColor ?? '#ffffff';
+    context.fillText(line, x, y);
     context.shadowColor = 'transparent';
     context.shadowBlur = 0;
     context.shadowOffsetY = 0;
-    context.fillStyle = '#ffffff';
-    context.fillText(line, x, y);
   }
 
   context.restore();

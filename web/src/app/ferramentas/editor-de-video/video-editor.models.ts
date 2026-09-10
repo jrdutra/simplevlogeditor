@@ -73,11 +73,30 @@ export type ClipSoundPlan =
  * text clip.
  */
 export interface ClipCaption {
+  /** Stable identity when a clip carries more than one caption. */
+  id?: string;
   text: string;
+  /** Position and lifetime on the source clip's clock. Older captions omit both and fill the clip. */
+  startSeconds?: number;
+  durationSeconds?: number;
+  /** Kept true until the reader explicitly changes the suggested reading time. */
+  durationAutomatic?: boolean;
   /** Type size as a share of the frame height, so it survives a change of resolution. */
   fontScale: number;
   /** Gap kept below the text, as a share of the frame height. */
   bottomMargin: number;
+  /** A named shortcut while its visual values still match a preset. */
+  stylePreset?: string;
+  /** Browser-local font family; the renderer maps it to a deterministic stack. */
+  fontFamily?: 'sans' | 'rounded' | 'serif' | 'mono';
+  fontWeight?: number;
+  italic?: boolean;
+  textColor?: string;
+  outlineColor?: string;
+  /** Outline thickness as a percentage of the font size. */
+  outlinePercent?: number;
+  shadowEnabled?: boolean;
+  shadowColor?: string;
   fadeIn: boolean;
   fadeOut: boolean;
   /** Length of each of the caption's own fades, in seconds. */
@@ -351,6 +370,8 @@ export interface MediaClip {
   analyzedWith: SilenceSettings | null;
   /** Sound that replaces this clip's own, when the audio mode says so. */
   replacementAudio: SuppliedSound | null;
+  /** Timed captions. `caption` below is retained only to open older projects. */
+  captions?: ClipCaption[];
   caption: ClipCaption | null;
   /**
    * The animated tag this clip wears, if any.

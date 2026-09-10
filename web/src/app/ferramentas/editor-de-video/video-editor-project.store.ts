@@ -97,6 +97,8 @@ export interface StoredMediaClip {
   detected: EditableRange[];
   manualCuts: EditableRange[];
   caption: ClipCaption | null;
+  /** Absent in documents written before captions could be timed independently. */
+  captions?: ClipCaption[];
   replacementAudio: StoredSound | null;
   /** Absent in documents written before a clip could be trimmed. Absent means the whole file. */
   inPoint?: number;
@@ -260,6 +262,7 @@ export function serializeProject(
             detected: clip.detected.map((range) => ({ ...range })),
             manualCuts: clip.manualCuts.map((range) => ({ ...range })),
             caption: clip.caption ? { ...clip.caption } : null,
+            ...(clip.captions?.length ? { captions: clip.captions.map((caption) => ({ ...caption })) } : {}),
             replacementAudio: clip.replacementAudio ? soundOf(clip.replacementAudio) : null,
             // Written only when they are not the whole file, so an untouched
             // project's document is byte for byte what it always was.
@@ -361,6 +364,7 @@ export function restoreProject(stored: StoredProject): RestoredProject {
           analyzedWith: null,
           replacementAudio: clip.replacementAudio ? soundFrom(clip.replacementAudio) : null,
           caption: clip.caption ? { ...clip.caption } : null,
+          captions: (clip.captions ?? []).map((caption) => ({ ...caption })),
           // Clamped on the way in rather than trusted: a document written by an
           // older build can name an animation this one no longer has, and the
           // painter would draw nothing at all rather than fall back.

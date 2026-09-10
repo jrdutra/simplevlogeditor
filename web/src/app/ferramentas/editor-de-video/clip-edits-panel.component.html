@@ -107,6 +107,12 @@
     }
 
     </div>
+
+    <!-- Clip-specific playback controls supplied by the host belong inside
+         this fieldset even though their state does not live in ClipEdits. The
+         replacement file is one such control: Sound chooses the behaviour in
+         the row above; this chooses the file that behaviour will play. -->
+    <ng-content select="[insidePlayback]"></ng-content>
   </fieldset>
 
   <!-- Where the project puts a setting that belongs beside Playback but not
@@ -146,13 +152,18 @@
 
   @if (showCuts) {
     <fieldset class="grupo bloco-corte">
-      <legend class="grupo-titulo">Silence</legend>
+      <legend class="grupo-titulo">Cuts and Silence Removal</legend>
 
       <label class="check">
         <input type="checkbox" [checked]="edits.cutSilence" [disabled]="disabled"
           (change)="patch({ cutSilence: $any($event.target).checked })">
         <span>Remove the silent stretches</span>
       </label>
+
+      <!-- The host owns the waveform and manual ranges because those belong to
+           the media clip, not to its inherited settings. They are projected
+           here so manual cuts and detected silence read as one editing tool. -->
+      <ng-content select="[insideCuts]"></ng-content>
 
       <button type="button" class="disclosure" [disabled]="disabled" (click)="cutsOpen = !cutsOpen"
         [attr.aria-expanded]="cutsOpen">

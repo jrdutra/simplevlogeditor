@@ -151,6 +151,24 @@
 }
 
 .previa-botao:hover { background: rgba(209, 96, 255, 0.1); border-color: var(--aqua); }
+
+/*
+ * The transport's play is a play button, and every play button in this tool is
+ * now the one the Text Video Maker draws: no ring of its own, the site's ink,
+ * and the ordinary magenta wash under the pointer. The two beside it keep their
+ * ring, because they are not this control — one splits a clip and one fills the
+ * screen, and looking alike would be the misleading part.
+ */
+.previa-botao:not(.previa-botao-menor) {
+  border-color: transparent;
+  background: transparent;
+}
+
+.previa-botao:not(.previa-botao-menor):hover {
+  border-color: transparent;
+  background: rgba(209, 96, 255, 0.12);
+  color: var(--neon);
+}
 .previa-botao:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
 
 .previa-tempo {
@@ -742,6 +760,21 @@ textarea {
 
 .previa-botao-menor { width: 32px; height: 32px; }
 
+/*
+ * A tenth off the glyph inside the small round buttons.
+ *
+ * Material draws every icon at 24px, which in a 32px circle leaves barely four
+ * pixels of bezel: the pair beside the scrubber read as two filled discs rather
+ * than as a pair of symbols. Taking ten per cent off gives the shape back
+ * without making either one harder to recognise.
+ */
+.previa-botao-menor mat-icon {
+  font-size: 21.6px;
+  width: 21.6px;
+  height: 21.6px;
+  line-height: 21.6px;
+}
+
 /* ------------------------------------------------ in, out and push-ins --- */
 
 /* Three readings side by side rather than a sentence: they are numbers that are
@@ -784,6 +817,135 @@ textarea {
 
 .zoom-linha .campo-estreito { flex: 0 1 8.5rem; }
 .zoom-manter { padding-bottom: 6px; }
+
+/* ----------------------------------------------------- timed captions --- */
+
+.caption-lista {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.caption-item {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(12, 11, 18, 0.28);
+  transition: border-color 160ms ease, background 160ms ease;
+}
+
+.caption-item.caption-truncado {
+  border-color: rgba(255, 104, 116, 0.48);
+  background: rgba(117, 29, 40, 0.11);
+}
+
+.caption-item.caption-recolhido { padding: 0; gap: 0; overflow: hidden; }
+
+.caption-resumo {
+  display: grid;
+  grid-template-columns: minmax(108px, auto) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 58px;
+  padding: 10px 14px;
+  border: 0;
+  background: transparent;
+  color: var(--text-main);
+  text-align: left;
+  cursor: pointer;
+}
+
+.caption-resumo:hover:not(:disabled) { background: rgba(209, 96, 255, 0.08); }
+.caption-resumo:focus-visible { outline: 2px solid var(--aqua); outline-offset: -2px; }
+.caption-resumo:disabled { cursor: default; opacity: 0.6; }
+
+.caption-resumo-tempo {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.caption-resumo-tempo strong { color: var(--aqua); }
+.caption-resumo-tempo span { color: var(--text-muted); font-size: 0.76rem; }
+
+.caption-resumo-texto {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.caption-resumo-aviso { color: #ff9ca5; }
+.caption-resumo-abrir { color: var(--text-muted); }
+
+.caption-confirmar {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 2px;
+}
+
+@media (max-width: 620px) {
+  .caption-resumo { grid-template-columns: 1fr auto auto; }
+  .caption-resumo-texto { grid-column: 1 / -1; grid-row: 2; }
+}
+
+.caption-topo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text-main);
+}
+
+.caption-tempos { grid-template-columns: repeat(2, minmax(150px, 240px)); }
+
+.caption-cores { grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); }
+
+.caption-cor {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-height: 38px;
+}
+
+.caption-cor input[type='color'] {
+  width: 48px;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: var(--panel-well, #232332);
+  cursor: pointer;
+}
+
+.caption-cor input[type='color']:disabled { cursor: default; opacity: 0.45; }
+
+.caption-cor code {
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+}
+
+.caption-aviso {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: -3px 0 0;
+  color: #ff9ca5;
+  font-size: 0.76rem;
+}
+
+.caption-aviso mat-icon {
+  width: 16px;
+  height: 16px;
+  font-size: 16px;
+}
+
+.caption-adicionar { align-self: flex-start; }
 
 /* --------------------------------------------------------- the presets --- */
 

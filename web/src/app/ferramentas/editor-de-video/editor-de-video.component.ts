@@ -43,7 +43,34 @@ import {
   fontStack
 } from '../criador-de-video-texto/text-video-presets';
 import type { SceneBackground, TextScene } from '../criador-de-video-texto/text-video.models';
+import { groupWords } from '../transcricao-de-video/recognition-timing';
+import { readSpeechAudio, transcribe } from '../transcricao-de-video/speech-recognizer';
+import { TranscriptionCanceled, TranscriptionError } from '../transcricao-de-video/transcription-errors';
+import {
+  SPEECH_LANGUAGES,
+  SPEECH_MODELS,
+  TranscriptionProgress,
+  WHISPER_SAMPLE_RATE as SPEECH_RATE
+} from '../transcricao-de-video/transcription.models';
+import {
+  Cue,
+  DEFAULT_SHAPE,
+  SUBTITLE_FORMATS,
+  SubtitleFormat,
+  readableTime,
+  shapeCues,
+  wordCount,
+  writeSubtitles
+} from '../transcricao-de-video/subtitle-formats';
+import { SuppressionCanceled, SuppressionError, suppress } from '../supressao-de-ruido/noise-suppression-client';
+import {
+  ENGINES as NOISE_ENGINES,
+  EngineId,
+  STRENGTHS as NOISE_STRENGTHS,
+  SuppressionProgress
+} from '../supressao-de-ruido/noise-suppression.models';
 import { BodyPortalDirective } from '../../shared/ui/body-portal.directive';
+import { DesktopService } from '../../shared/desktop/desktop.service';
 import { measureLeadingSilence } from './leading-silence';
 import { AudioSourceDialogComponent } from './audio-source-dialog.component';
 import { TransitionDialogComponent } from './transition-dialog.component';
@@ -66,6 +93,7 @@ import { TRANSITIONS, transitionDefinition } from './video-transitions';
 import { ClipEditsPanelComponent } from './clip-edits-panel.component';
 import { HelpHintComponent } from './help-hint.component';
 import { TimelinePlayer } from './timeline-player';
+import { placeWords, spokenEntries, spokenSpan } from './timeline-transcript';
 import { VideoEditorRenderService } from './video-editor-render.service';
 import {
   RestoredProject,
@@ -83,7 +111,10 @@ import {
   ASPECTS,
   ACCEPTED_IMAGE,
   ACCEPTED_MEDIA,
+  CAPTION_FONTS,
   CAPTION_LIMITS,
+  CAPTION_PRESETS,
+  CAPTION_WEIGHTS,
   DEFAULT_CAPTION,
   DEFAULT_EDITS,
   DEFAULT_PROJECT,
@@ -122,6 +153,7 @@ import {
   slicePlan,
   sourceDuration,
   sourceTimeAt,
+  transitionAt,
   trimmedDuration
 } from './video-editor-timeline';
 import {
@@ -151,6 +183,7 @@ import {
   ClipAudioMode,
   ClipCaption,
   ClipEdits,
+  ClipPlan,
   ClipSoundPlan,
   EditableRange,
   EditorCanceledError,
@@ -223,6 +256,27 @@ const MIN_CLIP_SECONDS = 0.2;
 /** How long the reader has to stop moving a control before the pauses are found again. */
 const REDETECT_DELAY = 100;
 
+/**
+ * What the line above the transcript's progress bar says.
+ *
+ * One table for two jobs. The noise suppressor and the speech recogniser each
+ * report stages of their own, and a reader watching one bar does not care which
+ * of the two modules is talking — only what is happening to their recording.
+ */
+const TRANSCRIPT_STAGE: Record<string, string> = {
+  reading: 'Reading the sound',
+  loading: 'Fetching the noise model',
+  downloading: 'Fetching the speech model',
+  listening: 'Listening',
+  writing: 'Cleaning the sound',
+  levelling: 'Levelling',
+  analysing: 'Measuring',
+  done: 'Done'
+};
+
+/** The shortest recording worth handing to the recogniser, in seconds. */
+const TRANSCRIPT_MIN_SECONDS = 0.2;
+
 /** Where the reader last left the divider between the two panes. */
 const SPLIT_KEY = 'utily.video-editor.split.v1';
 
@@ -239,6 +293,216 @@ const SPLIT_STEP_FAST = 64;
 
 /** Where the reader last left the bottom edge of the preview. */
 const VIDEO_HEIGHT_KEY = 'utily.video-editor.altura-video.v1';
+
+/** Which of the two drawings of the queue the reader last chose. */
+const VISTA_KEY = 'utily.video-editor.vista.v1';
+
+/*
+ * The board's geometry, in board units.
+ *
+ * Board units, not pixels: everything below is laid out at zoom 1 and the whole
+ * stage is scaled as one, so these numbers stay the same whatever the reader
+ * has done to the zoom. A card is deliberately taller than it is wide — it is a
+ * still with a label under it, the shape a storyboard frame has always had.
+ *
+ * The gaps are what the arrows are drawn in, and they have to hold the plus
+ * button and, where there is one, a transition chip. The horizontal gap is the
+ * binding one: on a wrap the chip has the whole width of the board beside it,
+ * but between two cards in a row it has only this, and a chip wider than the
+ * gap would be printed over the very cards it joins. `--largura-juncao` in the
+ * board's stylesheet is what holds it inside, and the two must move together.
+ */
+const BOARD_CARD_W = 212;
+const BOARD_CARD_H = 306;
+const BOARD_GAP_X = 176;
+const BOARD_GAP_Y = 132;
+
+/** Breathing room around the whole diagram, so nothing touches the frame. */
+const BOARD_MARGEM = 56;
+
+/*
+ * How far the plus at each end sits from the card it hangs off.
+ *
+ * Inside the margin rather than out in a gap that is not there: the first card
+ * has nothing to its left and the last may have nothing to its right, so these
+ * two are measured against the border of the diagram instead. Half the button
+ * plus its stub still lands inside `BOARD_MARGEM`, which is what keeps the fit
+ * from cropping either of them.
+ */
+const BOARD_PONTA = 38;
+
+/*
+ * Where the board's own layout is kept.
+ *
+ * A key of its own, and deliberately not part of the project. Where a reader
+ * has dragged a card to, and what shape they bent an arrow into, says nothing
+ * about the video that comes out — it is the same file whether the board is
+ * tidy or a spider's web. Putting it in the project store would change what a
+ * project *is*, and every saved file and every export path with it; putting it
+ * here keeps it what it is, which is a view setting.
+ */
+const BOARD_LAYOUT_KEY = 'utily.video-editor.board.v1';
+
+/** How far a press has to travel before it counts as a drag rather than a click. */
+const BOARD_ARRASTE_MINIMO = 4;
+
+/*
+ * Where the board's top-left corner sits, once everything on it has been found.
+ *
+ * Not a limit on the drag — dragging is not limited. Anything may be pulled as
+ * far left or as far up as the reader likes; when the gesture ends, the whole
+ * board is shifted so that the leftmost, topmost thing on it lands here, and
+ * the camera is moved by the same amount so nothing appears to jump. The result
+ * is a coordinate space that always starts at its own content, which is what
+ * lets the board be measured, fitted and saved without ever holding a negative.
+ */
+const BOARD_MIN_XY = 8;
+
+/*
+ * How wide a note on the board is, in board units. Known here for the same
+ * reason the transition card's width is: the board is measured with it.
+ */
+const BOARD_ROTULO_W = 220;
+const BOARD_ROTULO_H = 40;
+
+/** How far the corner of a note may be dragged, either way. */
+const BOARD_ROTULO_MIN_W = 140;
+const BOARD_ROTULO_MAX_W = 640;
+const BOARD_ROTULO_MIN_H = 36;
+const BOARD_ROTULO_MAX_H = 600;
+
+/*
+ * The transition card's width, in board units.
+ *
+ * Known here and not only in the stylesheet because the board has to be
+ * measured with it: on a join that drops from one row to the next the card sits
+ * out to the side of the arrow, past the last thing the cards themselves reach,
+ * and a board measured without it would crop the card off at "fit".
+ */
+const BOARD_JUNCAO_W = 132;
+
+/** The radius the arrows turn their corners on, in board units. */
+const BOARD_RAIO_CANTO = 30;
+
+/*
+ * The two sizes that must not grow with the zoom, in screen pixels.
+ *
+ * A handle is a thing to grab, not a thing on the diagram: at 25% a waypoint
+ * scaled with everything else would be a dot two pixels across, and at 250% it
+ * would be a saucer covering the arrow it belongs to. Both are divided by the
+ * zoom when they are drawn, so they stay the same size on the glass.
+ */
+const BOARD_ALCA_RAIO = 6;
+const BOARD_HIT_LARGURA = 16;
+
+/** How long the light takes to run down an arrow when the playhead crosses it. */
+const BOARD_FLUXO_MS = 850;
+
+/*
+ * The lights that sweep round the card being watched.
+ *
+ * Driven from a frame loop rather than from keyframes, and the reason is the
+ * one thing keyframes cannot do: change speed. A card that is asked to stop
+ * has to slow down, and the next one has to wind up from nothing — CSS can
+ * start and stop an animation but it cannot decelerate one, and an animation
+ * cut off mid-turn reads as a dropped frame rather than as a stop.
+ *
+ * The speed is in degrees a second; `TAU` is how long it takes to cover about
+ * two thirds of the distance to a new speed, which is what makes both the
+ * slowing and the winding up feel like weight rather than like a switch.
+ */
+const BOARD_GIRO_VEL = 100;
+const BOARD_GIRO_TAU = 0.55;
+
+/** Below this the light is treated as stopped, and the hand-over may go on. */
+const BOARD_GIRO_PARADO = 5;
+
+/** How many breaths a second the glow takes at full speed. */
+const BOARD_PULSO_HZ = 0.45;
+
+/*
+ * The floating monitor's picture: the width it opens at, and the shape it keeps.
+ *
+ * The shape is what the resize handle preserves — the reader chooses how big
+ * the monitor is, never how distorted. The picture inside is letterboxed into
+ * it, so a vertical video in a 16:9 monitor is still the right film.
+ */
+const BOARD_MONITOR_W = 288;
+const BOARD_MONITOR_H = 162;
+
+/** How small and how large the reader may drag the monitor. */
+const BOARD_MONITOR_MIN = 200;
+const BOARD_MONITOR_MAX = 760;
+
+/** Limits on the board's zoom, and how far one press of the buttons moves it. */
+const BOARD_ZOOM_MIN = 0.2;
+const BOARD_ZOOM_MAX = 2.5;
+const BOARD_ZOOM_PASSO = 1.15;
+
+/** Never fill the frame completely when fitting: a hair of margin reads better. */
+const BOARD_AJUSTE_FOLGA = 0.94;
+
+/**
+ * How wide a row of the board is allowed to get before it wraps.
+ *
+ * A single line of cards is unreadable past about half a dozen clips — the
+ * reader is panning sideways to answer "how long is this video", which is the
+ * one question a board is supposed to answer at a glance. Wrapping keeps the
+ * diagram roughly square, which is the shape a screen is closest to.
+ */
+function boardColunas(total: number): number {
+  if (total <= 1) return 1;
+  return Math.max(2, Math.min(8, Math.ceil(Math.sqrt(total * 1.7))));
+}
+
+/**
+ * One card on the board: a clip that actually plays, already placed.
+ *
+ * Transitions are not cards. They take no time in the finished file and have no
+ * picture of their own, exactly as the list decided; on the board they belong on
+ * the arrow, which is the join they describe.
+ */
+export interface NoBoard {
+  clip: EditorClip;
+  /** Where it sits in `clips` — what `move`, `remove` and `duplicate` are given. */
+  indice: number;
+  /** Where the card is on the board: the automatic place, or the one the reader dragged it to. */
+  x: number;
+  y: number;
+}
+
+/** One arrow between two cards, with whatever sits on it. */
+export interface LigacaoBoard {
+  id: string;
+  /** The card it leaves and the card it points at. */
+  de: NoBoard;
+  para: NoBoard;
+  /** The arrow itself. */
+  d: string;
+  /** Where the plus button and the transition chip are centred. */
+  meioX: number;
+  meioY: number;
+  /**
+   * The points the reader has bent the arrow through, in board units.
+   *
+   * The array itself is the one the layout holds for this join, not a copy:
+   * dragging a handle writes straight into it, and the path is rebuilt from it.
+   */
+  pontos: { x: number; y: number }[];
+  /** What `openInsertChooser` is given for this join. */
+  inserirEm: number;
+  /** The transition already at this join, or null. */
+  transicao: TransitionClip | null;
+  /** Where that transition sits in `clips` — what `remove` is given. */
+  indiceTransicao: number;
+  /**
+   * True while the arrow leaves the card going roughly downwards.
+   *
+   * The chip that sits on it is wider than a card, and this is what says
+   * whether there is a card beside the arrow for it to run into.
+   */
+  vertical: boolean;
+}
 
 /** The picture never goes below this, nor above this share of the window. */
 const VIDEO_MIN = 160;
@@ -260,9 +524,60 @@ function isTextEntry(element: HTMLElement): boolean {
 }
 
 /** One moment in the edit, kept so the reader can return to it. */
+/**
+ * The board's arrangement, as one undoable thing.
+ *
+ * Only what the reader arranged: where the cards are and what shape the arrows
+ * were bent into. Where the floating monitor sits and how big it is are not in
+ * here on purpose — those are a view setting like the zoom, and a reader who
+ * nudged the monitor and then pressed Ctrl+Z meant the card they had just
+ * dragged, not the panel they had just moved out of its way.
+ */
+interface LayoutBoard {
+  posicoes: Record<string, { x: number; y: number }>;
+  curvas: Record<string, { x: number; y: number }[]>;
+  rotulos: RotuloBoard[];
+}
+
+/**
+ * A note the reader has written on the board.
+ *
+ * It is a label and nothing else: it is not in the queue, it takes no time, it
+ * is never rendered, and the export cannot see it. That is why it lives with
+ * the arrangement rather than with the clips — writing "redo this bit" beside a
+ * shot must not be a change to the video, and a text card, which is a shot, is
+ * already how you put words *in* one.
+ */
+export interface RotuloBoard {
+  id: string;
+  x: number;
+  y: number;
+  texto: string;
+  /**
+   * The size the reader dragged it to, if they did.
+   *
+   * Absent means "whatever a note is": the width the stylesheet gives it, and
+   * whatever height the words need. Once set, the height is a floor rather than
+   * a ceiling — a note is a box of words, and words that no longer fit must not
+   * be hidden by a corner somebody dragged last week.
+   */
+  largura?: number;
+  altura?: number;
+}
+
 interface EditorSnapshot {
   clips: EditorClip[];
   project: ProjectSettings;
+  /**
+   * The board's arrangement at this moment.
+   *
+   * On the same stack as the edit rather than one of its own, and that is the
+   * whole point: two stacks would need the reader to know which of them Ctrl+Z
+   * was about to reach into. One stack, in the order things actually happened,
+   * so "take back the last thing I did" means the last thing they did — whether
+   * that was moving a card or deleting one.
+   */
+  board: LayoutBoard;
 }
 
 /**
@@ -410,7 +725,12 @@ function stemOf(fileName: string): string {
   ,
     HelpPanelComponent],
   templateUrl: './editor-de-video.component.html',
-  styleUrls: ['./editor-de-video.component.css', './editor-de-video.previa.css', './editor-de-video.lista.css']
+  styleUrls: [
+    './editor-de-video.component.css',
+    './editor-de-video.previa.css',
+    './editor-de-video.lista.css',
+    './editor-de-video.board.css'
+  ]
 })
 export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestroy {
   clips: EditorClip[] = [];
@@ -418,6 +738,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** The clip whose dialog is open, or null. */
   editing: MediaClip | null = null;
+  /** The one caption whose full form is visible. Null means the list is fully collapsed. */
+  expandedCaptionId: string | null = null;
   /**
    * Who is waiting to be told where a replacement soundtrack comes from.
    *
@@ -528,6 +850,75 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** Set when a line arrives, cleared once the console has been scrolled. */
   private logDirty = false;
   result: RenderResult | null = null;
+
+  /* ------------------------------------------------------- the transcript */
+
+  /**
+   * The transcript dialog, and what it is a transcript of.
+   *
+   * `project` is the whole timeline; `clip` is one card, opened from that
+   * card's own settings. The two differ in exactly two places — which clips are
+   * listened to, and whether the first word lands at nought or at the clip's
+   * place in the finished video — so they are one dialog with a scope rather
+   * than two dialogs that would drift apart.
+   */
+  transcript: { scope: 'project' | 'clip'; clip: MediaClip | null } | null = null;
+
+  readonly speechModels = SPEECH_MODELS;
+  readonly speechLanguages = SPEECH_LANGUAGES;
+  readonly subtitleFormats = SUBTITLE_FORMATS;
+  readonly noiseEngines = NOISE_ENGINES;
+  readonly noiseStrengths = NOISE_STRENGTHS;
+
+  transcriptModelId: string = SPEECH_MODELS[0].id;
+  transcriptLanguage = '';
+  transcriptFormatId: SubtitleFormat = 'srt';
+
+  /**
+   * Whether the sound is cleaned before it is listened to.
+   *
+   * Off by default, and deliberately: it is a second model to fetch and a
+   * second pass over the audio, and on a recording made in a quiet room it buys
+   * nothing. On a noisy one it is the difference between a transcript and a
+   * page of guesses, which is why it is offered here at all rather than left as
+   * a trip through another tool.
+   */
+  transcriptDenoise = false;
+  transcriptEngine: EngineId = 'gtcrn';
+  /** Index into {@link noiseStrengths}. Balanced, as in the noise tool. */
+  transcriptStrengthIndex = 1;
+
+  transcriptWorking = false;
+  /** 0..1, or null while the stage genuinely cannot be measured. */
+  transcriptRatio: number | null = null;
+  transcriptStage = '';
+  transcriptDetail = '';
+  /** "Clip 2 of 7 — arrival.mp4", or empty for a single clip. */
+  transcriptStep = '';
+  transcriptCues: Cue[] = [];
+  transcriptMessage = '';
+  transcriptError = '';
+  transcriptHint = '';
+
+  private transcriptController: AbortController | null = null;
+  private transcriptUrl: string | null = null;
+  private transcriptPreviewKey = '';
+  private transcriptPreviewText = '';
+
+  /**
+   * What the recogniser heard, per clip, on the source clock.
+   *
+   * Listening is the expensive half of this by a wide margin, and nothing about
+   * moving a clip, trimming it or cutting its pauses changes what was said in
+   * it — only where those words land. So the words are kept and re-placed, and
+   * a reader who exports SubRip and then changes their mind about WebVTT, or
+   * transcribes one clip and then the whole project, waits for neither.
+   *
+   * The key carries every setting that would change what is heard. The audio
+   * itself is never kept: it is tens of megabytes a clip and the browser has
+   * better uses for them.
+   */
+  private readonly heardByClip = new Map<string, Cue[]>();
 
   /**
    * Every clip being listened to right now, against how far it has got.
@@ -687,6 +1078,15 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   @ViewChild('previaSecao') previaSecao?: ElementRef<HTMLElement>;
   /** The workspace, which owns the width the divider writes. */
   @ViewChild('bancada') bancada?: ElementRef<HTMLElement>;
+  /** The board's frame — what the pan and the fit are measured against. */
+  @ViewChild('boardFluxo') boardFluxo?: ElementRef<HTMLElement>;
+  /** The rubber band, written onto by hand while it is being dragged. */
+  @ViewChild('boardSelecao') boardSelecao?: ElementRef<HTMLElement>;
+  /** The one element the pan and the zoom are written onto. */
+  @ViewChild('boardPalco') boardPalco?: ElementRef<HTMLElement>;
+  /** The floating monitor's picture, and the panel it sits in. */
+  @ViewChild('boardMonitorTela') boardMonitorTela?: ElementRef<HTMLCanvasElement>;
+  @ViewChild('boardMonitor') boardMonitor?: ElementRef<HTMLElement>;
 
   readonly videoFormats = VIDEO_FORMATS;
   readonly audioFormats = AUDIO_FORMATS;
@@ -704,6 +1104,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   readonly soundFadeLimits = SOUND_FADE_SECONDS;
   readonly silentCutReplacementLimits = SILENT_CUT_REPLACEMENT;
   readonly captionLimits = CAPTION_LIMITS;
+  readonly captionPresets = CAPTION_PRESETS;
+  readonly captionFonts = CAPTION_FONTS;
+  readonly captionWeights = CAPTION_WEIGHTS;
   readonly tagLimits = TAG_LIMITS;
   readonly tagPositions = TAG_POSITIONS;
   readonly tagPositionLabels = TAG_POSITION_LABELS;
@@ -717,6 +1120,123 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   readonly speedLabel = speedLabel;
   readonly isMediaClip = isMediaClip;
 
+  /* ------------------------------------------------- the queue as a board */
+
+  /*
+   * Everything below draws the queue a second way and changes nothing about it.
+   *
+   * The list is still the list: the same clips, the same order, the same
+   * methods behind every button. The board is a different picture of the same
+   * array — cards in the order the video plays them, joined by the arrows that
+   * order already implies — and it is deliberately read-only about position.
+   * There is nothing to drag a card to, because there is nowhere a card could
+   * go that the order does not already decide; moving one means changing the
+   * order, and the arrows are the order. So the layout is computed, never
+   * stored, and the two views can never disagree.
+   */
+
+  /** Which drawing of the queue is on screen. The list is what opens. */
+  vistaFila: 'lista' | 'board' = 'lista';
+
+  /* The card's size, for the template to write onto every card. Bound rather
+     than repeated in the stylesheet: the arrows are drawn against these two
+     numbers, so a card that disagreed with them would come away from its line. */
+  readonly boardCardW = BOARD_CARD_W;
+  readonly boardCardH = BOARD_CARD_H;
+
+  /** What one press of the zoom buttons does, so the template says it once. */
+  readonly boardZoomPasso = BOARD_ZOOM_PASSO;
+
+  /** The board's camera. Written onto the stage rather than bound — see `aplicarCameraBoard`. */
+  boardZoom = 1;
+  boardPanX = 0;
+  boardPanY = 0;
+
+  /** True while the reader is dragging the board itself. */
+  boardArrastando = false;
+  /** And true while they are drawing a rectangle over it to pick cards out. */
+  boardSelecionandoArea = false;
+
+  /** True while the board fills the browser window. */
+  boardMaximizado = false;
+
+  /** The card being dragged, so the click that ends the drag is not a click. */
+  boardCardArrastado: string | null = null;
+
+  /**
+   * The cards picked out to be moved together, by clip id.
+   *
+   * A selection and nothing more: it does not change the queue, the order or
+   * the export, and it is not remembered between sessions. Dragging any card
+   * that is in it drags the whole of it, which is the only thing it is for.
+   */
+  boardSelecionados = new Set<string>();
+
+  /**
+   * Where the reader has put each card, by clip id, and what shape they have
+   * bent each arrow into, by join id.
+   *
+   * Sparse on purpose: a clip with no entry here is wherever the automatic
+   * layout puts it, so a board that has never been touched needs nothing
+   * stored, and a clip added later lands in the tidy place rather than at the
+   * origin.
+   */
+  private boardPosicoes: Record<string, { x: number; y: number }> = {};
+  private boardCurvas: Record<string, { x: number; y: number }[]> = {};
+
+  /** Where the floating monitor was left, measured from the frame's top left. */
+  private boardMonitorPos: { x: number; y: number } | null = null;
+
+  /** And how wide the reader has dragged it. The height follows from the shape. */
+  private boardMonitorLargura = BOARD_MONITOR_W;
+
+  /** The notes written on the board, and which one is being typed into. */
+  boardRotulos: RotuloBoard[] = [];
+  boardRotuloEditando: string | null = null;
+  /** A note that has just been made and is waiting for the caret. */
+  private boardRotuloFoco: string | null = null;
+
+  /** The arrow the playhead has just crossed, lit for as long as the light runs. */
+  boardFluxoLink: string | null = null;
+  private boardFluxoTimer: ReturnType<typeof setTimeout> | null = null;
+
+  /*
+   * The moving light, and the hand-over from one card to the next.
+   *
+   * `boardCardAceso` is the card wearing it, which is not quite the card the
+   * playhead is in: when the video moves on, the light stays on the card it was
+   * on until it has slowed to a stop, then goes out, then runs down the arrow,
+   * and only then appears on the next card and winds back up to speed. Three
+   * steps in a row, so the board shows the move rather than cutting to it.
+   */
+  boardCardAceso: string | null = null;
+  private boardAcesoSeguinte: string | null = null;
+  private boardFluxoPendente: string | null = null;
+  private boardGiroAngulo = 0;
+  private boardGiroFase = 0;
+  private boardGiroVel = 0;
+  private boardGiroAlvo = 0;
+  private boardGiroFrame = 0;
+  private boardGiroUltimo = 0;
+
+  /** The frame loop copying the preview's canvas into the monitor. */
+  private boardEspelhoFrame = 0;
+
+
+
+  /** Set when the camera has to be written on the next view check. */
+  private boardPendente = false;
+  /** Set when the board should be fitted to the frame on the next view check. */
+  private boardAjustePendente = false;
+
+  /** The layout, kept until the queue it was built from changes. */
+  private boardCacheArray: EditorClip[] | null = null;
+  private boardCacheItens: EditorClip[] = [];
+  private boardNosCache: NoBoard[] = [];
+  private boardLigacoesCache: LigacaoBoard[] = [];
+  private boardLarguraCache = 0;
+  private boardAlturaCache = 0;
+
   constructor(
     private readonly dataService: DataService,
     private readonly probe: MediaProbeService,
@@ -724,6 +1244,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     private readonly analyser: AudioAnalysisService,
     private readonly selector: ProcessingEngineSelectorService,
     private readonly renderer: VideoEditorRenderService,
+    private readonly desktop: DesktopService,
     private readonly zone: NgZone,
     private readonly cdr: ChangeDetectorRef,
     @Inject(PLATFORM_ID) private readonly platformId: object
@@ -736,6 +1257,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.restoreFromStorage();
     this.restoreSplit();
     this.restoreVideoHeight();
+    this.restaurarVista();
+    this.carregarLayoutBoard();
     this.presets = readPresets();
     // The first entry in the history is the edit as it arrived, so the very
     // first change made can be taken back like any other.
@@ -744,8 +1267,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   ngOnDestroy(): void {
+    this.pararEspelhoBoard();
+    this.apagarGiroBoard();
     this.controller?.abort();
     this.cancelAnalyses();
+    this.transcriptController?.abort();
+    this.revokeTranscript();
     if (this.redetectTimer) clearTimeout(this.redetectTimer);
     this.stopTextPlayback();
     this.player?.dispose();
@@ -778,8 +1305,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         `Your last project came back — ${this.awaitingCount} clip(s) are waiting for their files. Add the same ` +
         'files again and everything you had is reconnected.';
       // A browser that still holds permission for the files can simply open
-      // them, and the reader never learns that anything was missing.
-      void this.reconnectQuietly();
+      // them, and the reader never learns that anything was missing. Inside the
+      // desktop application there is a second door, and it always opens.
+      void this.reconnectQuietly().then(() => this.reconnectThroughApp());
       return;
     }
 
@@ -1879,6 +2407,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         detected: clip.detected.map((range) => ({ ...range })),
         manualCuts: clip.manualCuts.map((range) => ({ ...range })),
         caption: clip.caption ? { ...clip.caption } : null,
+        captions: (clip.captions ?? []).map((caption) => ({ ...caption })),
         tag: clip.tag ? { ...clip.tag } : null,
         previewUrl: null
       };
@@ -2123,8 +2652,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // animation frame, and the dialog is about to put a second `<video>` on the
     // same machine — two decoders competing was what made opening a card feel
     // like the page had stalled.
+    if (isMediaClip(clip)) this.ensureTimedCaptions(clip);
     this.suspendPreview();
     this.editing = clip;
+    this.expandedCaptionId = null;
     this.playhead = 0;
     if (isPlatformBrowser(this.platformId) && !clip.awaitingFile) {
       clip.previewUrl ??= URL.createObjectURL(clip.file);
@@ -2133,6 +2664,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   closeClip(): void {
     this.editing = null;
+    this.expandedCaptionId = null;
     this.resumePreview();
   }
 
@@ -2168,6 +2700,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private closeAllDialogs(): void {
     this.stopTextPlayback();
     this.editing = null;
+    this.expandedCaptionId = null;
     this.editingText = null;
     this.preview = null;
     this.soundChooser = null;
@@ -2464,9 +2997,24 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * that plays smoothly and one that stutters on its own interface.
    */
   private onPreviewTick(time: number, index: number): void {
-    const changed = index !== this.previewClipIndex;
+    /*
+     * A shot that is still dissolving has not finished.
+     *
+     * A transition is an overlap: for its whole length both shots are on
+     * screen, and which of the two the playhead is "in" is a tie the plan
+     * breaks by convention rather than by anything the reader can see. The
+     * board must not act on that convention — an arrow lighting while the shot
+     * it is leaving is still visible reads as the diagram running ahead of the
+     * picture. So through a crossing the card that stays lit is the one being
+     * left, and the hand-over waits for the join to end.
+     */
+    const join = transitionAt(this.previewPlan, time);
+    const onScreen = join && time < join.end ? join.fromIndex : index;
+
+    const changed = onScreen !== this.previewClipIndex;
+    const anterior = this.previewClipIndex;
     this.previewTime = time;
-    this.previewClipIndex = index;
+    this.previewClipIndex = onScreen;
 
     const now = performance.now();
     if (!changed && now - this.lastPreviewSync < 120) return;
@@ -2474,6 +3022,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     this.zone.run(() => {
       this.previewPlaying = this.player?.playing ?? false;
+      // The board, when it is the one on screen, hands the light from the card
+      // that was playing to the one that is, by way of the arrow between them.
+      // Nothing else here changes: both return immediately in the list view.
+      if (changed) this.trocarCardAcesoBoard(anterior, onScreen);
+      this.sincronizarGiroBoard();
       this.cdr.markForCheck();
     });
   }
@@ -2640,6 +3193,2153 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
+  /* ----------------------------------------------- the queue as a board */
+
+  /** True while the board is the one on screen. */
+  get modoBoard(): boolean {
+    return this.vistaFila === 'board';
+  }
+
+  /**
+   * Switch between the two drawings of the queue.
+   *
+   * Nothing about the project changes here — this is which picture is on the
+   * screen, and it is remembered the way the divider and the preview height
+   * are, so the reader who prefers one does not choose it again every visit.
+   */
+  usarVista(vista: 'lista' | 'board'): void {
+    if (this.vistaFila === vista) return;
+    this.vistaFila = vista;
+    this.saveSetting(VISTA_KEY, vista);
+
+    // The board has just been created, so it has no size yet: the fit waits for
+    // the view check, which is the first moment the frame can be measured.
+    if (vista === 'board') this.boardAjustePendente = true;
+  }
+
+  private restaurarVista(): void {
+    this.vistaFila = this.readSetting(VISTA_KEY) === 'board' ? 'board' : 'lista';
+    if (this.modoBoard) this.boardAjustePendente = true;
+  }
+
+  /* --- the layout ---------------------------------------------------- */
+
+  /**
+   * True while the layout still describes the queue that is actually there.
+   *
+   * By identity, every clip, rather than by a signature of their ids. A project
+   * restored from storage rebuilds the array with the same ids in the same
+   * order but with fresh objects, and a cache keyed on ids would keep pointing
+   * at the clips that were thrown away — a board of stale names and stills that
+   * looks right and is not. Comparing references costs the same walk the
+   * signature cost and allocates nothing.
+   */
+  private boardCacheValido(): boolean {
+    if (this.boardCacheArray !== this.clips) return false;
+    const itens = this.boardCacheItens;
+    if (itens.length !== this.clips.length) return false;
+    for (let i = 0; i < itens.length; i++) {
+      if (itens[i] !== this.clips[i]) return false;
+    }
+    return true;
+  }
+
+  /**
+   * Places every card and works out every arrow, once per change to the queue.
+   *
+   * Memoised because the getters below are read from the template, which means
+   * they are read on every change-detection pass — several times per keystroke
+   * while a clip's name is being typed in a dialog over the board.
+   */
+  private construirBoard(): void {
+    if (this.boardCacheValido()) return;
+    this.boardCacheArray = this.clips;
+    this.boardCacheItens = this.clips.slice();
+
+    const nos: NoBoard[] = [];
+    this.clips.forEach((clip, indice) => {
+      if (isTransitionClip(clip)) return;
+      nos.push({ clip, indice, x: 0, y: 0 });
+    });
+
+    const colunas = boardColunas(nos.length);
+    const passoX = BOARD_CARD_W + BOARD_GAP_X;
+    const passoY = BOARD_CARD_H + BOARD_GAP_Y;
+
+    // Serpentine: the second row runs right to left, the third left to right
+    // again. It keeps the wrap arrow a straight drop between two cards in the
+    // same column instead of a long hook back across the whole diagram, and it
+    // is how a contact sheet has always been read.
+    nos.forEach((no, ordem) => {
+      const linha = Math.floor(ordem / colunas);
+      const dentro = ordem % colunas;
+      const coluna = linha % 2 === 0 ? dentro : colunas - 1 - dentro;
+      no.x = BOARD_MARGEM + coluna * passoX;
+      no.y = BOARD_MARGEM + linha * passoY;
+
+      // Wherever the reader last dropped it wins. A clip they have never moved
+      // has no entry and keeps the tidy place, which is what lets a board be
+      // half arranged by hand and half by the layout without looking like it.
+      const posto = this.boardPosicoes[no.clip.id];
+      if (posto) {
+        no.x = posto.x;
+        no.y = posto.y;
+      }
+    });
+
+    const ligacoes: LigacaoBoard[] = [];
+    for (let i = 0; i < nos.length - 1; i++) {
+      const de = nos[i];
+      const para = nos[i + 1];
+
+      // The join owns everything between the two cards, transitions included:
+      // whatever sits in `clips` between them is this arrow's business.
+      let transicao: TransitionClip | null = null;
+      let indiceTransicao = -1;
+      for (let k = de.indice + 1; k < para.indice; k++) {
+        const meio = this.clips[k];
+        if (isTransitionClip(meio)) {
+          transicao = meio;
+          indiceTransicao = k;
+        }
+      }
+
+      const id = `${de.clip.id}>${para.clip.id}`;
+      const pontos = this.boardCurvas[id] ?? [];
+      const geo = this.geometriaLink(de, para, pontos);
+
+      ligacoes.push({
+        id,
+        de,
+        para,
+        pontos,
+        // A new clip goes immediately before the card the arrow points at, so it
+        // lands between the two — and after any transition already there, which
+        // is where the list's own plus button puts it too.
+        inserirEm: para.indice,
+        transicao,
+        indiceTransicao,
+        ...geo
+      });
+    }
+
+    this.boardNosCache = nos;
+    this.boardLigacoesCache = ligacoes;
+    this.medirBoard();
+  }
+
+  /**
+   * Slides the whole board so that nothing is left of, or above, the corner.
+   *
+   * This is what makes the drag unlimited. A card pulled off the left-hand edge
+   * would otherwise need a negative coordinate, and the board has no room for
+   * one: its size is measured from zero, the fit works from that size, and the
+   * saved layout would come back with cards nobody could reach. So instead of
+   * refusing the drag, everything on the board — cards, bends and notes alike —
+   * moves right by however far the leftmost thing overshot, and the camera
+   * moves left by exactly the same amount. Nothing appears to happen, which is
+   * the point: the reader dragged a card to the left and the card went left.
+   *
+   * Every card gets a position of its own out of this, including the ones still
+   * sitting where the automatic layout put them — they have all just moved, and
+   * an arrangement half-shifted would be no arrangement at all.
+   */
+  private normalizarBoard(): void {
+    const nos = this.boardNosCache;
+    if (!nos.length) return;
+
+    let minX = Infinity;
+    let minY = Infinity;
+    for (const no of nos) {
+      minX = Math.min(minX, no.x);
+      minY = Math.min(minY, no.y);
+    }
+    for (const link of this.boardLigacoesCache) {
+      for (const p of link.pontos) {
+        minX = Math.min(minX, p.x);
+        minY = Math.min(minY, p.y);
+      }
+    }
+    for (const rotulo of this.boardRotulos) {
+      minX = Math.min(minX, rotulo.x);
+      minY = Math.min(minY, rotulo.y);
+    }
+
+    const dx = minX < BOARD_MIN_XY ? Math.round(BOARD_MIN_XY - minX) : 0;
+    const dy = minY < BOARD_MIN_XY ? Math.round(BOARD_MIN_XY - minY) : 0;
+    if (!dx && !dy) return;
+
+    for (const no of nos) {
+      no.x += dx;
+      no.y += dy;
+      this.boardPosicoes[no.clip.id] = { x: no.x, y: no.y };
+    }
+    for (const link of this.boardLigacoesCache) {
+      for (const p of link.pontos) {
+        p.x += dx;
+        p.y += dy;
+      }
+      if (link.pontos.length) this.boardCurvas[link.id] = link.pontos;
+      this.recalcularLink(link);
+    }
+    for (const rotulo of this.boardRotulos) {
+      rotulo.x += dx;
+      rotulo.y += dy;
+    }
+
+    // The content moved right; the camera moves left by the same distance, in
+    // screen pixels, so the view does not lurch under the hand that let go.
+    this.boardPanX -= dx * this.boardZoom;
+    this.boardPanY -= dy * this.boardZoom;
+    this.aplicarCameraBoard();
+  }
+
+  /**
+   * The size of the diagram, from the cards that are actually in it.
+   *
+   * Measured rather than worked out from the number of columns, because a card
+   * the reader has dragged is anywhere they left it — including well past where
+   * the automatic layout would have put the last one. Recomputed at the end of
+   * every drag, so the board grows to hold what is on it.
+   */
+  private medirBoard(): void {
+    const nos = this.boardNosCache;
+    if (!nos.length) {
+      this.boardLarguraCache = 0;
+      this.boardAlturaCache = 0;
+      return;
+    }
+
+    let direita = 0;
+    let base = 0;
+    for (const no of nos) {
+      direita = Math.max(direita, no.x + BOARD_CARD_W);
+      base = Math.max(base, no.y + BOARD_CARD_H);
+    }
+
+    // The waypoints count too: an arrow bent out past the last card is part of
+    // the picture, and a board measured without it would crop the bend away
+    // the moment the reader pressed "fit".
+    for (const link of this.boardLigacoesCache) {
+      for (const p of link.pontos) {
+        direita = Math.max(direita, p.x);
+        base = Math.max(base, p.y);
+      }
+      // And so does the transition card, on the joins where it sits out to the
+      // side of the arrow rather than above it.
+      if (link.transicao && link.vertical) {
+        direita = Math.max(direita, link.meioX + BOARD_JUNCAO_W + 34);
+      }
+    }
+
+    // And the notes: one written out past the last card is still on the board,
+    // and a "fit" that cropped it would be hiding what the reader wrote.
+    for (const rotulo of this.boardRotulos) {
+      direita = Math.max(direita, rotulo.x + (rotulo.largura ?? BOARD_ROTULO_W));
+      base = Math.max(base, rotulo.y + (rotulo.altura ?? BOARD_ROTULO_H) + 20);
+    }
+
+    this.boardLarguraCache = Math.round(direita + BOARD_MARGEM);
+    this.boardAlturaCache = Math.round(base + BOARD_MARGEM);
+  }
+
+  /* --- the arrows ------------------------------------------------------ */
+
+  private centroCard(no: NoBoard): { x: number; y: number } {
+    return { x: no.x + BOARD_CARD_W / 2, y: no.y + BOARD_CARD_H / 2 };
+  }
+
+  /**
+   * Where a line aimed at (px, py) meets the card's edge.
+   *
+   * The card is a rectangle, so this is the ray from its centre scaled until
+   * whichever of the two axes runs out first — the same closed form the
+   * flowchart editor uses for its rectangular shapes. Nothing is stored: the
+   * arrow has no anchor of its own and never needs one, which is what lets it
+   * slide round the border and keep pointing at the right place while a card
+   * is being dragged.
+   */
+  private bordaCard(no: NoBoard, px: number, py: number): { x: number; y: number } {
+    const c = this.centroCard(no);
+    const dx = px - c.x;
+    const dy = py - c.y;
+    if (dx === 0 && dy === 0) return c;
+
+    const rx = BOARD_CARD_W / 2;
+    const ry = BOARD_CARD_H / 2;
+    const escala = 1 / Math.max(Math.abs(dx) / rx, Math.abs(dy) / ry);
+
+    return { x: c.x + dx * escala, y: c.y + dy * escala };
+  }
+
+  /**
+   * The whole run of the arrow: [leaves here, ...bends, arrives here].
+   *
+   * Each end aims at the first thing along the line rather than at the other
+   * card, so an arrow bent upwards leaves through the top of the card it starts
+   * on instead of setting off sideways and doubling back.
+   */
+  private ancorasLink(
+    de: NoBoard,
+    para: NoBoard,
+    pontos: { x: number; y: number }[]
+  ): { x: number; y: number }[] {
+    const primeiro = pontos.length ? pontos[0] : this.centroCard(para);
+    const ultimo = pontos.length ? pontos[pontos.length - 1] : this.centroCard(de);
+
+    return [
+      this.bordaCard(de, primeiro.x, primeiro.y),
+      ...pontos.map((p) => ({ x: p.x, y: p.y })),
+      this.bordaCard(para, ultimo.x, ultimo.y)
+    ];
+  }
+
+  /**
+   * The polyline as a path, with its corners rounded off.
+   *
+   * The radius is clamped to half of whichever segment it is turning out of, so
+   * two bends close together round as far as they can rather than overshooting
+   * each other and drawing a knot.
+   */
+  private caminhoBoard(P: { x: number; y: number }[]): string {
+    if (P.length < 3) return `M ${P[0].x} ${P[0].y} L ${P[P.length - 1].x} ${P[P.length - 1].y}`;
+
+    let d = `M ${P[0].x} ${P[0].y}`;
+    for (let i = 1; i < P.length - 1; i++) {
+      const antes = P[i - 1];
+      const aqui = P[i];
+      const depois = P[i + 1];
+      const entra = this.pontoNaDireccaoBoard(aqui, antes, Math.min(BOARD_RAIO_CANTO, this.distanciaBoard(antes, aqui) / 2));
+      const sai = this.pontoNaDireccaoBoard(aqui, depois, Math.min(BOARD_RAIO_CANTO, this.distanciaBoard(aqui, depois) / 2));
+      d += ` L ${entra.x} ${entra.y} Q ${aqui.x} ${aqui.y} ${sai.x} ${sai.y}`;
+    }
+    const fim = P[P.length - 1];
+
+    return `${d} L ${fim.x} ${fim.y}`;
+  }
+
+  private distanciaBoard(a: { x: number; y: number }, b: { x: number; y: number }): number {
+    return Math.hypot(a.x - b.x, a.y - b.y);
+  }
+
+  private pontoNaDireccaoBoard(
+    de: { x: number; y: number },
+    para: { x: number; y: number },
+    dist: number
+  ): { x: number; y: number } {
+    const l = this.distanciaBoard(de, para) || 1;
+
+    return { x: de.x + ((para.x - de.x) / l) * dist, y: de.y + ((para.y - de.y) / l) * dist };
+  }
+
+  /** How far along the whole run the halfway mark is — where the plus goes. */
+  private meioCaminhoBoard(P: { x: number; y: number }[]): { x: number; y: number } {
+    let total = 0;
+    for (let i = 1; i < P.length; i++) total += this.distanciaBoard(P[i - 1], P[i]);
+
+    let andado = 0;
+    const alvo = total / 2;
+    for (let i = 1; i < P.length; i++) {
+      const passo = this.distanciaBoard(P[i - 1], P[i]);
+      if (andado + passo >= alvo) {
+        const t = passo ? (alvo - andado) / passo : 0;
+        return { x: P[i - 1].x + (P[i].x - P[i - 1].x) * t, y: P[i - 1].y + (P[i].y - P[i - 1].y) * t };
+      }
+      andado += passo;
+    }
+
+    return { x: P[0].x, y: P[0].y };
+  }
+
+  /** Everything about one arrow that depends on where its two cards are. */
+  private geometriaLink(
+    de: NoBoard,
+    para: NoBoard,
+    pontos: { x: number; y: number }[]
+  ): { d: string; meioX: number; meioY: number; vertical: boolean } {
+    const P = this.ancorasLink(de, para, pontos);
+    const meio = this.meioCaminhoBoard(P);
+    const primeiro = P[0];
+    const segundo = P[1] ?? P[0];
+
+    return {
+      d: this.caminhoBoard(P),
+      meioX: meio.x,
+      meioY: meio.y,
+      vertical: Math.abs(segundo.y - primeiro.y) > Math.abs(segundo.x - primeiro.x)
+    };
+  }
+
+  /** Rebuilds one arrow in place, without touching the rest of the board. */
+  private recalcularLink(link: LigacaoBoard): void {
+    const geo = this.geometriaLink(link.de, link.para, link.pontos);
+    link.d = geo.d;
+    link.meioX = geo.meioX;
+    link.meioY = geo.meioY;
+    link.vertical = geo.vertical;
+  }
+
+  /** The cards, in the order the video plays them. */
+  get boardNos(): NoBoard[] {
+    this.construirBoard();
+    return this.boardNosCache;
+  }
+
+  /** The arrows between them. */
+  get boardLigacoes(): LigacaoBoard[] {
+    this.construirBoard();
+    return this.boardLigacoesCache;
+  }
+
+  get boardLargura(): number {
+    this.construirBoard();
+    return this.boardLarguraCache;
+  }
+
+  get boardAltura(): number {
+    this.construirBoard();
+    return this.boardAlturaCache;
+  }
+
+  /**
+   * The two loose ends of the chain, each as a stub and the point at its tip.
+   *
+   * Worked out from where the cards actually are rather than from the row they
+   * were laid out in: once a card can be dragged anywhere, "the first card is
+   * at the left of its row" stops being true. The stub leaves along the
+   * opposite of whatever direction the chain sets off in, so the queue reads as
+   * one run in one direction however the reader has arranged it.
+   */
+  private pontaBoard(qual: 'entrada' | 'saida'): { toco: string; x: number; y: number } | null {
+    const nos = this.boardNos;
+    if (!nos.length) return null;
+
+    const no = qual === 'entrada' ? nos[0] : nos[nos.length - 1];
+    const vizinho = qual === 'entrada' ? nos[1] : nos[nos.length - 2];
+    const centro = this.centroCard(no);
+
+    // Away from the neighbour; and with no neighbour at all — one lone card —
+    // the entry goes off to the left and the exit to the right, which is the
+    // direction a queue of one is still read in.
+    let dx = qual === 'entrada' ? -1 : 1;
+    let dy = 0;
+    if (vizinho) {
+      const outro = this.centroCard(vizinho);
+      const vx = centro.x - outro.x;
+      const vy = centro.y - outro.y;
+      const l = Math.hypot(vx, vy);
+      if (l > 0.5) {
+        dx = vx / l;
+        dy = vy / l;
+      }
+    }
+
+    const naBorda = this.bordaCard(no, centro.x + dx * 1000, centro.y + dy * 1000);
+    const ponta = { x: naBorda.x + dx * BOARD_PONTA, y: naBorda.y + dy * BOARD_PONTA };
+
+    return { toco: `M ${naBorda.x} ${naBorda.y} L ${ponta.x} ${ponta.y}`, ...ponta };
+  }
+
+  get boardEntrada(): { toco: string; x: number; y: number } | null {
+    return this.pontaBoard('entrada');
+  }
+
+  get boardSaida(): { toco: string; x: number; y: number } | null {
+    return this.pontaBoard('saida');
+  }
+
+  /** What the plus after the last card is given. */
+  get boardFimIndice(): number {
+    return this.clips.length;
+  }
+
+  /** Handles and hit areas divided by this stay the same size on the glass. */
+  get boardAlcaRaio(): number {
+    return BOARD_ALCA_RAIO / this.boardZoom;
+  }
+
+  get boardHitLargura(): number {
+    return BOARD_HIT_LARGURA / this.boardZoom;
+  }
+
+  /* --- the camera ------------------------------------------------------ */
+
+  /**
+   * Writes the pan and the zoom onto the stage.
+   *
+   * Written rather than bound, for the reason the divider's width is: a pan is
+   * a stream of pointer events, and a binding would put the whole of this
+   * component — which is a very large template — through change detection on
+   * every frame of the drag. One style write per frame instead, outside
+   * Angular, and the fields are only there so the buttons and the fit agree
+   * with what is on the element.
+   */
+  private aplicarCameraBoard(): void {
+    const palco = this.boardPalco?.nativeElement;
+    if (!palco) return;
+    palco.style.transform = `translate(${this.boardPanX}px, ${this.boardPanY}px) scale(${this.boardZoom})`;
+  }
+
+  /** Zoom held at the centre of the frame — what the buttons do. */
+  boardAplicarZoom(fator: number): void {
+    const frame = this.boardFluxo?.nativeElement;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    this.boardZoomEm(rect.width / 2, rect.height / 2, fator);
+  }
+
+  /** Zoom held at a point in the frame, so what is under it stays put. */
+  private boardZoomEm(px: number, py: number, fator: number): void {
+    const novo = Math.min(BOARD_ZOOM_MAX, Math.max(BOARD_ZOOM_MIN, this.boardZoom * fator));
+    if (novo === this.boardZoom) return;
+
+    const x = (px - this.boardPanX) / this.boardZoom;
+    const y = (py - this.boardPanY) / this.boardZoom;
+    this.boardZoom = novo;
+    this.boardPanX = px - x * novo;
+    this.boardPanY = py - y * novo;
+    this.aplicarCameraBoard();
+  }
+
+  /** The wheel zooms, the way it does on every other board the reader has used. */
+  aoRolarBoard(evento: WheelEvent): void {
+    const frame = this.boardFluxo?.nativeElement;
+    if (!frame) return;
+    evento.preventDefault();
+    const rect = frame.getBoundingClientRect();
+    this.boardZoomEm(
+      evento.clientX - rect.left,
+      evento.clientY - rect.top,
+      evento.deltaY < 0 ? BOARD_ZOOM_PASSO : 1 / BOARD_ZOOM_PASSO
+    );
+  }
+
+  /**
+   * Drag the board itself.
+   *
+   * Only from the background: a press that started on a card is that card's
+   * business — its buttons, its Edit — and stealing it would make every button
+   * on the board feel broken.
+   */
+  aoPressionarBoard(evento: PointerEvent): void {
+    if (evento.button !== 0 && evento.button !== 1) return;
+    const frame = this.boardFluxo?.nativeElement;
+    if (!frame) return;
+
+    // Everything with controls of its own keeps its own presses. Without the
+    // last two, pressing "zoom in" or the monitor's play button would also take
+    // hold of the board and drag it out from under the hand that did it.
+    const alvo = evento.target as HTMLElement | null;
+    if (
+      evento.button === 0 &&
+      alvo?.closest('.board-card, .board-junta, .board-controles, .board-monitor, .board-rotulo')
+    ) {
+      return;
+    }
+
+    // Shift turns the same press into a rubber band. A plain drag stays the
+    // pan, because panning is by a wide margin the more common of the two.
+    if (evento.button === 0 && evento.shiftKey) {
+      this.selecionarPorAreaBoard(evento);
+      return;
+    }
+
+    evento.preventDefault();
+    frame.setPointerCapture(evento.pointerId);
+    this.boardArrastando = true;
+
+    // A press on the background that never becomes a drag is the reader saying
+    // "none of them" — which is what clicking away from a selection means
+    // everywhere else.
+    let moveu = false;
+
+    const deX = evento.clientX - this.boardPanX;
+    const deY = evento.clientY - this.boardPanY;
+
+    const mover = (movido: PointerEvent): void => {
+      if (Math.hypot(movido.clientX - evento.clientX, movido.clientY - evento.clientY) > BOARD_ARRASTE_MINIMO) {
+        moveu = true;
+      }
+      this.boardPanX = movido.clientX - deX;
+      this.boardPanY = movido.clientY - deY;
+      this.aplicarCameraBoard();
+    };
+
+    const parar = (): void => {
+      frame.removeEventListener('pointermove', mover);
+      frame.removeEventListener('pointerup', parar);
+      frame.removeEventListener('pointercancel', parar);
+      if (frame.hasPointerCapture(evento.pointerId)) frame.releasePointerCapture(evento.pointerId);
+      // Back inside Angular for this one flag: the cursor is bound to it.
+      this.zone.run(() => {
+        this.boardArrastando = false;
+        if (!moveu) this.limparSelecaoBoard();
+      });
+    };
+
+    // Outside Angular, for the reason given on `aplicarCameraBoard`.
+    this.zone.runOutsideAngular(() => {
+      frame.addEventListener('pointermove', mover);
+      frame.addEventListener('pointerup', parar);
+      frame.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /** The whole diagram, centred and as large as the frame allows. */
+  ajustarBoard(): void {
+    const frame = this.boardFluxo?.nativeElement;
+    if (!frame) return;
+
+    const rect = frame.getBoundingClientRect();
+    const largura = this.boardLargura;
+    const altura = this.boardAltura;
+    if (!rect.width || !rect.height || !largura || !altura) return;
+
+    const escala = Math.min(
+      BOARD_ZOOM_MAX,
+      Math.max(BOARD_ZOOM_MIN, Math.min(rect.width / largura, rect.height / altura) * BOARD_AJUSTE_FOLGA)
+    );
+
+    this.boardZoom = escala;
+    this.boardPanX = (rect.width - largura * escala) / 2;
+    this.boardPanY = (rect.height - altura * escala) / 2;
+    this.aplicarCameraBoard();
+  }
+
+  /** Back to life size, at the top left of the diagram. */
+  resetarBoard(): void {
+    this.boardZoom = 1;
+    this.boardPanX = 0;
+    this.boardPanY = 0;
+    this.aplicarCameraBoard();
+  }
+
+  /** The zoom as a percentage, for the read-out between the buttons. */
+  get boardZoomTexto(): string {
+    return `${Math.round(this.boardZoom * 100)}%`;
+  }
+
+  /**
+   * The card's clip as a media clip, or null.
+   *
+   * The same trick `asTransition` plays, and for the same reason it gives: a
+   * template cannot narrow a union through a type guard, and what it can narrow
+   * is an `as` binding. The list gets away with `isMediaClip(clip) && ...`
+   * because `clip` is the loop variable itself; here the clip is a property of
+   * one, and leaning on the compiler to follow that path through every branch
+   * of a card is a bet this file already decided not to take.
+   */
+  boardMidia(no: NoBoard): MediaClip | null {
+    return isMediaClip(no.clip) ? no.clip : null;
+  }
+
+  /**
+   * The settings this clip has of its own, one mark each.
+   *
+   * Only its own. A clip that follows the project's settings is drawn plain,
+   * and that is the point of the row: it says at a glance which shots somebody
+   * has been into and what they changed, without the reader opening seven
+   * dialogs to find out. Inherited settings are the *absence* of a mark, so a
+   * board of eight clips with two marked is a board with two exceptions on it.
+   *
+   * Two kinds go in here. Some settings have no project-wide equivalent at all
+   * — a tag, a caption, a hand-made cut, a trim, a soundtrack chosen for this
+   * one shot — and those are shown whenever they are set. The rest exist in
+   * both places, and those are shown only when this clip's answer differs from
+   * the project's.
+   */
+  marcasCard(no: NoBoard): { chave: string; icone: string; rotulo: string }[] {
+    const clip = no.clip;
+    const marcas: { chave: string; icone: string; rotulo: string }[] = [];
+    const midia = this.boardMidia(no);
+
+    if (isPlayable(clip) && clip.tag?.text.trim()) {
+      marcas.push({ chave: 'tag', icone: 'sell', rotulo: `Tag: ${clip.tag.text.trim()}` });
+    }
+    const captions = midia?.captions?.filter((caption) => caption.text.trim()) ?? (midia?.caption?.text.trim() ? [midia.caption] : []);
+    if (captions.length) marcas.push({
+      chave: 'caption', icone: 'closed_caption',
+      rotulo: captions.length === 1 ? `Caption: ${captions[0].text.trim()}` : `${captions.length} captions`
+    });
+    if (midia?.manualCuts.length) {
+      const n = midia.manualCuts.length;
+      marcas.push({ chave: 'cortes', icone: 'content_cut', rotulo: `${n} cut${n === 1 ? '' : 's'} made by hand` });
+    }
+    if (midia && (midia.inPoint != null || midia.outPoint != null)) {
+      marcas.push({ chave: 'corte', icone: 'straighten', rotulo: 'Trimmed at one or both ends' });
+    }
+    if (isPlayable(clip) && clip.replacementAudio) {
+      marcas.push({
+        chave: 'som',
+        icone: 'music_note',
+        rotulo: `Sound of its own: ${clip.replacementAudio.summary.fileName}`
+      });
+    }
+
+    // Everything below exists project-wide as well, so it is only worth a mark
+    // where this clip disagrees with the project.
+    if (this.follows(clip)) return marcas;
+
+    const seus = this.editsFor(clip);
+    const projeto = this.project.edits;
+
+    if (seus.cutSilence !== projeto.cutSilence) {
+      marcas.push({
+        chave: 'silencio',
+        icone: 'graphic_eq',
+        rotulo: seus.cutSilence ? 'Silence cut on this clip only' : 'Silence kept on this clip only'
+      });
+    }
+    if (seus.speed !== projeto.speed) {
+      marcas.push({ chave: 'velocidade', icone: 'speed', rotulo: `Speed: ${this.speedLabel(seus.speed)}` });
+    }
+    if (seus.silence.autoZoom.enabled !== projeto.silence.autoZoom.enabled) {
+      marcas.push({
+        chave: 'zoom',
+        icone: 'zoom_in',
+        rotulo: seus.silence.autoZoom.enabled ? 'Auto zoom on this clip only' : 'Auto zoom off on this clip only'
+      });
+    }
+    if (seus.fadeIn !== projeto.fadeIn || seus.fadeOut !== projeto.fadeOut) {
+      marcas.push({ chave: 'fade', icone: 'gradient', rotulo: 'Fades of its own' });
+    }
+    if (seus.audioMode !== projeto.audioMode) {
+      marcas.push({
+        chave: 'audio',
+        icone: seus.audioMode === 'mute' ? 'volume_off' : 'volume_up',
+        rotulo: seus.audioMode === 'mute' ? 'Muted' : `Sound: ${seus.audioMode}`
+      });
+    }
+    if (seus.volumePercent !== projeto.volumePercent) {
+      marcas.push({ chave: 'volume', icone: 'equalizer', rotulo: `Volume: ${Math.round(seus.volumePercent)}%` });
+    }
+
+    return marcas;
+  }
+
+  /**
+   * Opens the place the setting behind a mark is changed.
+   *
+   * Most of them live in the clip's own dialog, which is where the mark takes
+   * the reader. Two do not: the soundtrack has a chooser of its own, and the
+   * tag has an editor that reads the clip out of whichever dialog is open — so
+   * that one opens the clip first and the tag editor on top of it, which is the
+   * same two steps the row in the list takes.
+   */
+  abrirMarcaCard(no: NoBoard, chave: string): void {
+    if (chave === 'som' && isPlayable(no.clip)) {
+      this.openAudioSource(no.clip);
+      return;
+    }
+
+    this.openClip(no.clip);
+    if (chave === 'tag') this.openTagEditor();
+  }
+
+  /** True when the card has any pill to show, so the row is not drawn empty. */
+  boardTemSelos(no: NoBoard): boolean {
+    return (
+      this.badges(no.clip).length > 0 ||
+      this.boardMidia(no)?.summary.isTimelapse === true ||
+      (!this.willBeSilent(no.clip) && this.isSilentSource(no.clip))
+    );
+  }
+
+  /* --- moving things about --------------------------------------------- */
+
+  /*
+   * Both gestures below run outside Angular and write to the DOM by hand.
+   *
+   * The reason is the one the divider gives: a drag is a stream of pointer
+   * events, and this component's template is very large. Putting the whole of
+   * it through change detection sixty times a second to move one card would
+   * make the card lag behind the cursor. Instead the cached geometry — which is
+   * what the bindings read anyway — is updated in place, and only the handful
+   * of elements that actually moved are written; one pass through Angular at
+   * the end puts the bindings back in step with what is on the screen.
+   */
+
+  /** The element for a card, in whichever of the two frames the board is in. */
+  private elementoCard(id: string): HTMLElement | null {
+    return this.boardPalco?.nativeElement.querySelector<HTMLElement>(`[data-board-card="${CSS.escape(id)}"]`) ?? null;
+  }
+
+  private elementoLink(id: string): { seta: SVGPathElement | null; hit: SVGPathElement | null; junta: HTMLElement | null } {
+    const palco = this.boardPalco?.nativeElement;
+    const escapado = CSS.escape(id);
+
+    return {
+      seta: palco?.querySelector<SVGPathElement>(`[data-board-seta="${escapado}"]`) ?? null,
+      hit: palco?.querySelector<SVGPathElement>(`[data-board-hit="${escapado}"]`) ?? null,
+      junta: palco?.querySelector<HTMLElement>(`[data-board-junta="${escapado}"]`) ?? null
+    };
+  }
+
+  /** Redraws the arrows touching a card, straight onto the elements. */
+  private redesenharLinksDe(clipId: string): void {
+    for (const link of this.boardLigacoesCache) {
+      if (link.de.clip.id !== clipId && link.para.clip.id !== clipId) continue;
+      this.recalcularLink(link);
+      const el = this.elementoLink(link.id);
+      el.seta?.setAttribute('d', link.d);
+      el.hit?.setAttribute('d', link.d);
+      if (el.junta) {
+        el.junta.style.left = `${link.meioX}px`;
+        el.junta.style.top = `${link.meioY}px`;
+      }
+    }
+  }
+
+  /**
+   * Drag a card.
+   *
+   * The press is not a drag until it has travelled: a card is also the way to
+   * send the playhead to that clip, and a hand that shakes by a pixel on the
+   * way to a click should still be a click. `boardCardArrastado` is what tells
+   * the click handler which of the two just happened.
+   */
+  aoPressionarCard(evento: PointerEvent, no: NoBoard): void {
+    if (evento.button !== 0) return;
+    // A press that started on a button belongs to that button.
+    if ((evento.target as HTMLElement | null)?.closest('button')) return;
+
+    // Held down, the press is about the selection rather than about moving
+    // anything: it adds this card to the set, or takes it back out.
+    if (evento.ctrlKey || evento.metaKey || evento.shiftKey) {
+      evento.preventDefault();
+      evento.stopPropagation();
+      this.alternarSelecaoBoard(no.clip.id);
+      return;
+    }
+
+    const card = this.elementoCard(no.clip.id);
+    if (!card) return;
+
+    // A card outside the selection replaces it. Dragging one card while five
+    // others stay lit up somewhere off screen is how a reader moves things they
+    // did not mean to.
+    if (!this.boardSelecionados.has(no.clip.id) && this.boardSelecionados.size) {
+      this.limparSelecaoBoard();
+    }
+
+    // Everything that travels with this press: the selection when the card is
+    // in it, and otherwise the card alone.
+    const juntos = this.boardSelecionados.has(no.clip.id)
+      ? this.boardNos.filter((outro) => this.boardSelecionados.has(outro.clip.id))
+      : [no];
+
+    const alvos: { no: NoBoard; el: HTMLElement; eraX: number; eraY: number }[] = [];
+    for (const outro of juntos) {
+      const el = this.elementoCard(outro.clip.id);
+      if (el) alvos.push({ no: outro, el, eraX: outro.x, eraY: outro.y });
+    }
+    if (!alvos.length) return;
+
+    evento.preventDefault();
+    evento.stopPropagation();
+    card.setPointerCapture(evento.pointerId);
+
+    const partiuX = evento.clientX;
+    const partiuY = evento.clientY;
+    let arrastou = false;
+
+    const mover = (movido: PointerEvent): void => {
+      const dx = movido.clientX - partiuX;
+      const dy = movido.clientY - partiuY;
+      if (!arrastou && Math.hypot(dx, dy) < BOARD_ARRASTE_MINIMO) return;
+      if (!arrastou) {
+        arrastou = true;
+        this.zone.run(() => {
+          this.boardCardArrastado = no.clip.id;
+        });
+      }
+
+      // Divided by the zoom: the pointer moves in screen pixels and the cards
+      // live in board units, and at 50% a card that followed the raw delta
+      // would travel twice as far as the hand did.
+      // No clamp: a card may be dragged past the left or the top edge, and the
+      // board is shifted back under it when the drag ends.
+      const passoX = dx / this.boardZoom;
+      const passoY = dy / this.boardZoom;
+      for (const alvo of alvos) {
+        alvo.no.x = Math.round(alvo.eraX + passoX);
+        alvo.no.y = Math.round(alvo.eraY + passoY);
+        alvo.el.style.left = `${alvo.no.x}px`;
+        alvo.el.style.top = `${alvo.no.y}px`;
+      }
+      // After every card has moved, not during it: an arrow between two cards
+      // that are both travelling has to be redrawn from both ends at once, or
+      // it whips about while the group moves.
+      for (const alvo of alvos) this.redesenharLinksDe(alvo.no.clip.id);
+    };
+
+    const parar = (): void => {
+      card.removeEventListener('pointermove', mover);
+      card.removeEventListener('pointerup', parar);
+      card.removeEventListener('pointercancel', parar);
+      if (card.hasPointerCapture(evento.pointerId)) card.releasePointerCapture(evento.pointerId);
+      if (!arrastou) return;
+
+      this.zone.run(() => {
+        for (const alvo of alvos) this.boardPosicoes[alvo.no.clip.id] = { x: alvo.no.x, y: alvo.no.y };
+        this.normalizarBoard();
+        this.medirBoard();
+        // One entry on the undo stack for the whole move, however many cards
+        // travelled in it.
+        this.lembrarBoard();
+        // Cleared after the click that ends this drag has been and gone, so the
+        // card does not also send the playhead somewhere the reader never asked.
+        setTimeout(() => {
+          this.boardCardArrastado = null;
+        }, 0);
+      });
+    };
+
+    this.zone.runOutsideAngular(() => {
+      card.addEventListener('pointermove', mover);
+      card.addEventListener('pointerup', parar);
+      card.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /* --- picking cards out ------------------------------------------------ */
+
+  /** True while this card is in the set that moves together. */
+  selecionadoBoard(no: NoBoard): boolean {
+    return this.boardSelecionados.has(no.clip.id);
+  }
+
+  private alternarSelecaoBoard(id: string): void {
+    // A new Set rather than one changed in place: the template reads this on
+    // every pass, and a Set mutated in place looks identical to one that was
+    // never touched.
+    const proximo = new Set(this.boardSelecionados);
+    if (proximo.has(id)) proximo.delete(id);
+    else proximo.add(id);
+    this.boardSelecionados = proximo;
+  }
+
+  limparSelecaoBoard(): void {
+    if (!this.boardSelecionados.size) return;
+    this.boardSelecionados = new Set();
+  }
+
+  /**
+   * Drag a rectangle over the board to pick out everything under it.
+   *
+   * On shift, because a plain drag on the background is how the board is
+   * panned, and panning is by a wide margin the more common of the two. Holding
+   * ctrl as well adds to the selection instead of replacing it.
+   *
+   * The rectangle is written onto its element by hand for the same reason the
+   * pan is: a rubber band is a stream of pointer events, and this component's
+   * template is far too large to put through change detection sixty times a
+   * second for a box four numbers wide.
+   */
+  private selecionarPorAreaBoard(evento: PointerEvent): void {
+    const frame = this.boardFluxo?.nativeElement;
+    const caixa = this.boardSelecao?.nativeElement;
+    if (!frame || !caixa) return;
+
+    evento.preventDefault();
+    frame.setPointerCapture(evento.pointerId);
+    this.boardSelecionandoArea = true;
+
+    const inicio = this.pontoNoBoard(evento);
+    const somar = evento.ctrlKey || evento.metaKey;
+    const antes = new Set(this.boardSelecionados);
+
+    caixa.style.display = 'block';
+
+    const mover = (movido: PointerEvent): void => {
+      const agora = this.pontoNoBoard(movido);
+      const x = Math.min(inicio.x, agora.x);
+      const y = Math.min(inicio.y, agora.y);
+      const largura = Math.abs(agora.x - inicio.x);
+      const altura = Math.abs(agora.y - inicio.y);
+
+      caixa.style.left = `${x}px`;
+      caixa.style.top = `${y}px`;
+      caixa.style.width = `${largura}px`;
+      caixa.style.height = `${altura}px`;
+
+      const dentro = new Set(somar ? antes : []);
+      for (const outro of this.boardNosCache) {
+        // Touched, not swallowed whole: a rectangle that only takes what it
+        // contains entirely makes the reader draw round the outside of
+        // everything, and on a board of card-sized things that is most of it.
+        const cruza =
+          outro.x < x + largura && outro.x + BOARD_CARD_W > x && outro.y < y + altura && outro.y + BOARD_CARD_H > y;
+        if (cruza) dentro.add(outro.clip.id);
+      }
+
+      // Only when it really changed: this runs on every frame of the drag, and
+      // waking Angular for a set that came out the same would undo the whole
+      // reason the rectangle is written by hand.
+      const mudou =
+        dentro.size !== this.boardSelecionados.size || [...dentro].some((id) => !this.boardSelecionados.has(id));
+      if (mudou) {
+        this.zone.run(() => {
+          this.boardSelecionados = dentro;
+        });
+      }
+    };
+
+    const parar = (): void => {
+      frame.removeEventListener('pointermove', mover);
+      frame.removeEventListener('pointerup', parar);
+      frame.removeEventListener('pointercancel', parar);
+      if (frame.hasPointerCapture(evento.pointerId)) frame.releasePointerCapture(evento.pointerId);
+      caixa.style.display = 'none';
+      this.zone.run(() => {
+        this.boardSelecionandoArea = false;
+      });
+    };
+
+    this.zone.runOutsideAngular(() => {
+      frame.addEventListener('pointermove', mover);
+      frame.addEventListener('pointerup', parar);
+      frame.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /* --- notes on the board ---------------------------------------------- */
+
+  /*
+   * Words the reader writes on the board, and nothing more.
+   *
+   * There is already a way to put words *in* a video — a text card, which is a
+   * shot and takes time and gets rendered. This is the other thing: "check the
+   * audio here", "cut this down", an arrow's worth of explanation for whoever
+   * opens the project next. It is part of the arrangement, so it is undone with
+   * Ctrl+Z like a card move and it never reaches the export.
+   */
+
+  /** A new note, in the middle of whatever the reader is looking at. */
+  adicionarRotuloBoard(): void {
+    const frame = this.boardFluxo?.nativeElement;
+    const rect = frame?.getBoundingClientRect();
+
+    const x = rect ? (rect.width / 2 - this.boardPanX) / this.boardZoom - BOARD_ROTULO_W / 2 : BOARD_MARGEM;
+    const y = rect ? (rect.height / 2 - this.boardPanY) / this.boardZoom - 20 : BOARD_MARGEM;
+
+    const rotulo: RotuloBoard = {
+      id: `nota-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`,
+      x: Math.round(x),
+      y: Math.round(y),
+      texto: ''
+    };
+
+    this.boardRotulos = [...this.boardRotulos, rotulo];
+    this.normalizarBoard();
+    // Straight into typing: a note added and left blank is a box the reader has
+    // to work out how to fill, and every one of them starts out empty.
+    //
+    // The caret is asked for separately, on the next view check, because the box
+    // does not exist yet — and it is not optional. Marking a note as "being
+    // typed into" without putting the caret in it leaves a note nothing can end
+    // the edit of: the blur that closes it can never fire on an element that was
+    // never focused, so it stays flagged for ever, and flagged is exactly the
+    // state that used to refuse to be dragged.
+    this.boardRotuloEditando = rotulo.id;
+    this.boardRotuloFoco = rotulo.id;
+    this.medirBoard();
+    this.lembrarBoard();
+  }
+
+  /** Double-click a note to change it. */
+  editarRotuloBoard(rotulo: RotuloBoard): void {
+    this.boardRotuloEditando = rotulo.id;
+    this.boardRotuloFoco = rotulo.id;
+  }
+
+  /**
+   * Puts the caret in the note that has just been opened.
+   *
+   * Called from the view check, which is the first moment the box exists. The
+   * caret goes to the end rather than the start, because a note being reopened
+   * is nearly always one somebody is adding to.
+   */
+  private focarRotuloBoard(): void {
+    const id = this.boardRotuloFoco;
+    if (!id || !isPlatformBrowser(this.platformId)) return;
+
+    const campo = this.boardPalco?.nativeElement.querySelector<HTMLElement>(
+      `[data-board-rotulo="${CSS.escape(id)}"] .rotulo-texto`
+    );
+    if (!campo) return;
+
+    this.boardRotuloFoco = null;
+    campo.focus();
+
+    const selecao = window.getSelection();
+    if (!selecao) return;
+    const alcance = document.createRange();
+    alcance.selectNodeContents(campo);
+    alcance.collapse(false);
+    selecao.removeAllRanges();
+    selecao.addRange(alcance);
+  }
+
+  /**
+   * Takes what was typed and puts the note back to being read.
+   *
+   * Read off the element rather than bound, because a binding would fight the
+   * caret: Angular rewriting the text of the box somebody is typing into puts
+   * the cursor back at the start on every keystroke.
+   */
+  confirmarRotuloBoard(rotulo: RotuloBoard, campo: HTMLElement): void {
+    const texto = (campo.innerText ?? '').replace(/\u00a0/g, ' ').trim();
+    this.boardRotuloEditando = null;
+
+    // An empty note is not a note. Rather than leaving an invisible box on the
+    // board for the reader to find later, it takes itself off again.
+    if (!texto) {
+      this.removerRotuloBoard(rotulo);
+      return;
+    }
+
+    if (texto === rotulo.texto) return;
+    rotulo.texto = texto;
+    this.lembrarBoard();
+  }
+
+  /** Escape gives up on the edit; Ctrl+Enter and the blur both keep it. */
+  aoTeclarRotuloBoard(evento: KeyboardEvent, rotulo: RotuloBoard, campo: HTMLElement): void {
+    if (evento.key === 'Escape') {
+      evento.preventDefault();
+      evento.stopPropagation();
+      campo.innerText = rotulo.texto;
+      this.boardRotuloEditando = null;
+      // An escape out of a note that was never written is the same as deleting
+      // it, which is what adding one and changing your mind should do.
+      if (!rotulo.texto) this.removerRotuloBoard(rotulo);
+      return;
+    }
+    if (evento.key === 'Enter' && (evento.ctrlKey || evento.metaKey)) {
+      evento.preventDefault();
+      campo.blur();
+      return;
+    }
+
+    if (evento.key === 'Enter') {
+      // Written by hand rather than left to the browser. Chrome answers Enter
+      // in a `contenteditable` with a new `<div>` and Firefox with a `<br>`,
+      // and under `white-space: pre-wrap` those two produce different amounts
+      // of gap for the same keystroke. One newline, inserted the same way in
+      // both, is what makes a note look the same wherever it is written.
+      evento.preventDefault();
+      document.execCommand('insertLineBreak');
+    }
+  }
+
+  /**
+   * Pasting into a note keeps the words and drops everything else.
+   *
+   * A `contenteditable` will happily take a paragraph of styled HTML off the
+   * clipboard, colours and all, and the note is meant to be one voice on the
+   * board rather than a scrapbook.
+   *
+   * This is why the element is a plain `contenteditable` rather than
+   * `plaintext-only`: Firefox does not know that value, and an attribute it
+   * cannot parse leaves the note not editable at all — a note nobody can type
+   * into is worse than one that has to be told what to do with a paste.
+   */
+  aoColarRotuloBoard(evento: ClipboardEvent): void {
+    const texto = evento.clipboardData?.getData('text/plain');
+    if (texto === undefined) return;
+    evento.preventDefault();
+    document.execCommand('insertText', false, texto);
+  }
+
+  /**
+   * Drag a note's corner to resize it.
+   *
+   * Both axes, unlike the monitor: a monitor has a shape to keep and a note has
+   * only words, so the reader decides how wide and how tall the box for them
+   * is. The height is written as a floor — the note still grows past it when
+   * there are more words than fit.
+   */
+  aoPressionarResizeRotulo(evento: PointerEvent, rotulo: RotuloBoard): void {
+    if (evento.button !== 0) return;
+
+    const palco = this.boardPalco?.nativeElement;
+    const el = palco?.querySelector<HTMLElement>(`[data-board-rotulo="${CSS.escape(rotulo.id)}"]`);
+    const alvo = evento.currentTarget as HTMLElement;
+    if (!el) return;
+
+    evento.preventDefault();
+    evento.stopPropagation();
+    alvo.setPointerCapture(evento.pointerId);
+
+    const caixa = el.getBoundingClientRect();
+    const eraW = rotulo.largura ?? caixa.width / this.boardZoom;
+    const eraH = rotulo.altura ?? caixa.height / this.boardZoom;
+    const partiuX = evento.clientX;
+    const partiuY = evento.clientY;
+
+    const mover = (movido: PointerEvent): void => {
+      // Divided by the zoom, like every other drag here: the hand moves in
+      // screen pixels and the note is measured in board units.
+      rotulo.largura = Math.round(
+        Math.min(BOARD_ROTULO_MAX_W, Math.max(BOARD_ROTULO_MIN_W, eraW + (movido.clientX - partiuX) / this.boardZoom))
+      );
+      rotulo.altura = Math.round(
+        Math.min(BOARD_ROTULO_MAX_H, Math.max(BOARD_ROTULO_MIN_H, eraH + (movido.clientY - partiuY) / this.boardZoom))
+      );
+      el.style.width = `${rotulo.largura}px`;
+      el.style.minHeight = `${rotulo.altura}px`;
+    };
+
+    const parar = (): void => {
+      alvo.removeEventListener('pointermove', mover);
+      alvo.removeEventListener('pointerup', parar);
+      alvo.removeEventListener('pointercancel', parar);
+      if (alvo.hasPointerCapture(evento.pointerId)) alvo.releasePointerCapture(evento.pointerId);
+      this.zone.run(() => {
+        this.medirBoard();
+        this.lembrarBoard();
+      });
+    };
+
+    this.zone.runOutsideAngular(() => {
+      alvo.addEventListener('pointermove', mover);
+      alvo.addEventListener('pointerup', parar);
+      alvo.addEventListener('pointercancel', parar);
+    });
+  }
+
+  removerRotuloBoard(rotulo: RotuloBoard): void {
+    this.boardRotulos = this.boardRotulos.filter((r) => r.id !== rotulo.id);
+    if (this.boardRotuloEditando === rotulo.id) this.boardRotuloEditando = null;
+    this.medirBoard();
+    this.lembrarBoard();
+  }
+
+  /** Drag a note where it is wanted. */
+  aoPressionarRotuloBoard(evento: PointerEvent, rotulo: RotuloBoard): void {
+    if (evento.button !== 0) return;
+
+    const alvo = evento.target as HTMLElement | null;
+    if (alvo?.closest('button, .rotulo-resize')) return;
+    // While a note is being typed into, the words in it belong to the caret —
+    // a press there is somebody placing the cursor, not picking the note up.
+    // Everything else about it still moves it: the grip, and the panel around
+    // the text. Refusing the whole note while it was open was what made a note
+    // just written impossible to move.
+    if (this.boardRotuloEditando === rotulo.id && alvo?.closest('.rotulo-texto')) return;
+
+    const palco = this.boardPalco?.nativeElement;
+    const el = palco?.querySelector<HTMLElement>(`[data-board-rotulo="${CSS.escape(rotulo.id)}"]`);
+    if (!el) return;
+
+    // Deliberately no `preventDefault` here.
+    //
+    // Preventing the default action of a pointerdown cancels the click and the
+    // double-click the browser would have built from it, and takes the focus
+    // with it — which is how a note ended up impossible to type in: the press
+    // that was meant to open it was being swallowed before it became a click.
+    // Selection is held off by `user-select: none` in the stylesheet instead,
+    // and the default is only prevented once the press has become a drag.
+    evento.stopPropagation();
+    el.setPointerCapture(evento.pointerId);
+
+    const partiuX = evento.clientX;
+    const partiuY = evento.clientY;
+    const eraX = rotulo.x;
+    const eraY = rotulo.y;
+    let arrastou = false;
+
+    const mover = (movido: PointerEvent): void => {
+      const dx = movido.clientX - partiuX;
+      const dy = movido.clientY - partiuY;
+      if (!arrastou && Math.hypot(dx, dy) < BOARD_ARRASTE_MINIMO) return;
+      if (!arrastou) {
+        movido.preventDefault();
+        if (this.boardRotuloEditando === rotulo.id) {
+          // Moving it ends the edit. A note travelling across the board with a
+          // caret blinking in it is claiming to be two things at once, and the
+          // blur this triggers is what writes the text down.
+          this.zone.run(() => el.querySelector<HTMLElement>('.rotulo-texto')?.blur());
+        }
+      }
+      arrastou = true;
+      rotulo.x = Math.round(eraX + dx / this.boardZoom);
+      rotulo.y = Math.round(eraY + dy / this.boardZoom);
+      el.style.left = `${rotulo.x}px`;
+      el.style.top = `${rotulo.y}px`;
+    };
+
+    const parar = (): void => {
+      el.removeEventListener('pointermove', mover);
+      el.removeEventListener('pointerup', parar);
+      el.removeEventListener('pointercancel', parar);
+      if (el.hasPointerCapture(evento.pointerId)) el.releasePointerCapture(evento.pointerId);
+
+      if (!arrastou) {
+        // A press that never moved is a press to type in it. One click rather
+        // than two: a note is a box of words and the only thing anybody wants
+        // to do to one is change the words.
+        if (this.boardRotuloEditando !== rotulo.id) {
+          this.zone.run(() => this.editarRotuloBoard(rotulo));
+        }
+        return;
+      }
+
+      this.zone.run(() => {
+        this.normalizarBoard();
+        this.medirBoard();
+        this.lembrarBoard();
+      });
+    };
+
+    this.zone.runOutsideAngular(() => {
+      el.addEventListener('pointermove', mover);
+      el.addEventListener('pointerup', parar);
+      el.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /* --- bending an arrow ------------------------------------------------ */
+
+  /**
+   * Press on an arrow and pull: the point is made where the press was, and the
+   * drag carries on as if it had always been there.
+   *
+   * Made on the move rather than on the press, and at the point the press
+   * landed on rather than where the pointer is now — so a click on a line does
+   * nothing, and a pull starts the bend exactly where the reader aimed.
+   */
+  aoPressionarSeta(evento: PointerEvent, link: LigacaoBoard): void {
+    if (evento.button !== 0) return;
+    const alvo = evento.currentTarget as SVGPathElement;
+    evento.preventDefault();
+    evento.stopPropagation();
+
+    // Captured on the press, not on the first move that counts as a drag: the
+    // hit area is sixteen pixels wide, and a hand that leaves it before it has
+    // travelled four would otherwise stop sending moves to the path — the bend
+    // would be born and immediately abandoned.
+    alvo.setPointerCapture(evento.pointerId);
+
+    const inicio = this.pontoNoBoard(evento);
+    let indice = -1;
+
+    const mover = (movido: PointerEvent): void => {
+      const p = this.pontoNoBoard(movido);
+      if (indice < 0) {
+        if (Math.hypot(p.x - inicio.x, p.y - inicio.y) * this.boardZoom < BOARD_ARRASTE_MINIMO) return;
+        indice = this.inserirPontoBoard(link, inicio);
+      }
+      this.moverPontoBoard(link, indice, p);
+    };
+
+    const parar = (): void => {
+      alvo.removeEventListener('pointermove', mover);
+      alvo.removeEventListener('pointerup', parar);
+      alvo.removeEventListener('pointercancel', parar);
+      if (alvo.hasPointerCapture(evento.pointerId)) alvo.releasePointerCapture(evento.pointerId);
+      if (indice < 0) return;
+      this.zone.run(() => this.terminarBendBoard(link));
+    };
+
+    this.zone.runOutsideAngular(() => {
+      alvo.addEventListener('pointermove', mover);
+      alvo.addEventListener('pointerup', parar);
+      alvo.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /** Drag a point that is already there. */
+  aoPressionarAlca(evento: PointerEvent, link: LigacaoBoard, indice: number): void {
+    if (evento.button !== 0) return;
+    const alvo = evento.currentTarget as SVGCircleElement;
+    evento.preventDefault();
+    evento.stopPropagation();
+    alvo.setPointerCapture(evento.pointerId);
+
+    const mover = (movido: PointerEvent): void => this.moverPontoBoard(link, indice, this.pontoNoBoard(movido));
+
+    const parar = (): void => {
+      alvo.removeEventListener('pointermove', mover);
+      alvo.removeEventListener('pointerup', parar);
+      alvo.removeEventListener('pointercancel', parar);
+      if (alvo.hasPointerCapture(evento.pointerId)) alvo.releasePointerCapture(evento.pointerId);
+      this.zone.run(() => this.terminarBendBoard(link));
+    };
+
+    this.zone.runOutsideAngular(() => {
+      alvo.addEventListener('pointermove', mover);
+      alvo.addEventListener('pointerup', parar);
+      alvo.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /**
+   * Takes a bend out. Right-click, or double-click.
+   *
+   * Right-click because that is what a handle on a diagram has always answered
+   * to, and `preventDefault` below is what stops the browser's own menu opening
+   * over the board instead. Double-click stays: it was the way before, and a
+   * gesture that has been taught should not be taken away to make room for one
+   * that is merely better.
+   *
+   * Take them all out and the arrow is straight again.
+   */
+  removerAlca(evento: MouseEvent, link: LigacaoBoard, indice: number): void {
+    evento.preventDefault();
+    evento.stopPropagation();
+    link.pontos.splice(indice, 1);
+    if (!link.pontos.length) delete this.boardCurvas[link.id];
+    this.recalcularLink(link);
+    this.medirBoard();
+    this.lembrarBoard();
+  }
+
+  /** Where a pointer event is, in board units. */
+  private pontoNoBoard(evento: PointerEvent): { x: number; y: number } {
+    const frame = this.boardFluxo?.nativeElement;
+    if (!frame) return { x: 0, y: 0 };
+    const rect = frame.getBoundingClientRect();
+
+    return {
+      x: (evento.clientX - rect.left - this.boardPanX) / this.boardZoom,
+      y: (evento.clientY - rect.top - this.boardPanY) / this.boardZoom
+    };
+  }
+
+  /**
+   * Puts a new point into the run at the bend it belongs to.
+   *
+   * By which segment of the arrow it landed nearest, not by where it is on the
+   * screen: on an arrow already bent twice, a point dropped on the last leg has
+   * to go after both of them or the line ties itself in a knot.
+   */
+  private inserirPontoBoard(link: LigacaoBoard, p: { x: number; y: number }): number {
+    const P = this.ancorasLink(link.de, link.para, link.pontos);
+    let indice = 0;
+    let melhor = Infinity;
+    for (let k = 0; k < P.length - 1; k++) {
+      const d = this.distanciaPontoSegmentoBoard(p, P[k], P[k + 1]);
+      if (d < melhor) {
+        melhor = d;
+        indice = k;
+      }
+    }
+
+    if (!this.boardCurvas[link.id]) this.boardCurvas[link.id] = link.pontos;
+    link.pontos.splice(indice, 0, { x: Math.round(p.x), y: Math.round(p.y) });
+
+    return indice;
+  }
+
+  private distanciaPontoSegmentoBoard(
+    p: { x: number; y: number },
+    a: { x: number; y: number },
+    b: { x: number; y: number }
+  ): number {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const l2 = dx * dx + dy * dy;
+    if (l2 === 0) return this.distanciaBoard(p, a);
+    const t = Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2));
+
+    return this.distanciaBoard(p, { x: a.x + t * dx, y: a.y + t * dy });
+  }
+
+  /** Moves a point and redraws its arrow, without going through Angular. */
+  private moverPontoBoard(link: LigacaoBoard, indice: number, p: { x: number; y: number }): void {
+    const ponto = link.pontos[indice];
+    if (!ponto) return;
+    ponto.x = Math.round(p.x);
+    ponto.y = Math.round(p.y);
+    this.recalcularLink(link);
+
+    const el = this.elementoLink(link.id);
+    el.seta?.setAttribute('d', link.d);
+    el.hit?.setAttribute('d', link.d);
+    if (el.junta) {
+      el.junta.style.left = `${link.meioX}px`;
+      el.junta.style.top = `${link.meioY}px`;
+    }
+    const alca = this.boardPalco?.nativeElement.querySelector<SVGCircleElement>(
+      `[data-board-alca="${CSS.escape(link.id)}:${indice}"]`
+    );
+    alca?.setAttribute('cx', String(ponto.x));
+    alca?.setAttribute('cy', String(ponto.y));
+  }
+
+  /** One pass through Angular to put the bindings back in step, and a save. */
+  private terminarBendBoard(link: LigacaoBoard): void {
+    this.boardCurvas[link.id] = link.pontos;
+    this.normalizarBoard();
+    this.medirBoard();
+    this.lembrarBoard();
+  }
+
+  /* --- the layout the reader made, kept --------------------------------- */
+
+  private carregarLayoutBoard(): void {
+    const bruto = this.readSetting(BOARD_LAYOUT_KEY);
+    if (!bruto) return;
+
+    try {
+      const lido = JSON.parse(bruto) as {
+        posicoes?: unknown;
+        curvas?: unknown;
+        rotulos?: unknown;
+        monitor?: unknown;
+        monitorLargura?: unknown;
+      };
+      const posicoes: Record<string, { x: number; y: number }> = {};
+      const curvas: Record<string, { x: number; y: number }[]> = {};
+
+      // Read defensively: this is a file on the reader's disk that anything
+      // could have written, and a board that refuses to open because one number
+      // in it is a string would be a worse bug than a card in the wrong place.
+      for (const [id, valor] of Object.entries((lido.posicoes ?? {}) as Record<string, unknown>)) {
+        const p = valor as { x?: unknown; y?: unknown };
+        if (Number.isFinite(p?.x) && Number.isFinite(p?.y)) {
+          posicoes[id] = { x: Math.max(BOARD_MIN_XY, Number(p.x)), y: Math.max(BOARD_MIN_XY, Number(p.y)) };
+        }
+      }
+      for (const [id, valor] of Object.entries((lido.curvas ?? {}) as Record<string, unknown>)) {
+        if (!Array.isArray(valor)) continue;
+        const pontos = valor
+          .filter((p: { x?: unknown; y?: unknown }) => Number.isFinite(p?.x) && Number.isFinite(p?.y))
+          .map((p: { x: number; y: number }) => ({
+            x: Math.max(BOARD_MIN_XY, Number(p.x)),
+            y: Math.max(BOARD_MIN_XY, Number(p.y))
+          }));
+        if (pontos.length) curvas[id] = pontos;
+      }
+
+      const monitor = lido.monitor as { x?: unknown; y?: unknown } | null | undefined;
+      this.boardMonitorPos =
+        monitor && Number.isFinite(monitor.x) && Number.isFinite(monitor.y)
+          ? { x: Math.max(0, Number(monitor.x)), y: Math.max(0, Number(monitor.y)) }
+          : null;
+
+      this.boardMonitorLargura = Number.isFinite(lido.monitorLargura)
+        ? Math.min(BOARD_MONITOR_MAX, Math.max(BOARD_MONITOR_MIN, Number(lido.monitorLargura)))
+        : BOARD_MONITOR_W;
+
+      this.boardRotulos = Array.isArray(lido.rotulos)
+        ? (lido.rotulos as RotuloBoard[])
+            .filter((r) => r && typeof r.id === 'string' && Number.isFinite(r.x) && Number.isFinite(r.y))
+            .map((r) => ({
+              id: r.id,
+              x: Number(r.x),
+              y: Number(r.y),
+              texto: typeof r.texto === 'string' ? r.texto : '',
+              largura: Number.isFinite(r.largura)
+                ? Math.min(BOARD_ROTULO_MAX_W, Math.max(BOARD_ROTULO_MIN_W, Number(r.largura)))
+                : undefined,
+              altura: Number.isFinite(r.altura)
+                ? Math.min(BOARD_ROTULO_MAX_H, Math.max(BOARD_ROTULO_MIN_H, Number(r.altura)))
+                : undefined
+            }))
+        : [];
+
+      this.boardPosicoes = posicoes;
+      this.boardCurvas = curvas;
+    } catch {
+      /* Unreadable is the same as absent: the automatic layout takes over. */
+    }
+  }
+
+  /**
+   * A copy deep enough to be a history entry.
+   *
+   * The arrays behind `curvas` are the very ones the arrows drag their points
+   * through — aliased on purpose, so bending an arrow needs no copying at all.
+   * That makes a shallow snapshot worse than none: every entry on the stack
+   * would go on changing as the reader kept dragging, and undo would put back
+   * the state it was already in.
+   */
+  private snapshotBoard(): LayoutBoard {
+    const posicoes: Record<string, { x: number; y: number }> = {};
+    for (const [id, p] of Object.entries(this.boardPosicoes)) posicoes[id] = { x: p.x, y: p.y };
+
+    const curvas: Record<string, { x: number; y: number }[]> = {};
+    for (const [id, pontos] of Object.entries(this.boardCurvas)) {
+      curvas[id] = pontos.map((p) => ({ x: p.x, y: p.y }));
+    }
+
+    return { posicoes, curvas, rotulos: this.boardRotulos.map((r) => ({ ...r })) };
+  }
+
+  /** Puts a remembered arrangement back, and writes it to disk with the rest. */
+  private aplicarLayoutBoard(layout: LayoutBoard | undefined): void {
+    // Undefined on an entry recorded before the board existed, which a reader
+    // upgrading mid-session can still have on their stack.
+    if (!layout) return;
+
+    const restaurado = { posicoes: layout.posicoes, curvas: layout.curvas };
+    this.boardPosicoes = {};
+    for (const [id, p] of Object.entries(restaurado.posicoes)) this.boardPosicoes[id] = { x: p.x, y: p.y };
+
+    this.boardCurvas = {};
+    for (const [id, pontos] of Object.entries(restaurado.curvas)) {
+      this.boardCurvas[id] = pontos.map((p) => ({ x: p.x, y: p.y }));
+    }
+
+    this.boardRotulos = (layout.rotulos ?? []).map((r) => ({ ...r }));
+    this.boardRotuloEditando = null;
+
+    // The cache is keyed on the clips, and an undo of a move changes none of
+    // them — so it has to be told, or the board would keep drawing the
+    // arrangement that was just taken back.
+    this.boardCacheArray = null;
+    this.salvarLayoutBoard();
+  }
+
+  /**
+   * A move on the board, recorded.
+   *
+   * `remember` rather than `touch`: the arrangement is not the edit. `touch`
+   * would also withdraw a half-finished export, throw away the planner's cache
+   * and hand the player a new plan — three things that have no business
+   * happening because a card was dragged four pixels to the left, and the last
+   * of them would interrupt the very playback the monitor is showing.
+   */
+  private lembrarBoard(): void {
+    this.salvarLayoutBoard();
+    this.remember();
+  }
+
+  private salvarLayoutBoard(): void {
+    this.saveSetting(
+      BOARD_LAYOUT_KEY,
+      JSON.stringify({
+        posicoes: this.boardPosicoes,
+        curvas: this.boardCurvas,
+        rotulos: this.boardRotulos,
+        monitor: this.boardMonitorPos,
+        monitorLargura: this.boardMonitorLargura
+      })
+    );
+  }
+
+  /** True once anything on the board has been moved by hand. */
+  get boardArrumado(): boolean {
+    // The notes are not part of it. "Tidy" puts the cards back where the board
+    // would place them; throwing away what the reader wrote on it as well would
+    // be a destructive thing hiding behind a harmless-sounding button.
+    return Object.keys(this.boardPosicoes).length === 0 && Object.keys(this.boardCurvas).length === 0;
+  }
+
+  /**
+   * Back to the layout the board works out for itself.
+   *
+   * Only the arrangement: nothing about the queue, the clips or their order is
+   * touched, which is why this is a button on the board's own control bar and
+   * not on the undo stack with the edits.
+   */
+  arrumarBoard(): void {
+    this.limparSelecaoBoard();
+    this.boardPosicoes = {};
+    this.boardCurvas = {};
+    this.lembrarBoard();
+    // The cache is keyed on the clips, which have not changed — so it has to be
+    // told, or the board would keep drawing the arrangement just thrown away.
+    this.boardCacheArray = null;
+    this.boardAjustePendente = true;
+  }
+
+  /* --- the floating monitor -------------------------------------------- */
+
+  /*
+   * A picture of the preview, over the board, while the board is the window.
+   *
+   * Maximised, the board covers the preview: the reader is looking at the shape
+   * of their video with no way to watch it. This puts the picture back without
+   * building a second player — there is one player, one decoder and one
+   * soundtrack, and this is its canvas copied frame by frame into a smaller
+   * one. Nothing here drives playback; the transport calls the very same
+   * methods the preview's own buttons do.
+   */
+
+  /** True once there is something for the monitor to show. */
+  get boardMonitorAtivo(): boolean {
+    return this.boardMaximizado && this.previewOpen;
+  }
+
+  /** Play, from the board — opening the preview first if it is not up yet. */
+  async tocarNoBoard(): Promise<void> {
+    if (!this.previewOpen) {
+      await this.openTimelinePreview();
+      if (!this.player) return;
+    }
+    this.togglePlayback();
+  }
+
+  /**
+   * Copies the preview's canvas into the monitor, once per frame.
+   *
+   * Outside Angular and started only while the board is the window: it is a
+   * `drawImage` per frame and nothing else, and it must not be one change
+   * detection pass per frame on top of the one the player is already avoiding.
+   */
+  private iniciarEspelhoBoard(): void {
+    if (this.boardEspelhoFrame || !isPlatformBrowser(this.platformId)) return;
+
+    const desenhar = (): void => {
+      this.boardEspelhoFrame = requestAnimationFrame(desenhar);
+
+      const destino = this.boardMonitorTela?.nativeElement;
+      const origem = this.previewCanvas?.nativeElement;
+      if (!destino || !origem || !origem.width || !origem.height) return;
+
+      const ctx = destino.getContext('2d');
+      if (!ctx) return;
+
+      // Letterboxed rather than stretched: a vertical video squashed into a
+      // 16:9 monitor would be a picture of the wrong film.
+      const escala = Math.min(destino.width / origem.width, destino.height / origem.height);
+      const w = origem.width * escala;
+      const h = origem.height * escala;
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, destino.width, destino.height);
+      ctx.drawImage(origem, (destino.width - w) / 2, (destino.height - h) / 2, w, h);
+    };
+
+    this.zone.runOutsideAngular(() => {
+      this.boardEspelhoFrame = requestAnimationFrame(desenhar);
+    });
+  }
+
+  private pararEspelhoBoard(): void {
+    if (!this.boardEspelhoFrame) return;
+    cancelAnimationFrame(this.boardEspelhoFrame);
+    this.boardEspelhoFrame = 0;
+  }
+
+  /** Drag the monitor to whichever corner is in the way least. */
+  aoPressionarMonitor(evento: PointerEvent): void {
+    if (evento.button !== 0) return;
+    // The controls on it are its own: the play button, the scrubber, and the
+    // corner that resizes it. A press on any of those is not a press on the
+    // panel, and taking it would make all three impossible to use.
+    if ((evento.target as HTMLElement | null)?.closest('button, input, .monitor-resize')) return;
+
+    const painel = this.boardMonitor?.nativeElement;
+    const frame = this.boardFluxo?.nativeElement;
+    if (!painel || !frame) return;
+
+    evento.preventDefault();
+    evento.stopPropagation();
+    painel.setPointerCapture(evento.pointerId);
+
+    const caixa = painel.getBoundingClientRect();
+    const moldura = frame.getBoundingClientRect();
+    const eraX = caixa.left - moldura.left;
+    const eraY = caixa.top - moldura.top;
+    const partiuX = evento.clientX;
+    const partiuY = evento.clientY;
+
+    const mover = (movido: PointerEvent): void => {
+      const limiteX = Math.max(0, moldura.width - caixa.width);
+      const limiteY = Math.max(0, moldura.height - caixa.height);
+      const x = Math.min(limiteX, Math.max(0, eraX + movido.clientX - partiuX));
+      const y = Math.min(limiteY, Math.max(0, eraY + movido.clientY - partiuY));
+      this.boardMonitorPos = { x, y };
+      this.aplicarMonitor();
+    };
+
+    const parar = (): void => {
+      painel.removeEventListener('pointermove', mover);
+      painel.removeEventListener('pointerup', parar);
+      painel.removeEventListener('pointercancel', parar);
+      if (painel.hasPointerCapture(evento.pointerId)) painel.releasePointerCapture(evento.pointerId);
+      this.zone.run(() => this.salvarLayoutBoard());
+    };
+
+    this.zone.runOutsideAngular(() => {
+      painel.addEventListener('pointermove', mover);
+      painel.addEventListener('pointerup', parar);
+      painel.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /**
+   * Drag the corner to resize it.
+   *
+   * The width is what the reader sets; the height of the picture follows from
+   * the monitor's shape, and the panel's from that plus its own two bars. Only
+   * the corner is a handle — an edge-by-edge resize would let the picture be
+   * squashed, and there is nothing here worth squashing it for.
+   */
+  aoPressionarResizeMonitor(evento: PointerEvent): void {
+    if (evento.button !== 0) return;
+
+    const painel = this.boardMonitor?.nativeElement;
+    const frame = this.boardFluxo?.nativeElement;
+    const alvo = evento.currentTarget as HTMLElement;
+    if (!painel || !frame) return;
+
+    evento.preventDefault();
+    evento.stopPropagation();
+    alvo.setPointerCapture(evento.pointerId);
+
+    const caixa = painel.getBoundingClientRect();
+    const moldura = frame.getBoundingClientRect();
+    // Pinned before it grows: until it has been dragged the panel hangs off the
+    // bottom of the frame, and growing downwards from there would push its top
+    // up the screen instead of its corner down.
+    this.fixarPosicaoMonitor(caixa, moldura);
+
+    const eraLargura = caixa.width;
+    const partiuX = evento.clientX;
+
+    const mover = (movido: PointerEvent): void => {
+      const maximo = Math.min(BOARD_MONITOR_MAX, moldura.width - (this.boardMonitorPos?.x ?? 0) - 8);
+      this.boardMonitorLargura = Math.round(
+        Math.min(maximo, Math.max(BOARD_MONITOR_MIN, eraLargura + movido.clientX - partiuX))
+      );
+      this.aplicarMonitor();
+    };
+
+    const parar = (): void => {
+      alvo.removeEventListener('pointermove', mover);
+      alvo.removeEventListener('pointerup', parar);
+      alvo.removeEventListener('pointercancel', parar);
+      if (alvo.hasPointerCapture(evento.pointerId)) alvo.releasePointerCapture(evento.pointerId);
+      this.zone.run(() => this.salvarLayoutBoard());
+    };
+
+    this.zone.runOutsideAngular(() => {
+      alvo.addEventListener('pointermove', mover);
+      alvo.addEventListener('pointerup', parar);
+      alvo.addEventListener('pointercancel', parar);
+    });
+  }
+
+  /** Turns "wherever the stylesheet put it" into a position of its own. */
+  private fixarPosicaoMonitor(caixa: DOMRect, moldura: DOMRect): void {
+    if (this.boardMonitorPos) return;
+    this.boardMonitorPos = {
+      x: Math.max(0, Math.round(caixa.left - moldura.left)),
+      y: Math.max(0, Math.round(caixa.top - moldura.top))
+    };
+  }
+
+  /**
+   * Written onto the element, like every other drag here.
+   *
+   * With no saved position it is left to the stylesheet, which puts it in the
+   * bottom left — the one corner of the board that has nothing else in it.
+   */
+  private aplicarMonitor(): void {
+    const painel = this.boardMonitor?.nativeElement;
+    if (!painel) return;
+
+    painel.style.width = `${this.boardMonitorLargura}px`;
+
+    const pos = this.boardMonitorPos;
+    if (pos) {
+      painel.style.left = `${pos.x}px`;
+      painel.style.top = `${pos.y}px`;
+      // The stylesheet parks it against the bottom of the frame; once it has a
+      // position of its own, `top` is the truth and the two would stretch it.
+      painel.style.bottom = 'auto';
+    } else {
+      painel.style.removeProperty('left');
+      painel.style.removeProperty('top');
+      painel.style.removeProperty('bottom');
+    }
+
+    this.ajustarTelaMonitor();
+  }
+
+  /**
+   * Keeps the picture's own pixels in step with the size it is drawn at.
+   *
+   * A canvas has two sizes — the box on the page and the buffer behind it — and
+   * scaling only the first is how a monitor dragged out to twice its width ends
+   * up a soft copy of a small picture.
+   */
+  private ajustarTelaMonitor(): void {
+    const tela = this.boardMonitorTela?.nativeElement;
+    if (!tela) return;
+
+    const largura = Math.round(this.boardMonitorLargura);
+    const altura = Math.round((largura * BOARD_MONITOR_H) / BOARD_MONITOR_W);
+    // Assigned only when it changes: writing either one clears the canvas, and
+    // doing that every view check would flicker the picture away.
+    if (tela.width !== largura) tela.width = largura;
+    if (tela.height !== altura) tela.height = altura;
+  }
+
+  /* --- the light that runs down an arrow ------------------------------- */
+
+  /**
+   * The playhead has moved from one clip to another: begin the hand-over.
+   *
+   * Nothing is lit or unlit here. All this does is tell the light on the card
+   * it is on to slow down, and note where it is going; the frame loop picks the
+   * rest up when the slowing has finished. Doing it any other way — snapping
+   * the light across, or starting the arrow at once — is what the three steps
+   * were asked for instead of.
+   */
+  private trocarCardAcesoBoard(anterior: number, atual: number): void {
+    if (!this.modoBoard) return;
+
+    const de = anterior >= 0 ? (this.plan.clips[anterior]?.clip.id ?? null) : null;
+    const para = atual >= 0 ? (this.plan.clips[atual]?.clip.id ?? null) : null;
+    if (this.boardCardAceso === para) return;
+
+    // Nothing is lit yet — the first clip of a run. It winds up on the spot.
+    if (!this.boardCardAceso) {
+      this.boardCardAceso = para;
+      this.boardGiroAngulo = 0;
+      this.sincronizarGiroBoard();
+      return;
+    }
+
+    this.boardAcesoSeguinte = para;
+    // The arrow is only lit where there really is one. A seek from the first
+    // shot to the last crosses no join, and drawing a light travelling down an
+    // arrow nobody followed would be telling the reader something untrue.
+    const id = de && para ? `${de}>${para}` : null;
+    this.boardFluxoPendente = id && this.boardLigacoes.some((link) => link.id === id) ? id : null;
+    // Slow to a stop; the loop takes it from there.
+    this.boardGiroAlvo = 0;
+    this.iniciarGiroBoard();
+  }
+
+  /**
+   * The light goes out, the arrow runs, and the next card takes it up.
+   *
+   * Called once, by the frame loop, at the moment the old card's light has
+   * actually stopped rather than after a timer that guessed when it would.
+   */
+  private entregarCardAcesoBoard(): void {
+    const seguinte = this.boardAcesoSeguinte;
+    const arrow = this.boardFluxoPendente;
+    this.boardAcesoSeguinte = null;
+    this.boardFluxoPendente = null;
+
+    this.boardCardAceso = null;
+    this.boardGiroVel = 0;
+    this.boardGiroAngulo = 0;
+
+    const acender = (): void => {
+      this.boardCardAceso = seguinte;
+      this.boardGiroAngulo = 0;
+      this.boardGiroFase = 0;
+      // From nothing: the target is set here and the loop winds up to it, which
+      // is the third of the three steps.
+      this.sincronizarGiroBoard();
+    };
+
+    if (!arrow) {
+      acender();
+      return;
+    }
+
+    if (this.boardFluxoTimer) clearTimeout(this.boardFluxoTimer);
+    // Cleared first: the element carrying the arrow's animation is created by
+    // the template when this matches, so a light already running has to come
+    // off the board before the next one can be put on it.
+    this.boardFluxoLink = null;
+    this.boardFluxoTimer = setTimeout(() => {
+      this.boardFluxoLink = arrow;
+      this.boardFluxoTimer = setTimeout(() => {
+        this.boardFluxoLink = null;
+        this.boardFluxoTimer = null;
+        acender();
+      }, BOARD_FLUXO_MS);
+    }, 0);
+  }
+
+  /* --- the frame loop behind the light --------------------------------- */
+
+  /**
+   * Points the light at the right speed for what the preview is doing.
+   *
+   * Playing is full speed; paused is a stop — and a stop reached by slowing
+   * down, which is the whole reason this is a loop and not a keyframe. Cheap
+   * enough to call from the view check, so nothing has to remember to.
+   */
+  private sincronizarGiroBoard(): void {
+    if (!this.modoBoard || !this.previewOpen) {
+      this.apagarGiroBoard();
+      return;
+    }
+
+    if (!this.boardCardAceso && !this.boardAcesoSeguinte) {
+      const atual = this.previewClip?.id ?? null;
+      if (!atual) return;
+      this.boardCardAceso = atual;
+      this.boardGiroAngulo = 0;
+    }
+
+    // Mid-hand-over the target is already zero and must stay there: the light
+    // is on its way down, and this is not the place that decides otherwise.
+    if (!this.boardAcesoSeguinte) {
+      this.boardGiroAlvo = this.previewPlaying ? BOARD_GIRO_VEL : 0;
+    }
+    this.iniciarGiroBoard();
+  }
+
+  /** True when the reader has asked for less movement. */
+  private get movimentoReduzido(): boolean {
+    return (
+      isPlatformBrowser(this.platformId) &&
+      typeof matchMedia === 'function' &&
+      matchMedia('(prefers-reduced-motion: reduce)').matches
+    );
+  }
+
+  private iniciarGiroBoard(): void {
+    if (this.boardGiroFrame || !isPlatformBrowser(this.platformId)) return;
+
+    // Asked for stillness: the card is lit and stays lit, and the hand-over is
+    // done at once rather than choreographed. The fact — this is the shot you
+    // are watching — is worth keeping; the movement was the reader's to refuse.
+    if (this.movimentoReduzido) {
+      if (this.boardAcesoSeguinte) this.entregarCardAcesoBoard();
+      this.escreverGiroBoard(0.55);
+      return;
+    }
+
+    this.boardGiroUltimo = performance.now();
+    const passo = (agora: number): void => {
+      this.boardGiroFrame = requestAnimationFrame(passo);
+      this.passoGiroBoard(agora);
+    };
+    this.zone.runOutsideAngular(() => {
+      this.boardGiroFrame = requestAnimationFrame(passo);
+    });
+  }
+
+  private passoGiroBoard(agora: number): void {
+    // Capped, so a tab left in the background does not come back and spin the
+    // light through half a turn in one frame.
+    const dt = Math.min(0.05, Math.max(0, (agora - this.boardGiroUltimo) / 1000));
+    this.boardGiroUltimo = agora;
+
+    // Exponential approach: the further the speed is from where it is going,
+    // the harder it is pulled — which is what weight feels like.
+    this.boardGiroVel += (this.boardGiroAlvo - this.boardGiroVel) * (1 - Math.exp(-dt / BOARD_GIRO_TAU));
+
+    const parte = this.boardGiroVel / BOARD_GIRO_VEL;
+    this.boardGiroAngulo = (this.boardGiroAngulo + this.boardGiroVel * dt) % 360;
+    // The breathing keeps pace with the sweep, so everything slows together
+    // rather than the card carrying on breathing over a light that has stopped.
+    this.boardGiroFase = (this.boardGiroFase + parte * BOARD_PULSO_HZ * dt * Math.PI * 2) % (Math.PI * 2);
+
+    this.escreverGiroBoard(0.35 + 0.65 * (0.5 + 0.5 * Math.sin(this.boardGiroFase)) * parte);
+
+    const parado = Math.abs(this.boardGiroVel) < BOARD_GIRO_PARADO;
+
+    if (parado && this.boardAcesoSeguinte) {
+      this.boardGiroVel = 0;
+      this.zone.run(() => this.entregarCardAcesoBoard());
+      return;
+    }
+
+    // Nothing left to move: stop the loop rather than burn a frame a sixtieth
+    // of a second for ever behind a paused video.
+    if (parado && this.boardGiroAlvo === 0) {
+      this.boardGiroVel = 0;
+      this.escreverGiroBoard(0.35);
+      this.pararGiroBoard();
+    }
+  }
+
+  /** Writes the angle and the brightness onto the card wearing the light. */
+  private escreverGiroBoard(brilho: number): void {
+    const id = this.boardCardAceso;
+    if (!id) return;
+
+    const card = this.boardPalco?.nativeElement.querySelector<HTMLElement>(
+      `[data-board-card="${CSS.escape(id)}"]`
+    );
+    if (!card) return;
+
+    card.style.setProperty('--glow-angle', `${this.boardGiroAngulo.toFixed(1)}deg`);
+    card.style.setProperty('--board-brilho', brilho.toFixed(3));
+  }
+
+  private pararGiroBoard(): void {
+    if (!this.boardGiroFrame) return;
+    cancelAnimationFrame(this.boardGiroFrame);
+    this.boardGiroFrame = 0;
+  }
+
+  /** The board is not on screen, or there is nothing playing: put it all out. */
+  private apagarGiroBoard(): void {
+    this.pararGiroBoard();
+    if (this.boardFluxoTimer) {
+      clearTimeout(this.boardFluxoTimer);
+      this.boardFluxoTimer = null;
+    }
+    this.boardCardAceso = null;
+    this.boardAcesoSeguinte = null;
+    this.boardFluxoPendente = null;
+    this.boardFluxoLink = null;
+    this.boardGiroVel = 0;
+    this.boardGiroAlvo = 0;
+  }
+
+  /* --- the whole window ------------------------------------------------- */
+
+  /**
+   * Fills the browser window with the board, and puts it back.
+   *
+   * The camera is left exactly as it was: growing the frame reveals more of the
+   * diagram around what the reader was already looking at, which is what
+   * resizing a window does and what they will expect. "Fit" is one button away
+   * for the other reading.
+   */
+  alternarBoardMaximizado(): void {
+    this.boardMaximizado = !this.boardMaximizado;
+    // The frame is rebuilt in the other place, so the camera — which lives on
+    // the element rather than in a binding — has to be written onto the new one.
+    this.boardPendente = true;
+    if (!this.boardMaximizado) this.pararEspelhoBoard();
+  }
+
+  /**
+   * Escape puts the board back into the page.
+   *
+   * Unless a dialog is over it: the reader who opened a clip's settings from a
+   * maximised board and pressed Escape meant that dialog, and closing the board
+   * out from under it would answer a question they did not ask. Every dialog in
+   * this file is drawn on the same backdrop, so one look for it settles it.
+   */
+  @HostListener('document:keydown.escape')
+  aoEscapeBoard(): void {
+    // A selection first. Escape means "never mind" about the smallest thing
+    // outstanding, and letting go of a set of cards is smaller than putting the
+    // whole board back into the page.
+    if (this.modoBoard && this.boardSelecionados.size) {
+      this.limparSelecaoBoard();
+      return;
+    }
+
+    if (!this.boardMaximizado) return;
+    if (typeof document !== 'undefined' && document.querySelector('.dialogo-fundo')) return;
+    this.boardMaximizado = false;
+    this.boardPendente = true;
+    this.pararEspelhoBoard();
+  }
+
+  /**
+   * Sends the playhead to a card, exactly as clicking the row does.
+   *
+   * The board has no editing of its own: every control on a card calls the same
+   * method the list's row calls, which is what keeps the two views honest.
+   */
+  aoClicarCardBoard(no: NoBoard, evento: MouseEvent): void {
+    // A press that turned into a drag — of the card, or of the board under it —
+    // is not a click on the card, and must not move the playhead.
+    if (this.boardArrastando || this.boardCardArrastado) return;
+    this.onClipRow(no.clip, evento);
+  }
+
   /* ------------------------------------------- the height of the picture */
 
   /**
@@ -2778,12 +5478,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** Sets a clip's caption text from the panel under the preview. */
   setCaptionText(clip: EditorClip, text: string): void {
     if (!isMediaClip(clip)) return;
-    clip.caption = { ...(clip.caption ?? DEFAULT_CAPTION), text };
+    this.ensureTimedCaptions(clip);
+    const first = clip.captions?.[0];
+    if (first) {
+      this.updateCaption(clip, first, { text });
+      return;
+    }
+    if (text.trim()) this.addCaption(clip, clipBounds(clip).start, text);
     this.touch();
   }
 
   captionTextOf(clip: EditorClip): string {
-    return isMediaClip(clip) ? clip.caption?.text ?? '' : '';
+    return isMediaClip(clip) ? clip.captions?.[0]?.text ?? clip.caption?.text ?? '' : '';
   }
 
   // -------------------------------------------------------------- listening
@@ -3611,29 +6317,146 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   // ----------------------------------------------------------- the caption
 
-  get caption(): ClipCaption {
-    return this.editing?.caption ?? DEFAULT_CAPTION;
+  captionsOf(clip: MediaClip): ClipCaption[] { return clip.captions ?? []; }
+
+  /** About 15 characters per second, with 50% extra reading time. */
+  estimatedCaptionDuration(text: string): number {
+    const characters = text.trim().replace(/\s+/g, ' ').length;
+    return Math.round(Math.max(1.5, (characters / 15) * 1.5) * 10) / 10;
   }
 
-  onCaption(change: Partial<ClipCaption>): void {
-    const clip = this.editing;
-    if (!clip) return;
-
-    clip.caption = { ...(clip.caption ?? DEFAULT_CAPTION), ...change };
+  addCaption(clip: MediaClip, at: number = this.playhead, text = ''): void {
+    this.ensureTimedCaptions(clip);
+    const bounds = clipBounds(clip);
+    const existing = clip.captions ?? [];
+    const previousEnd = existing.reduce(
+      (end, item) => Math.max(end, (item.startSeconds ?? bounds.start) + (item.durationSeconds ?? 0)), bounds.start
+    );
+    if (previousEnd >= bounds.end - 0.1) return;
+    const start = Math.max(bounds.start, Math.min(Math.max(at, previousEnd), bounds.end));
+    const caption: ClipCaption = {
+      ...DEFAULT_CAPTION,
+      id: `caption-${this.nextId++}`,
+      text,
+      startSeconds: start,
+      durationSeconds: this.estimatedCaptionDuration(text),
+      durationAutomatic: true
+    };
+    clip.captions = [...existing, caption].sort((a, b) => (a.startSeconds ?? 0) - (b.startSeconds ?? 0));
+    clip.caption = null;
+    this.expandedCaptionId = caption.id ?? null;
     this.touch();
   }
 
-  onCaptionNumber(key: 'fontScale' | 'bottomMargin' | 'fadeSeconds', value: string): void {
+  openCaption(caption: ClipCaption): void {
+    this.expandedCaptionId = caption.id ?? null;
+  }
+
+  confirmCaption(caption: ClipCaption): void {
+    if (!caption.text.trim()) return;
+    if (this.expandedCaptionId === caption.id) this.expandedCaptionId = null;
+  }
+
+  updateCaption(clip: MediaClip, caption: ClipCaption, change: Partial<ClipCaption>): void {
+    const items = clip.captions ?? [];
+    const index = items.findIndex((item) => item.id === caption.id);
+    if (index < 0) return;
+    const bounds = clipBounds(clip);
+    const previous = items[index - 1];
+    const next = items[index + 1];
+    const previousEnd = previous
+      ? (previous.startSeconds ?? bounds.start) + Math.max(0.1, previous.durationSeconds ?? 0.1)
+      : bounds.start;
+    let updated = { ...caption, ...change };
+    if (change.text !== undefined && caption.durationAutomatic !== false && change.durationSeconds === undefined) {
+      updated.durationSeconds = this.estimatedCaptionDuration(change.text);
+    }
+    const duration = Math.max(0.1, Number(updated.durationSeconds) || this.estimatedCaptionDuration(updated.text));
+    const nextStart = next?.startSeconds ?? Number.POSITIVE_INFINITY;
+    const latestStart = Math.min(bounds.end, Math.max(previousEnd, nextStart - duration));
+    updated.startSeconds = Math.max(previousEnd, Math.min(Number(updated.startSeconds) || bounds.start, latestStart));
+    updated.durationSeconds = Math.max(0.1, Math.min(duration, nextStart - updated.startSeconds));
+    clip.captions = items.map((item, itemIndex) => (itemIndex === index ? updated : item));
+    clip.caption = null;
+    this.touch();
+  }
+
+  applyCaptionPreset(clip: MediaClip, caption: ClipCaption, presetId: string): void {
+    const preset = CAPTION_PRESETS.find((candidate) => candidate.id === presetId);
+    if (preset) this.updateCaption(clip, caption, { ...preset.style, stylePreset: preset.id });
+  }
+
+  updateCaptionStyle(clip: MediaClip, caption: ClipCaption, change: Partial<ClipCaption>): void {
+    this.updateCaption(clip, caption, { ...change, stylePreset: 'custom' });
+  }
+
+  captionPresetOf(caption: ClipCaption): string {
+    return caption.stylePreset && CAPTION_PRESETS.some((preset) => preset.id === caption.stylePreset)
+      ? caption.stylePreset : caption.stylePreset === 'custom' ? 'custom' : 'classic';
+  }
+
+  onCaptionNumber(
+    clip: MediaClip,
+    caption: ClipCaption,
+    key: 'startSeconds' | 'durationSeconds' | 'fontScale' | 'bottomMargin' | 'outlinePercent' | 'fadeSeconds',
+    value: string
+  ): void {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
-
-    const limits = CAPTION_LIMITS[key];
-    this.onCaption({ [key]: Math.min(limits.max, Math.max(limits.min, parsed)) } as Partial<ClipCaption>);
+    if (key === 'fontScale' || key === 'bottomMargin' || key === 'outlinePercent' || key === 'fadeSeconds') {
+      const limits = CAPTION_LIMITS[key];
+      const change = { [key]: Math.min(limits.max, Math.max(limits.min, parsed)) } as Partial<ClipCaption>;
+      if (key === 'fontScale' || key === 'outlinePercent') this.updateCaptionStyle(clip, caption, change);
+      else this.updateCaption(clip, caption, change);
+      return;
+    }
+    this.updateCaption(clip, caption, { [key]: parsed, ...(key === 'durationSeconds' ? { durationAutomatic: false } : {}) });
   }
 
-  clearCaption(): void {
-    if (this.editing) this.editing.caption = null;
+  removeCaption(clip: MediaClip, caption: ClipCaption): void {
+    clip.captions = (clip.captions ?? []).filter((item) => item.id !== caption.id);
+    if (this.expandedCaptionId === caption.id) this.expandedCaptionId = null;
+    clip.caption = null;
     this.touch();
+  }
+
+  captionOverflows(clip: MediaClip, caption: ClipCaption): boolean {
+    return (caption.startSeconds ?? 0) + (caption.durationSeconds ?? 0) > clipBounds(clip).end + 1e-4;
+  }
+
+  captionMinimumStart(clip: MediaClip, caption: ClipCaption): number {
+    const items = clip.captions ?? [];
+    const index = items.findIndex((item) => item.id === caption.id);
+    const previous = items[index - 1];
+    return previous ? (previous.startSeconds ?? clipBounds(clip).start) + (previous.durationSeconds ?? 0) : clipBounds(clip).start;
+  }
+
+  captionMaximumDuration(clip: MediaClip, caption: ClipCaption): number {
+    const items = clip.captions ?? [];
+    const index = items.findIndex((item) => item.id === caption.id);
+    const next = items[index + 1];
+    return next ? Math.max(0.1, (next.startSeconds ?? 0) - (caption.startSeconds ?? 0)) : 600;
+  }
+
+  canAddCaption(clip: MediaClip): boolean {
+    const bounds = clipBounds(clip);
+    return (clip.captions ?? []).every(
+      (caption) => (caption.startSeconds ?? bounds.start) + (caption.durationSeconds ?? 0) < bounds.end - 0.1
+    );
+  }
+
+  private ensureTimedCaptions(clip: MediaClip): void {
+    if (clip.captions) return;
+    const bounds = clipBounds(clip);
+    clip.captions = clip.caption?.text.trim() ? [{
+      ...DEFAULT_CAPTION,
+      ...clip.caption,
+      id: `caption-${this.nextId++}`,
+      startSeconds: bounds.start,
+      durationSeconds: bounds.end - bounds.start,
+      durationAutomatic: false
+    }] : [];
+    clip.caption = null;
   }
 
   // --------------------------------------------------------- the text card
@@ -4156,6 +6979,391 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+
+  // ------------------------------------------------------- the transcript
+
+  /**
+   * The transcript, and why it is built from the plan rather than from a file.
+   *
+   * The recogniser hears a clip's source: it knows nothing of in points, cuts,
+   * removed pauses, speed or the order the cards ended up in. So every word
+   * comes back on the source clock and is moved onto the finished video's clock
+   * by the same functions the encoder uses — which is what lets a subtitle file
+   * written here be dropped straight onto the file "Export video" produces.
+   *
+   * The alternative was to render the whole timeline to audio and listen to
+   * that. It would have been fewer lines and much slower: an encode of the
+   * entire project before a single word is heard, repeated every time anything
+   * on the timeline moves.
+   */
+  get canTranscribe(): boolean {
+    return (
+      this.clips.length > 0 &&
+      !this.hasAwaitingFiles &&
+      !this.exporting &&
+      !this.reading &&
+      !this.analysisBusy &&
+      spokenEntries(this.plan).length > 0
+    );
+  }
+
+  /** Whether this one card has a voice of its own that can be listened to. */
+  canTranscribeClip(clip: EditorClip | null): boolean {
+    return (
+      !!clip &&
+      isMediaClip(clip) &&
+      !clip.awaitingFile &&
+      clip.summary.audioUsable &&
+      !this.exporting
+    );
+  }
+
+  openTranscript(): void {
+    if (!this.canTranscribe) return;
+    this.transcript = { scope: 'project', clip: null };
+    this.resetTranscript();
+  }
+
+  /** The same dialog, asked about one card. Opened from that card's settings. */
+  openClipTranscript(clip: MediaClip): void {
+    if (!this.canTranscribeClip(clip)) return;
+    this.transcript = { scope: 'clip', clip };
+    this.resetTranscript();
+  }
+
+  /**
+   * Closes it — unless it is working.
+   *
+   * A stray click on the backdrop must not throw away a recogniser that has
+   * been listening for four minutes. Stopping is a button that says so.
+   */
+  closeTranscript(): void {
+    if (this.transcriptWorking) return;
+    this.transcript = null;
+    this.revokeTranscript();
+  }
+
+  stopTranscript(): void {
+    this.transcriptController?.abort();
+  }
+
+  private resetTranscript(): void {
+    this.transcriptCues = [];
+    this.transcriptPreviewKey = '';
+    this.transcriptMessage = '';
+    this.transcriptError = '';
+    this.transcriptHint = '';
+    this.transcriptStep = '';
+    this.transcriptStage = '';
+    this.transcriptDetail = '';
+    this.transcriptRatio = null;
+    this.revokeTranscript();
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * The clips this run will listen to, in the order they play.
+   *
+   * For the whole project that is every clip whose own voice reaches the
+   * finished file. For one card it is that card, whatever the edit does with
+   * its sound afterwards — a reader who asks a clip for its transcript is
+   * asking about what was said in it.
+   */
+  private transcriptEntries(): ClipPlan[] {
+    const plan = this.plan;
+    const wanted = this.transcript?.scope === 'clip' ? this.transcript.clip : null;
+
+    const entries =
+      wanted === null
+        ? spokenEntries(plan)
+        : plan.clips.filter(
+            (entry) =>
+              entry.clip === wanted &&
+              isMediaClip(entry.clip) &&
+              !entry.clip.awaitingFile &&
+              entry.clip.summary.audioUsable
+          );
+
+    return entries.filter((entry) => entry.keptDuration >= TRANSCRIPT_MIN_SECONDS);
+  }
+
+  get transcriptClipCount(): number {
+    return this.transcriptEntries().length;
+  }
+
+  /** Clips of the project left out, because their voice is not in the file. */
+  get transcriptSkipped(): number {
+    if (this.transcript?.scope !== 'project') return 0;
+    return Math.max(0, this.clips.filter(isMediaClip).length - this.transcriptClipCount);
+  }
+
+  /** True when the card being transcribed is muted or plays a supplied track. */
+  get transcriptClipSilenced(): boolean {
+    if (this.transcript?.scope !== 'clip') return false;
+    const entry = this.transcriptEntries()[0];
+    return !!entry && entry.sound.kind !== 'original';
+  }
+
+  get canRunTranscript(): boolean {
+    return !!this.transcript && !this.transcriptWorking && !this.exporting && this.transcriptClipCount > 0;
+  }
+
+  get transcriptModel() {
+    return this.speechModels.find((model) => model.id === this.transcriptModelId) ?? this.speechModels[0];
+  }
+
+  get transcriptStrength() {
+    return this.noiseStrengths[this.transcriptStrengthIndex] ?? this.noiseStrengths[1];
+  }
+
+  get transcriptEngineNote(): string {
+    return this.noiseEngines.find((engine) => engine.id === this.transcriptEngine)?.note ?? '';
+  }
+
+  /**
+   * Listens to everything in scope and writes the cues.
+   *
+   * Clip by clip rather than all at once: each run holds a speech model in
+   * memory, and four of them side by side is how a browser tab runs out of room
+   * on the machine of the person least able to afford it.
+   */
+  async runTranscript(): Promise<void> {
+    if (!this.transcript || this.transcriptWorking || !isPlatformBrowser(this.platformId)) return;
+
+    const entries = this.transcriptEntries();
+    if (!entries.length) return;
+
+    const scope = this.transcript.scope;
+    this.transcriptWorking = true;
+    this.transcriptCues = [];
+    this.transcriptPreviewKey = '';
+    this.transcriptMessage = '';
+    this.transcriptError = '';
+    this.transcriptHint = '';
+    this.revokeTranscript();
+
+    const controller = new AbortController();
+    this.transcriptController = controller;
+
+    const cues: Cue[] = [];
+
+    try {
+      for (const [index, entry] of entries.entries()) {
+        if (controller.signal.aborted) throw new TranscriptionCanceled();
+
+        const clip = entry.clip as MediaClip;
+        this.transcriptStep =
+          entries.length > 1
+            ? `Clip ${index + 1} of ${entries.length} — ${clip.summary.fileName}`
+            : clip.summary.fileName;
+        this.reportTranscript({ stage: 'reading', ratio: 0, detail: clip.summary.fileName });
+
+        const words = await this.wordsFor(clip, entry, controller.signal);
+
+        // Grouped after placing, never before: a pause the edit removed is not
+        // a pause in the finished video, and two words either side of a cut
+        // belong in the same caption there.
+        const placed = placeWords(words, entry, scope === 'clip' ? entry.outputStart : 0);
+        cues.push(
+          ...groupWords(placed, DEFAULT_SHAPE.lineLength, DEFAULT_SHAPE.maxLines, DEFAULT_SHAPE.maxSeconds)
+        );
+
+        // What has been heard so far, shaped and on screen, so a long project
+        // shows a growing transcript instead of a bar and a promise.
+        this.transcriptCues = shapeCues(cues, DEFAULT_SHAPE, this.transcriptDuration(scope, entries));
+        this.transcriptPreviewKey = '';
+        this.cdr.markForCheck();
+      }
+
+      this.transcriptMessage = this.transcriptCues.length
+        ? `Transcribed ${this.transcriptCues.length} caption${this.transcriptCues.length === 1 ? '' : 's'}.`
+        : 'No speech was heard in this material.';
+    } catch (error) {
+      if (error instanceof TranscriptionCanceled || error instanceof SuppressionCanceled) {
+        this.transcriptMessage = this.transcriptCues.length
+          ? 'Stopped. What was heard up to that point can still be downloaded.'
+          : 'Stopped.';
+      } else if (error instanceof TranscriptionError || error instanceof SuppressionError) {
+        this.transcriptError = error.message;
+        this.transcriptHint = error.hint;
+      } else {
+        console.error(error);
+        this.transcriptError = 'The transcript could not be produced.';
+        this.transcriptHint = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      this.transcriptWorking = false;
+      this.transcriptController = null;
+      this.transcriptStep = '';
+      this.transcriptStage = '';
+      this.transcriptDetail = '';
+      this.transcriptRatio = null;
+      this.cdr.markForCheck();
+    }
+  }
+
+  /** How long the finished thing is, which is where a cue may not run past. */
+  private transcriptDuration(scope: 'project' | 'clip', entries: readonly ClipPlan[]): number {
+    return scope === 'clip' ? entries[0]?.outputDuration ?? Infinity : this.plan.totalDuration;
+  }
+
+  /**
+   * What was said in one clip, on the source clock.
+   *
+   * Only the stretch the timeline actually reads is listened to, with a second
+   * of margin either side so a word at the edge is still recognisable. On a
+   * forty-minute take trimmed to two, that is the difference between a
+   * transcript and an afternoon.
+   */
+  private async wordsFor(clip: MediaClip, entry: ClipPlan, signal: AbortSignal): Promise<Cue[]> {
+    const key = [
+      clip.id,
+      this.transcriptModelId,
+      this.transcriptLanguage || 'auto',
+      this.transcriptDenoise ? `${this.transcriptEngine}:${this.transcriptStrength.attenuationDb}` : 'raw'
+    ].join('|');
+
+    const remembered = this.heardByClip.get(key);
+    if (remembered) return remembered;
+
+    const report = (progress: TranscriptionProgress | SuppressionProgress) =>
+      this.zone.run(() => this.reportTranscript(progress));
+
+    const decoded = await readSpeechAudio(clip.file, report, signal);
+    if (signal.aborted) throw new TranscriptionCanceled();
+
+    const span = spokenSpan(entry, SPEECH_RATE, decoded.length);
+    // A copy, not a view: both the suppressor and the recogniser take ownership
+    // of the buffer they are handed, and a view would hand them the whole file.
+    let listened = decoded.slice(span.from, span.to);
+
+    if (this.transcriptDenoise) {
+      const cleaned = await suppress(
+        {
+          channels: [listened],
+          rate: SPEECH_RATE,
+          engine: this.transcriptEngine,
+          attenuationDb: this.transcriptStrength.attenuationDb,
+          preserveHighs: false
+        },
+        report,
+        signal
+      );
+      listened = cleaned.channels[0];
+    }
+
+    const offset = span.from / SPEECH_RATE;
+    const heard = await transcribe(
+      listened,
+      { model: this.transcriptModelId, language: this.transcriptLanguage },
+      report,
+      signal
+    );
+
+    const words = offset
+      ? heard.map((word) => ({ ...word, start: word.start + offset, end: word.end + offset }))
+      : heard;
+
+    this.heardByClip.set(key, words);
+    return words;
+  }
+
+  /**
+   * The line and the bar above the transcript.
+   *
+   * The bar measures the stage in front of it rather than the whole job, and
+   * the line beside it says which clip that stage belongs to. A single bar
+   * covering both would have to run backwards every time a model was fetched.
+   */
+  private reportTranscript(progress: { stage: string; ratio: number | null; detail: string }): void {
+    this.transcriptStage = TRANSCRIPT_STAGE[progress.stage] ?? '';
+    this.transcriptDetail = progress.detail ?? '';
+    this.transcriptRatio = progress.ratio === null ? null : Math.min(1, Math.max(0, progress.ratio));
+    this.cdr.markForCheck();
+  }
+
+  /* ------------------------------------------------------ the files it writes */
+
+  get transcriptFormat() {
+    return this.subtitleFormats.find((entry) => entry.id === this.transcriptFormatId) ?? this.subtitleFormats[0];
+  }
+
+  get transcriptPreview(): string {
+    if (this.transcriptPreviewKey !== this.transcriptFormatId) {
+      this.transcriptPreviewText = this.transcriptCues.length
+        ? writeSubtitles(this.transcriptCues, this.transcriptFormatId)
+        : '';
+      this.transcriptPreviewKey = this.transcriptFormatId;
+    }
+    return this.transcriptPreviewText;
+  }
+
+  /** The recording's own name with a new extension, as the transcriber does it. */
+  get transcriptFileName(): string {
+    const source =
+      this.transcript?.scope === 'clip'
+        ? this.transcript.clip?.summary.fileName ?? 'clip'
+        : this.clips.filter(isMediaClip)[0]?.summary.fileName ?? 'timeline';
+    const stem = source.replace(/\.[^.]+$/, '') || 'transcript';
+    const suffix =
+      this.transcriptFormatId === 'txt-plain' ? '-text' : this.transcriptFormatId === 'txt-timed' ? '-transcript' : '';
+    return `${stem}${suffix}.${this.transcriptFormat.extension}`;
+  }
+
+  get transcriptWords(): number {
+    return wordCount(this.transcriptCues);
+  }
+
+  get transcriptCovered(): string {
+    return this.transcriptCues.length ? readableTime(this.transcriptCues[this.transcriptCues.length - 1].end) : '0:00';
+  }
+
+  get transcriptPercent(): string {
+    return this.transcriptRatio === null ? '' : `${Math.round(this.transcriptRatio * 100)}%`;
+  }
+
+  downloadTranscript(format: SubtitleFormat = this.transcriptFormatId): void {
+    if (!this.transcriptCues.length || typeof document === 'undefined') return;
+
+    this.transcriptFormatId = format;
+
+    // A BOM in front of the text. Without it Notepad and a few caption
+    // uploaders read a UTF-8 file as the local codepage, and every accented
+    // word in the transcript arrives broken.
+    const blob = new Blob(['﻿', this.transcriptPreview], {
+      type: `${this.transcriptFormat.mimeType};charset=utf-8`
+    });
+
+    this.revokeTranscript();
+    this.transcriptUrl = URL.createObjectURL(blob);
+
+    const anchor = document.createElement('a');
+    anchor.href = this.transcriptUrl;
+    anchor.download = this.transcriptFileName;
+    anchor.rel = 'noopener';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  }
+
+  async copyTranscript(): Promise<void> {
+    if (!this.transcriptCues.length || !isPlatformBrowser(this.platformId)) return;
+
+    try {
+      await navigator.clipboard.writeText(this.transcriptPreview);
+      this.transcriptMessage = 'Copied to the clipboard.';
+    } catch {
+      this.transcriptMessage = 'The browser refused clipboard access — select the text and copy it by hand.';
+    }
+    this.cdr.markForCheck();
+  }
+
+  private revokeTranscript(): void {
+    if (!this.transcriptUrl) return;
+    URL.revokeObjectURL(this.transcriptUrl);
+    this.transcriptUrl = null;
+  }
+
   // ----------------------------------------------------------- thumbnails
 
   /**
@@ -4449,7 +7657,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
             : 'project sound'
       );
     }
-    if (isMediaClip(clip) && clip.caption?.text.trim()) labels.push('caption');
+    if (isMediaClip(clip) && (clip.captions?.some((caption) => caption.text.trim()) || clip.caption?.text.trim())) labels.push('caption');
     if (isPlayable(clip) && clip.tag?.text.trim()) labels.push('tag');
 
     return labels;
@@ -4701,6 +7909,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       manualCuts: clip.manualCuts.map((range) => ({ ...range })),
       manualZooms: (clip.manualZooms ?? []).map((zoom) => ({ ...zoom, id: `zoom-${this.nextId++}` })),
       caption: clip.caption ? { ...clip.caption } : null,
+      captions: (clip.captions ?? []).map((caption) => ({ ...caption, id: `caption-${this.nextId++}` })),
       // Both halves keep the badge. A tag placed at three seconds of a take that
       // is now two clips lands wherever three seconds is in each of them, which
       // is the same answer the reader would get by splitting and looking.
@@ -5123,6 +8332,35 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   /**
+   * The desktop application's answer to a project that came back empty-handed.
+   *
+   * Reopening a remembered file may need permission, and permission may only be
+   * *asked for* while somebody is pressing something. In a browser tab that is
+   * the reader pressing the button below, and there is no way around it. In the
+   * application there is: it can call this page back with a real activation
+   * behind the call, and it answers the permission itself — so the window opens
+   * and the project is simply there, with every clip attached to its file and
+   * nothing asked of anybody.
+   *
+   * The function is put on `window` for the length of the attempt and taken off
+   * again, because it is a door and a door is left open for as long as it is
+   * being walked through and no longer.
+   */
+  private async reconnectThroughApp(): Promise<void> {
+    if (!this.desktop.isDesktop || !this.hasAwaitingFiles || typeof window === 'undefined') return;
+
+    const carrier = window as unknown as { __sveReconnectFiles?: () => Promise<void> };
+    carrier.__sveReconnectFiles = () => this.zone.run(() => this.reconnectFiles());
+
+    try {
+      await this.desktop.reconnectFiles();
+    } finally {
+      delete carrier.__sveReconnectFiles;
+      this.cdr.markForCheck();
+    }
+  }
+
+  /**
    * The same thing, with the reader's press behind it so permission may be asked.
    *
    * One button, one prompt, every waiting file — rather than a file dialog the
@@ -5280,6 +8518,49 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       }
     }
 
+    // The board comes and goes with the view toggle, and a stage built afresh
+    // carries no camera. Fitting needs the frame to have a size, which is true
+    // for the first time here and not a moment earlier.
+    if (this.boardAjustePendente && this.boardPalco && this.boardFluxo) {
+      const rect = this.boardFluxo.nativeElement.getBoundingClientRect();
+      if (rect.width && rect.height) {
+        this.boardAjustePendente = false;
+        this.boardPendente = false;
+        this.ajustarBoard();
+      }
+    } else if (this.boardPendente && this.boardPalco) {
+      this.boardPendente = false;
+      this.aplicarCameraBoard();
+    } else if (this.modoBoard) {
+      // Rebuilt without the flags — a dialog closing, say. The camera lives on
+      // the element, so a new element starts blank and has to be told again.
+      const palco = this.boardPalco?.nativeElement;
+      if (palco && !palco.style.transform) this.aplicarCameraBoard();
+    }
+
+    // The monitor comes and goes with the maximised board and with the preview,
+    // so both are checked rather than flagged: the reads are property lookups,
+    // and each stops as soon as it has what it wants.
+    if (this.boardMaximizado) {
+      // The panel is built fresh every time the board is maximised, and its size
+      // and position live on the element rather than in bindings — so a panel
+      // without a width on it is a new one, and has to be told.
+      const painel = this.boardMonitor?.nativeElement;
+      if (painel && !painel.style.width) this.aplicarMonitor();
+      else this.ajustarTelaMonitor();
+    }
+
+    if (this.boardMonitorAtivo) this.iniciarEspelhoBoard();
+    else this.pararEspelhoBoard();
+
+    // Cheap enough to ask every time, and asking here is what saves every place
+    // that starts, stops or seeks the preview from having to remember to.
+    this.sincronizarGiroBoard();
+
+    // The note a moment ago asked for the caret; this is the first view check in
+    // which the box it goes into is on the page.
+    if (this.boardRotuloFoco) this.focarRotuloBoard();
+
     if (!this.logDirty) return;
     this.logDirty = false;
 
@@ -5350,6 +8631,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    */
   private snapshot(): EditorSnapshot {
     return {
+      board: this.snapshotBoard(),
       clips: this.clips.map((clip) => this.snapshotClip(clip)),
       project: {
         ...this.project,
@@ -5374,6 +8656,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         manualCuts: clip.manualCuts.map((range) => ({ ...range })),
         manualZooms: (clip.manualZooms ?? []).map((zoom) => ({ ...zoom })),
         caption: clip.caption ? { ...clip.caption } : null,
+        captions: (clip.captions ?? []).map((caption) => ({ ...caption })),
         tag: clip.tag ? { ...clip.tag } : null,
         replacementAudio: clip.replacementAudio ? { ...clip.replacementAudio } : null,
         // Not carried across. A removed clip has its preview URL revoked, and a
@@ -5443,6 +8726,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    */
   private signature(snapshot: EditorSnapshot): string {
     return JSON.stringify({
+      board: snapshot.board,
       project: snapshot.project,
       clips: snapshot.clips.map((clip) => {
         if (isTransitionClip(clip)) return [clip.id, clip.settings];
@@ -5459,6 +8743,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
             clip.inPoint ?? null,
             clip.outPoint ?? null,
             clip.caption,
+            clip.captions ?? [],
             clip.tag ?? null,
             clip.replacementAudio?.summary.fileName ?? null
           ];
@@ -5511,6 +8796,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     try {
       this.closeAllDialogs();
+      this.aplicarLayoutBoard(snapshot.board);
       this.clips = snapshot.clips.map((clip) => this.snapshotClip(clip));
       this.project = { ...snapshot.project, edits: cloneEdits(snapshot.project.edits) };
 

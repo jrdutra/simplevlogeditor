@@ -313,7 +313,8 @@
         [mode]="strategy?.waveformMode ?? 'canvas2d'"
         (seek)="seekTo($event)"
         (rangeAdd)="addCutRange($event)"
-        (rangeRemove)="removeCutRange($event)"></app-silence-waveform>
+        (rangeRemove)="removeCutRange($event)"
+        (rangeResize)="resizeCutRange($event)"></app-silence-waveform>
 
       @if (previewUrl; as source) {
         <div class="player">

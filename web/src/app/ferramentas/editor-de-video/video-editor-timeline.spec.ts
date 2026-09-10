@@ -376,6 +376,26 @@ describe('buildProjectPlan', () => {
     expect(plan.zooms).toEqual([]);
   });
 
+  it('places several timed captions and truncates the last one at the end of its clip', () => {
+    const style = { fontScale: 0.045, bottomMargin: 0.06, fadeIn: true, fadeOut: true, fadeSeconds: 0.5 };
+    const clip = mediaClip('a', 10, {
+      captions: [
+        { ...style, id: 'one', text: 'First', startSeconds: 1, durationSeconds: 2 },
+        { ...style, id: 'two', text: 'Second', startSeconds: 3, durationSeconds: 20 }
+      ]
+    });
+
+    const plan = buildProjectPlan([clip], project(), 'video');
+
+    expect(plan.captions.map(({ start, end, caption }) => [start, end, caption.text])).toEqual([
+      [1, 3, 'First'],
+      [3, 10, 'Second']
+    ]);
+    expect(captionAt(plan.captions, 2)?.caption.text).toBe('First');
+    expect(captionAt(plan.captions, 3)?.caption.text).toBe('Second');
+    expect(captionAt(plan.captions, 10)).toBeNull();
+  });
+
   it('reports the clips that would play over black or over silence', () => {
     const silent = mediaClip('s', 5);
     silent.summary.audioUsable = false;

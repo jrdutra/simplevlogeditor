@@ -114,7 +114,15 @@
   font: inherit;
   font-size: 0.92rem;
   font-weight: 500;
-  line-height: 1;
+  /*
+   * Not `1`. A line box exactly as tall as the type is a box with no leading in
+   * it, and a font's ascent and descent are not the same size — so the glyphs
+   * inside sit above the middle of it, and the words on these three buttons
+   * rode a pixel or two high against the icons beside them. A normal line
+   * height puts the same amount of space above and below, which is what makes
+   * centring the box centre the writing.
+   */
+  line-height: 1.2;
   cursor: pointer;
   transition: color 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
 }
@@ -132,7 +140,9 @@
 }
 
 .chrome-btn__label {
-  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  line-height: 1.2;
 }
 
 /* The Help button's mark: a lit disc, so the pair is not two identical slabs. */

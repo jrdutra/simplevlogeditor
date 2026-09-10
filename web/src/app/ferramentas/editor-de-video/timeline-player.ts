@@ -90,6 +90,15 @@ export class TimelinePlayer {
   private audioMounted = -1;
   /** True while the audio source is changing; the clock waits with the picture. */
   private audioMounting = false;
+  /** The actual warm-up operations, so Play can wait for frame and sound. */
+  private mountTask: Promise<void> | null = null;
+  private audioMountTask: Promise<void> | null = null;
+
+  /**
+   * A silence cut is one coordinated seek, never two decoders independently
+   * chasing a clock that kept moving while they were looking for a keyframe.
+   */
+  private cutSyncing = false;
 
   /** Which clip the second decoder is set up for, for the join ahead. */
   private incoming = -1;
@@ -126,6 +135,15 @@ export class TimelinePlayer {
   private scratch: OffscreenCanvas | HTMLCanvasElement | null = null;
   /** A second one, for the incoming side of a join. See `scratchCanvas`. */
   private scratchIncoming: OffscreenCanvas | HTMLCanvasElement | null = null;
+
+  /**
+   * The media element's `volume` stops at 1, while the editor intentionally
+   * offers up to 200%. Web Audio supplies the same linear gain the renderer
+   * applies to samples, so the preview does not silently flatten every value
+   * above 100%.
+   */
+  private audioContext: AudioContext | null = null;
+  private audioGain: GainNode | null = null;
 
   constructor(
     private readonly elements: PlayerElements,
@@ -249,7 +267,24 @@ export class TimelinePlayer {
     if (!this.plan || this.running) return;
     if (this.time >= this.plan.totalDuration - 1e-3) this.time = 0;
 
+    this.ensureAudioGain();
+    await this.audioContext?.resume().catch(() => undefined);
+
+    // `setPlan` draws immediately and therefore often starts both mounts just
+    // before the reader presses Play. Starting the wall clock while those
+    // seeks are still in flight makes the decoder chase a moving target: audio
+    // runs cleanly, while the picture is repeatedly re-seeked and appears as
+    // skipped frames. Warm the exact instant first, then start one clock.
+    this.draw();
+    await Promise.all([this.mountTask, this.audioMountTask]);
+    if (!this.plan) return;
+
     this.running = true;
+    // `play()` resolves only when the browser has actually started the media.
+    // Starting the project clock before that promise settles is especially
+    // visible at time zero, where neither decoder has any buffered runway yet.
+    await this.startMountedMedia();
+    if (!this.running || !this.plan) return;
     this.lastNow = performance.now();
     this.loop();
   }
@@ -314,6 +349,9 @@ export class TimelinePlayer {
     this.elements.audio.removeAttribute('src');
     this.elements.audio.load();
     this.audioMounted = -1;
+    void this.audioContext?.close().catch(() => undefined);
+    this.audioContext = null;
+    this.audioGain = null;
 
     for (const url of this.urls.values()) URL.revokeObjectURL(url);
     this.urls.clear();
@@ -333,7 +371,7 @@ export class TimelinePlayer {
 
     // While a source is loading the clock holds still. Letting it run would
     // silently skip whatever the decoder was not ready to show.
-    if (!this.mounting && !this.audioMounting) this.time += elapsed;
+    if (!this.mounting && !this.audioMounting && !this.cutSyncing) this.time += elapsed;
 
     if (this.time >= this.plan.totalDuration) {
       this.time = this.plan.totalDuration;
@@ -367,9 +405,11 @@ export class TimelinePlayer {
 
     if (index !== this.mounted && !this.mounting) {
       this.mounting = true;
-      void this.mount(index).finally(() => {
+      const task = this.mount(index).finally(() => {
+        if (this.mountTask === task) this.mountTask = null;
         this.mounting = false;
       });
+      this.mountTask = task;
     }
 
     if (this.mounted === index) this.follow(entry);
@@ -377,11 +417,13 @@ export class TimelinePlayer {
     if (soundIndex !== this.audioMounted && !this.audioMounting) {
       this.elements.audio.pause();
       this.audioMounting = true;
-      void this.mountAudio(soundIndex).finally(() => {
+      const task = this.mountAudio(soundIndex).finally(() => {
+        if (this.audioMountTask === task) this.audioMountTask = null;
         this.audioMounting = false;
       });
+      this.audioMountTask = task;
     }
-    if (this.audioMounted === soundIndex) this.followAudio(soundEntry);
+    if (this.audioMounted === soundIndex && !this.cutSyncing) this.followAudio(soundEntry);
 
     // The join happening now, or the one close enough that its incoming shot
     // should already be loading. Loading it late is what makes a transition open
@@ -456,10 +498,6 @@ export class TimelinePlayer {
     // sound has not, and taking this from the visible clip would apply the
     // arriving clip's setting to the outgoing clip's sound.
     const heard = plan.clips[this.audioMounted] ?? plan.clips[this.mounted];
-    // A media element cannot be turned up past its own level, so a clip pushed
-    // beyond a hundred per cent is as loud as the preview can make it and the
-    // export is where the rest of it arrives. Clamping quietly is better than
-    // refusing the setting: the reader still hears the direction of the change.
     const own = heard ? volumeGain(heard.edits) : 1;
 
     const { video, audio } = this.elements;
@@ -468,8 +506,36 @@ export class TimelinePlayer {
     const wanted = Math.max(0, Math.min(1, clipGain * own));
     if (Math.abs(video.volume - wanted) > 0.001) video.volume = wanted;
 
-    const track = Math.max(0, Math.min(1, clipGain * trackGain * own));
-    if (Math.abs(audio.volume - track) > 0.001) audio.volume = track;
+    const track = Math.max(0, clipGain * trackGain * own);
+    if (this.audioGain) {
+      if (Math.abs(this.audioGain.gain.value - track) > 0.001) this.audioGain.gain.value = track;
+      if (audio.volume !== 1) audio.volume = 1;
+    } else {
+      // Fallback for a browser without Web Audio. Values through 100% remain
+      // exact; amplification above that is the only unavailable operation.
+      const fallback = Math.min(1, track);
+      if (Math.abs(audio.volume - fallback) > 0.001) audio.volume = fallback;
+    }
+  }
+
+  /** Connects the one soundtrack element to an unclamped gain stage once. */
+  private ensureAudioGain(): void {
+    if (this.audioContext) return;
+    const AudioContextCtor = globalThis.AudioContext;
+    if (!AudioContextCtor) return;
+
+    try {
+      const context = new AudioContextCtor();
+      const source = context.createMediaElementSource(this.elements.audio);
+      const gain = context.createGain();
+      source.connect(gain);
+      gain.connect(context.destination);
+      this.audioContext = context;
+      this.audioGain = gain;
+    } catch {
+      // The element remains directly audible; `applyGain` uses its native
+      // volume control as the conservative fallback.
+    }
   }
 
   /** Keeps the decoder on the position the clock says it should be at. */
@@ -483,10 +549,80 @@ export class TimelinePlayer {
 
     // A new kept range means a cut: the decoder is sent to the far side of it
     // rather than being allowed to play through what was removed.
-    if (rangeIndex !== this.mountedRange || Math.abs(video.currentTime - sourceTime) > DRIFT_SECONDS) {
-      this.mountedRange = rangeIndex;
+    if (rangeIndex !== this.mountedRange) {
+      this.beginCutSync(entry, rangeIndex, sourceTime);
+      return;
+    }
+
+    if (!video.seeking && Math.abs(video.currentTime - sourceTime) > DRIFT_SECONDS) {
       video.currentTime = sourceTime;
     }
+    if (this.running && !this.cutSyncing && video.paused) void video.play().catch(() => undefined);
+  }
+
+  /**
+   * Moves picture and original sound across one removed range as a unit.
+   *
+   * A supplied soundtrack is paused but not sought: it follows output time and
+   * therefore has no hole to jump. Original sound follows source time, so it is
+   * sought to the same surviving frame as the picture. The project clock waits
+   * for both and resumes only after both decoders report a usable instant.
+   */
+  private beginCutSync(entry: ClipPlan, rangeIndex: number, sourceTime: number): void {
+    if (this.cutSyncing || !this.running) return;
+
+    const plan = this.plan;
+    if (!plan) return;
+
+    const video = this.elements.video;
+    const audio = this.elements.audio;
+    this.cutSyncing = true;
+    video.pause();
+    audio.pause();
+
+    video.currentTime = Math.max(0, sourceTime);
+    const waits: Promise<void>[] = [this.seekSettled(video)];
+
+    const heard = plan.clips[this.audioMounted];
+    if (heard?.sound.kind === 'original') {
+      const target = this.audioTarget(heard);
+      if (target) {
+        audio.currentTime = Math.max(0, target.time);
+        waits.push(this.seekSettled(audio));
+      }
+    }
+
+    void Promise.all(waits).then(() => {
+      // A seek or settings change may have replaced the plan while these media
+      // operations were in flight. Such an old completion owns no player state.
+      if (this.plan !== plan || this.mounted < 0) {
+        this.cutSyncing = false;
+        return;
+      }
+
+      this.mountedRange = rangeIndex;
+      this.cutSyncing = false;
+      this.lastNow = performance.now();
+      if (this.running) void this.startMountedMedia();
+    });
+  }
+
+  /** Starts only the media already prepared for the current timeline instant. */
+  private async startMountedMedia(): Promise<void> {
+    const plan = this.plan;
+    if (!plan) return;
+    const starts: Promise<void>[] = [];
+
+    const picture = plan.clips[this.mounted];
+    if (picture && isMediaClip(picture.clip) && picture.clip.summary.kind !== 'image') {
+      starts.push(this.elements.video.play().catch(() => undefined));
+    }
+
+    if (this.audioMounted >= 0 && this.audioTarget(plan.clips[this.audioMounted])) {
+      starts.push(this.elements.audio.play().catch(() => undefined));
+    }
+
+    await Promise.all(starts);
   }
 
   /** What to draw underneath the zoom, the caption and the fade. */
@@ -567,6 +703,8 @@ export class TimelinePlayer {
       const { rangeIndex, sourceTime } = sourceTimeAt(entry, this.time);
       this.mountedRange = rangeIndex;
       video.currentTime = sourceTime;
+      await this.seekSettled(video);
+      if (this.plan !== plan) return;
       if (this.running) await video.play().catch(() => undefined);
     } else {
       video.pause();
@@ -607,6 +745,8 @@ export class TimelinePlayer {
 
     audio.playbackRate = target.rate;
     audio.currentTime = Math.max(0, target.time);
+    await this.seekSettled(audio);
+    if (this.plan !== plan) return;
     this.audioMounted = index;
     this.lastNow = performance.now();
     if (this.running) await audio.play().catch(() => undefined);
@@ -622,10 +762,10 @@ export class TimelinePlayer {
     }
 
     if (audio.playbackRate !== target.rate) audio.playbackRate = target.rate;
-    if (Number.isFinite(audio.duration) && Math.abs(audio.currentTime - target.time) > DRIFT_SECONDS) {
+    if (!audio.seeking && Number.isFinite(audio.duration) && Math.abs(audio.currentTime - target.time) > DRIFT_SECONDS) {
       audio.currentTime = Math.max(0, target.time);
     }
-    if (this.running && audio.paused) void audio.play().catch(() => undefined);
+    if (this.running && !this.cutSyncing && audio.paused) void audio.play().catch(() => undefined);
   }
 
   private audioTarget(entry: ClipPlan): { file: File; time: number; rate: number } | null {
@@ -725,6 +865,40 @@ export class TimelinePlayer {
       const timer = setTimeout(finish, MOUNT_TIMEOUT);
       element.addEventListener('loadeddata', finish);
       element.addEventListener('error', finish);
+    });
+  }
+
+  /** Waits for an assigned media time to become a drawable/playable instant. */
+  private seekSettled(element: HTMLMediaElement): Promise<void> {
+    // HAVE_CURRENT_DATA (2) only promises the frame under the playhead. At the
+    // start of a file that produced a perfect still followed by immediate
+    // starvation; HAVE_FUTURE_DATA (3) is the first state that promises enough
+    // decoded runway to advance. Later seeks normally reach it immediately
+    // because the decoder and file cache are already warm.
+    if (!element.seeking && element.readyState >= 3) return Promise.resolve();
+
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (force = false) => {
+        if (done) return;
+        if (!force && (element.seeking || element.readyState < 3)) return;
+        done = true;
+        clearTimeout(timer);
+        element.removeEventListener('seeked', ready);
+        element.removeEventListener('canplay', ready);
+        element.removeEventListener('progress', ready);
+        element.removeEventListener('error', failed);
+        resolve();
+      };
+
+      const ready = () => finish(false);
+      const failed = () => finish(true);
+
+      const timer = setTimeout(() => finish(true), MOUNT_TIMEOUT);
+      element.addEventListener('seeked', ready);
+      element.addEventListener('canplay', ready);
+      element.addEventListener('progress', ready);
+      element.addEventListener('error', failed);
     });
   }
 

@@ -36,17 +36,47 @@
   background: rgba(20, 19, 28, 0.35);
 }
 
+/*
+ * The bezel the picture sits in.
+ *
+ * It used to be nothing at all — a box that centred a canvas — and the only
+ * edge anyone could see was the canvas's own hairline, which the frame then
+ * clipped along the top and the bottom: the canvas was allowed to be as tall as
+ * the frame and its border sat outside that, so two of its four sides fell
+ * outside the box and were cut away. A border visible on the left and right and
+ * nowhere else is what that looks like.
+ *
+ * So the frame becomes a real one: the same graphite chassis the dialogs and
+ * the project's settings card are drawn in, with the picture inset into it and
+ * room around the picture for its own edge to be seen on all four sides.
+ */
 .preview-frame {
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
   min-width: 0;
   height: clamp(220px, 29vw, 400px);
+  padding: 12px;
+  border: 1px solid #15131d;
+  border-radius: 1.1em;
+  background: linear-gradient(120deg, #202029, #272631);
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.095),
+    inset 1px 0 0 rgba(255, 255, 255, 0.035),
+    inset -1px 0 0 rgba(0, 0, 0, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.42),
+    0 1px 0 rgba(107, 97, 120, 0.45),
+    0 12px 28px rgba(0, 0, 0, 0.52);
 }
 
 /* Sized from the canvas's own pixels, so the frame can never be distorted by
    the layout; the chequerboard is what shows through a transparent background. */
 .preview {
+  /* The hairline counts towards the height the frame allows it, or the top and
+     bottom of it are drawn outside the box and clipped away. */
+  box-sizing: border-box;
   display: block;
   width: auto;
   height: auto;
@@ -54,8 +84,8 @@
   max-height: 100%;
   margin: 0 auto;
   border: 1px solid var(--line-soft);
-  border-radius: 0.9em;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+  border-radius: 0.65em;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
   background:
     linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.06) 75%),
     linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25% 75%, rgba(255, 255, 255, 0.06) 75%),

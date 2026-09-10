@@ -15,6 +15,8 @@ interface DesktopBridge {
   close(): void;
   getState(): Promise<DesktopWindowState>;
   onState(listener: (state: DesktopWindowState) => void): () => void;
+  /** Added after the first release; absent in a window built before it. */
+  reconnectFiles?(): Promise<boolean>;
 }
 
 declare global {
@@ -67,6 +69,28 @@ export class DesktopService {
     this.maximized.set(state.maximized);
     this.fullScreen.set(state.fullScreen);
     this.focused.set(state.focused);
+  }
+
+  /**
+   * Asks the application to call the page back with a gesture behind the call.
+   *
+   * The editor can reopen the files a restored project is waiting for — it kept
+   * a durable reference to each of them — but asking for permission to read a
+   * file is only allowed while somebody is pressing something, and a window
+   * that has just opened by itself has nobody pressing anything. The
+   * application has no such restriction, so it runs the page's own reconnect
+   * inside a real activation and the project comes back with nothing said.
+   *
+   * False in a browser tab, and in a desktop build older than this, where the
+   * reader presses the button as they always did.
+   */
+  async reconnectFiles(): Promise<boolean> {
+    if (!this.bridge?.reconnectFiles) return false;
+    try {
+      return await this.bridge.reconnectFiles();
+    } catch {
+      return false;
+    }
   }
 
   minimize(): void {

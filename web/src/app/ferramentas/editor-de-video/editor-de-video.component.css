@@ -264,13 +264,24 @@
 
 .lista-cabecalho {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 1rem;
 }
 
 .lista-info {
   font-size: 0.82rem;
   color: var(--text-muted);
+}
+
+.lista-acoes {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .lista-clipes {
@@ -513,9 +524,24 @@
 
 .btn-preview:hover { background: rgba(209, 96, 255, 0.1) !important; }
 
+/*
+ * Material lays an icon button out with a touch target and a line box rather
+ * than by centring anything, and the glyph ends up a pixel or two down and to
+ * the left of the middle of its own button. It is invisible on a bare icon and
+ * obvious the moment the button has an edge — which this one does, on the board
+ * — so the row is centred explicitly, exactly as the play button beside it is.
+ */
 .btn-remover {
   flex-shrink: 0;
+  display: inline-grid !important;
+  place-items: center;
+  padding: 0 !important;
   color: var(--text-muted) !important;
+}
+
+.btn-remover mat-icon {
+  display: block;
+  margin: 0 !important;
 }
 
 .btn-remover:hover { color: #f44336 !important; }
@@ -691,6 +717,42 @@
   background: rgba(43, 42, 55, 0.55);
 }
 
+/*
+ * Rendering is modal because every editable control behind it is deliberately
+ * disabled for the lifetime of the encoder. The panel is portalled to body,
+ * like the editor's dialogs, so it sits above the site header and any board
+ * stacking context instead of remaining at the bottom of the tool.
+ */
+.render-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 4100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(10, 9, 16, 0.78);
+  backdrop-filter: blur(4px);
+}
+
+.render-modal {
+  width: min(1080px, 100%);
+  max-height: calc(100vh - 48px);
+  max-height: calc(100dvh - 48px);
+  padding: 18px;
+  gap: 12px;
+  background: var(--panel-dark, #071426);
+  border-color: rgba(209, 96, 255, 0.34);
+  border-radius: 14px;
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.62), 0 0 36px rgba(182, 37, 255, 0.12);
+  overflow: hidden;
+}
+
+.render-modal .registro-console {
+  height: min(42vh, 25rem);
+  min-height: 12rem;
+}
+
 .progresso-topo {
   display: flex;
   align-items: center;
@@ -704,6 +766,14 @@
 .progresso-item {
   color: var(--text-muted);
   font-size: 0.8rem;
+}
+
+@media (max-width: 640px) {
+  .render-fundo { padding: 10px 6px; }
+  .render-modal { max-height: calc(100dvh - 20px); padding: 12px; }
+  .render-modal .progresso-topo { align-items: flex-start; flex-direction: column; }
+  .render-modal .progresso-acoes { align-self: flex-end; }
+  .render-modal .registro-console { height: 48vh; min-height: 9rem; }
 }
 
 /* --------------------------------------------------------------- messages */
@@ -882,9 +952,10 @@
 .projeto {
   margin: 18px 0 6px;
   padding: 16px 18px;
-  border: 1px solid var(--line-soft);
-  border-radius: 12px;
-  background: var(--panel-dark);
+  border: 1px solid #15131d;
+  border-radius: 14px;
+  background: linear-gradient(120deg, #202029, #272631);
+  box-shadow: inset 0 2px 5px #0006, 0 1px 0 #ffffff18;
 }
 
 .disclosure {
@@ -1163,11 +1234,54 @@
      difference, and a dialog measured against the larger viewport loses its
      footer off the bottom of the screen. */
   max-height: calc(100dvh - 48px);
-  border: 1px solid var(--line-soft);
+  /*
+   * The graphite chassis, as the project's settings card and the clip editor
+   * already wear it.
+   *
+   * Every layer does a different job and the order is the object: the diagonal
+   * gradient gives the face a light source; the four inset lines are its edges
+   * catching that light along the top and left and losing it down the right and
+   * bottom, which is what makes a rectangle read as a slab rather than as a
+   * hole; the pale line underneath is the lip it stands on; and the two long
+   * shadows lift the whole thing off the blurred page behind it.
+   */
+  border: 1px solid #15131d;
   border-radius: 14px;
-  background: var(--panel-dark, #071426);
-  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+  background: linear-gradient(120deg, #202029, #272631);
+  box-shadow:
+    inset 0 2px 5px rgba(0, 0, 0, 0.4),
+    inset 0 1px 0 rgba(255, 255, 255, 0.095),
+    inset 1px 0 0 rgba(255, 255, 255, 0.035),
+    inset -1px 0 0 rgba(0, 0, 0, 0.28),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.42),
+    0 1px 0 rgba(107, 97, 120, 0.45),
+    0 12px 28px rgba(0, 0, 0, 0.52),
+    0 32px 72px rgba(0, 0, 0, 0.42);
   overflow: hidden;
+}
+
+/*
+ * The clip editor is that chassis with a light on it.
+ *
+ * Everything structural now comes from `.dialogo`, which every dialog in this
+ * tool shares; what is left here is the one thing that is this dialog's own —
+ * a faint purple thrown across the top left corner, because this is the dialog
+ * that belongs to a single clip and the colour is how it says so.
+ */
+.dialogo-configuracoes-clipe {
+  background:
+    radial-gradient(circle at 18% 0%, rgba(209, 96, 255, 0.055), transparent 34%),
+    linear-gradient(120deg, #202029, #272631);
+}
+
+.dialogo-configuracoes-clipe .dialogo-topo {
+  background: linear-gradient(180deg, rgba(55, 52, 66, 0.48), rgba(35, 33, 44, 0.18));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.dialogo-configuracoes-clipe .dialogo-rodape {
+  background: linear-gradient(180deg, rgba(20, 18, 27, 0.12), rgba(15, 14, 21, 0.32));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
 }
 
 .dialogo-topo,
@@ -1242,14 +1356,25 @@
   border-radius: 6px;
 }
 
+/*
+ * Sunk into the dialog's face, by the same parts one step shallower.
+ *
+ * A panel inside a panel given the container's own depth would read as a second
+ * dialog lying on the first, so this keeps the top-edge shadow and the lip and
+ * drops everything that lifts.
+ */
 .secao {
   display: flex;
   flex-direction: column;
   gap: 12px;
   padding: 16px;
-  border: 1px solid var(--line-soft);
+  border: 1px solid #15131d;
   border-radius: 12px;
-  background: rgba(20, 19, 28, 0.4);
+  background: linear-gradient(120deg, #1b1b23, #21202a);
+  box-shadow:
+    inset 0 2px 4px rgba(0, 0, 0, 0.35),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.3),
+    0 1px 0 rgba(255, 255, 255, 0.055);
 }
 
 .secao h3 {
@@ -1571,7 +1696,131 @@
 
 /* ------------------------------------------------------ the sound chooser */
 
+.playback-audio {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.playback-audio .ajuda { margin: 0; }
+
+.cuts-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 4px;
+}
+
+.cuts-editor .ajuda { margin: 0; }
+
+/* Purple identifies actions that open or change configuration, matching the
+   editor's accent instead of looking like a passive secondary control. MDC
+   reads its colours from variables, so set those as well as the native border
+   and text colour for both stroked and plain Material buttons. */
+.playback-audio .linha-som button {
+  --mdc-outlined-button-label-text-color: #dda0f5;
+  --mdc-outlined-button-outline-color: rgba(204, 111, 239, 0.62);
+  --mdc-text-button-label-text-color: #dda0f5;
+  color: #dda0f5;
+  border-color: rgba(204, 111, 239, 0.62);
+  background: rgba(182, 37, 255, 0.08);
+}
+
+.playback-audio .linha-som button:hover:not(:disabled) {
+  --mdc-outlined-button-outline-color: #d77cf5;
+  color: #f0c8ff;
+  border-color: #d77cf5;
+  background: rgba(182, 37, 255, 0.18);
+  box-shadow: 0 0 14px rgba(182, 37, 255, 0.12);
+}
+
 .dialogo-estreito { width: min(560px, 100%); }
+
+/* The pause-timing dialog says its two options in full sentences, and the first
+   of them counts the clips, so its longest line grows with the project. At the
+   narrow width that line broke in two; this width holds it on one, and still
+   leaves the dialog narrower than the editors beside it. */
+.dialogo-silencio { width: min(680px, 100%); }
+
+/* ------------------------------------------------------------- transcript */
+
+/*
+ * Wider than the narrow dialogs and narrower than the clip editor: it holds two
+ * columns of settings and a preview of a subtitle file, and a subtitle line is
+ * forty-two characters by convention — a panel that wraps them would be showing
+ * the reader a shape the file does not have.
+ */
+.dialogo-transcricao { width: min(760px, 100%); }
+
+/* The export button that writes no video. Stroked rather than raised, because
+   it is not the thing most readers came to this row for. */
+.btn-transcricao { flex: 0 0 auto; }
+
+.formatos {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.formato {
+  display: grid;
+  grid-template-columns: minmax(190px, auto) 1fr;
+  align-items: center;
+  gap: 4px 14px;
+}
+
+/* One column on a phone: the note under its button reads as a caption, where
+   beside it at that width it would be two words per line. */
+@media (max-width: 620px) {
+  .formato { grid-template-columns: 1fr; }
+}
+
+.formato button { justify-self: start; width: 100%; }
+.formato .btn-conteudo { justify-content: flex-start; width: 100%; }
+
+.formato-ext {
+  font-style: normal;
+  color: var(--text-muted);
+  font-size: 0.8em;
+}
+
+/*
+ * The file itself, as it will be written.
+ *
+ * Monospaced and scrolling in both directions on purpose: a caption file is
+ * read by its shape — the numbers, the arrow, the blank line between cues — and
+ * soft-wrapping it would hide exactly the thing somebody opens a preview to
+ * check.
+ */
+.transcricao-previa {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 260px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(8, 8, 14, 0.55);
+  color: var(--text-main);
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* The clip dialog's footer gained a second button, and the two mean different
+   things: one hands something over, the other puts the dialog away. */
+.dialogo-rodape-clipe {
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
 
 .escolhas {
   display: flex;
@@ -1924,3 +2173,26 @@ ul.reconectar-nomes li {
      and a margin below would hang the box past the row it is levelled with. */
   .container:has(> .previa:not(.previa-cheia)) > .projeto { margin: 0; }
 }
+
+/*
+ * The sound row projected into the Playback group.
+ *
+ * It is written here rather than in the panel because that is where it belongs:
+ * projected content keeps the encapsulation of the component that wrote it, so
+ * a rule inside `clip-edits-panel` would never match these elements however
+ * right the selector looked.
+ *
+ * A rule above it, and nothing else. The fields in that group are a row of
+ * three; this is the file one of them will play, which is the same subject a
+ * step further on rather than a fourth field.
+ */
+.som-do-clipe {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 4px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.som-do-clipe .linha-som { margin-top: 0; }
