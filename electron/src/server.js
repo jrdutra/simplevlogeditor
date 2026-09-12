@@ -20,6 +20,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const fsp = require('node:fs/promises');
 const path = require('node:path');
+const { randomBytes } = require('node:crypto');
 const { pipeline } = require('node:stream/promises');
 
 const TYPES = new Map(Object.entries({
@@ -118,6 +119,8 @@ async function send(res, file, stat, status = 200) {
 function startServer(rootDir) {
   const root = path.resolve(rootDir);
   const shell = path.join(root, 'index.html');
+  const media = new Map();
+  const mediaPrefix = `/__sve_media_${randomBytes(16).toString('hex')}/`;
 
   const server = http.createServer((req, res) => {
     isolate(res);
@@ -130,6 +133,21 @@ function startServer(rootDir) {
     }
 
     const urlPath = (req.url ?? '/').split('?')[0].split('#')[0];
+
+    if (urlPath.startsWith(mediaPrefix)) {
+      const id = urlPath.slice(mediaPrefix.length).split('/')[0];
+      const entry = media.get(id);
+      if (!entry) {
+        res.statusCode = 404;
+        res.end('Not Found');
+        return;
+      }
+      sendMedia(req, res, entry).catch(() => {
+        if (res.headersSent) res.destroy();
+        else { res.statusCode = 500; res.end('Internal Server Error'); }
+      });
+      return;
+    }
 
     resolve(root, urlPath)
       .then(async (found) => {
@@ -168,10 +186,47 @@ function startServer(rootDir) {
       const address = server.address();
       resolveStart({
         origin: `http://127.0.0.1:${address.port}`,
+        registerMedia(file, stat, type) {
+          const id = randomBytes(18).toString('base64url');
+          media.set(id, { file, stat, type });
+          return `http://127.0.0.1:${address.port}${mediaPrefix}${id}/${encodeURIComponent(path.basename(file))}`;
+        },
+        releaseMedia(url) {
+          try {
+            const pathname = new URL(url).pathname;
+            if (pathname.startsWith(mediaPrefix)) media.delete(pathname.slice(mediaPrefix.length).split('/')[0]);
+          } catch {}
+        },
         close: () => new Promise((done) => server.close(() => done()))
       });
     });
   });
+}
+
+async function sendMedia(req, res, entry) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  const size = entry.stat.size;
+  const rawRange = req.headers.range;
+  let start = 0;
+  let end = Math.max(0, size - 1);
+  if (rawRange) {
+    const match = /^bytes=(\d*)-(\d*)$/.exec(rawRange);
+    if (!match) { res.statusCode = 416; res.setHeader('Content-Range', `bytes */${size}`); res.end(); return; }
+    if (match[1]) start = Number(match[1]);
+    if (match[2]) end = Number(match[2]);
+    if (!match[1] && match[2]) { start = Math.max(0, size - Number(match[2])); end = size - 1; }
+    if (start > end || start >= size) { res.statusCode = 416; res.setHeader('Content-Range', `bytes */${size}`); res.end(); return; }
+    end = Math.min(end, size - 1);
+    res.statusCode = 206;
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${size}`);
+  } else res.statusCode = 200;
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', entry.type || TYPES.get(path.extname(entry.file).toLowerCase()) || 'application/octet-stream');
+  res.setHeader('Content-Length', Math.max(0, end - start + 1));
+  res.setHeader('Cache-Control', 'no-store');
+  if (req.method === 'HEAD' || size === 0) { res.end(); return; }
+  await pipeline(fs.createReadStream(entry.file, { start, end }), res);
 }
 
 module.exports = { startServer };

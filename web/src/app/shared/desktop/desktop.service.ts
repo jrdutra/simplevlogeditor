@@ -1,10 +1,40 @@
-import { DestroyRef, Injectable, inject, signal } from '@angular/core';
+import { DestroyRef, Injectable, NgZone, inject, signal } from '@angular/core';
+import { DesktopFileDescriptor, PathBackedFile } from './path-backed-file';
 
 /** What the window is doing, as the main process sees it. */
 export interface DesktopWindowState {
   maximized: boolean;
   fullScreen: boolean;
   focused: boolean;
+}
+
+export interface AgentControlState {
+  active: boolean;
+  visible?: boolean;
+  connectionStatus?: 'idle' | 'connected' | 'disconnected' | 'reconnecting';
+  controller: 'codex' | 'chatgpt' | 'mcp';
+  controllers: string[];
+  sessionId?: string;
+  lastConnectionAt?: string | null;
+  recoveryPath?: string | null;
+}
+
+export interface AgentSystemEvent {
+  timestamp: string;
+  level: 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+  module: string;
+  message: string;
+  details?: unknown;
+}
+
+export interface AgentRuntimeInfo {
+  editorVersion?: string;
+  apiVersion?: number;
+  protocolVersion?: number;
+  sessionId?: string;
+  platform?: string;
+  arch?: string;
+  versions?: Record<string, string>;
 }
 
 /** The bridge the desktop shell hangs on `window`. Absent in a browser. */
@@ -15,8 +45,23 @@ interface DesktopBridge {
   close(): void;
   getState(): Promise<DesktopWindowState>;
   onState(listener: (state: DesktopWindowState) => void): () => void;
+  onAgentControlState?(listener: (state: AgentControlState) => void): () => void;
+  onAgentSystemEvent?(listener: (entry: AgentSystemEvent) => void): () => void;
+  getAgentRuntimeInfo?(): Promise<AgentRuntimeInfo>;
   /** Added after the first release; absent in a window built before it. */
   reconnectFiles?(): Promise<boolean>;
+  /** Registers the one narrow command surface the local MCP host may call. */
+  registerAgentHandler?(
+    handler: (request: unknown, respond: (response: { result?: unknown; error?: unknown }) => void) => void
+  ): () => void;
+  registerAgentCancelHandler?(handler: (operationId: string) => void): () => void;
+  reportAgentProgress?(progress: Record<string, unknown>): void;
+  /** Resolves admitted paths to small descriptors; bytes stay on disk. */
+  readAgentFiles?(paths: string[]): Promise<DesktopFileDescriptor[]>;
+  openAgentOutput?(path: string): Promise<string>;
+  writeAgentOutput?(id: string, position: number, data: ArrayBuffer): Promise<number>;
+  closeAgentOutput?(id: string): Promise<void>;
+  abortAgentOutput?(id: string): Promise<void>;
 }
 
 declare global {
@@ -38,6 +83,7 @@ declare global {
  */
 @Injectable({ providedIn: 'root' })
 export class DesktopService {
+  private readonly zone = inject(NgZone);
   private readonly bridge: DesktopBridge | undefined =
     typeof window === 'undefined' ? undefined : window.desktop;
 
@@ -47,6 +93,7 @@ export class DesktopService {
   readonly maximized = signal(false);
   readonly fullScreen = signal(false);
   readonly focused = signal(true);
+  readonly agentControl = signal<AgentControlState>({ active: false, controller: 'mcp', controllers: [] });
 
   constructor() {
     if (!this.bridge) return;
@@ -63,6 +110,10 @@ export class DesktopService {
     this.bridge.getState().then((state) => this.apply(state)).catch(() => {});
     const stop = this.bridge.onState((state) => this.apply(state));
     inject(DestroyRef).onDestroy(stop);
+    const stopAgentControl = this.bridge.onAgentControlState?.((state) => {
+      this.zone.run(() => this.agentControl.set(state));
+    });
+    if (stopAgentControl) inject(DestroyRef).onDestroy(stopAgentControl);
   }
 
   private apply(state: DesktopWindowState): void {
@@ -91,6 +142,82 @@ export class DesktopService {
     } catch {
       return false;
     }
+  }
+
+  registerAgentHandler(handler: (request: unknown) => Promise<unknown>): () => void {
+    return this.bridge?.registerAgentHandler?.((request, respond) => {
+      handler(request).then(
+        (result) => respond({ result }),
+        (error) => respond({
+          error: {
+            message: error instanceof Error ? error.message : String(error),
+            code: error && typeof error === 'object' && 'code' in error ? error.code : 'editor_error',
+            details: error && typeof error === 'object' ? {
+              ...('details' in error && error.details && typeof error.details === 'object' ? error.details : {}),
+              stage: 'stage' in error ? error.stage : undefined,
+              hint: 'hint' in error ? error.hint : undefined,
+              stack: error instanceof Error ? error.stack : undefined,
+              cause: 'cause' in error && error.cause instanceof Error ? {
+                name: error.cause.name,
+                message: error.cause.message,
+                stack: error.cause.stack
+              } : undefined
+            } : undefined
+          }
+        })
+      );
+    }) ?? (() => undefined);
+  }
+
+  registerAgentCancelHandler(handler: (operationId: string) => void): () => void {
+    return this.bridge?.registerAgentCancelHandler?.(handler) ?? (() => undefined);
+  }
+
+  reportAgentProgress(progress: Record<string, unknown>): void {
+    this.bridge?.reportAgentProgress?.(progress);
+  }
+
+  onAgentSystemEvent(listener: (entry: AgentSystemEvent) => void): () => void {
+    return this.bridge?.onAgentSystemEvent?.((entry) => this.zone.run(() => listener(entry))) ?? (() => undefined);
+  }
+
+  async getAgentRuntimeInfo(): Promise<AgentRuntimeInfo> {
+    return await this.bridge?.getAgentRuntimeInfo?.() ?? {
+      platform: typeof navigator === 'undefined' ? 'unknown' : navigator.platform
+    };
+  }
+
+  async readAgentFiles(paths: string[]): Promise<File[]> {
+    if (!this.bridge?.readAgentFiles) throw new Error('Automated file access is only available in the desktop app.');
+    const files = await this.bridge.readAgentFiles(paths);
+    return files.map((entry) => new PathBackedFile(entry));
+  }
+
+  async openAgentOutput(path: string): Promise<{
+    write(chunk: { data?: BufferSource; position?: number } | BufferSource): Promise<void>;
+    close(): Promise<void>;
+    abort(): Promise<void>;
+  }> {
+    if (!this.bridge?.openAgentOutput || !this.bridge.writeAgentOutput || !this.bridge.closeAgentOutput) {
+      throw new Error('Automated export is only available in the desktop app.');
+    }
+    const id = await this.bridge.openAgentOutput(path);
+    let cursor = 0;
+    return {
+      write: async (chunk) => {
+        const wrapped = typeof chunk === 'object' && chunk !== null && 'data' in chunk
+          ? chunk as { data?: BufferSource; position?: number }
+          : { data: chunk as BufferSource };
+        if (!wrapped.data) return;
+        const bytes = wrapped.data instanceof ArrayBuffer
+          ? wrapped.data
+          : wrapped.data.buffer.slice(wrapped.data.byteOffset, wrapped.data.byteOffset + wrapped.data.byteLength);
+        const position = wrapped.position ?? cursor;
+        cursor = await this.bridge!.writeAgentOutput!(id, position, bytes);
+      },
+      close: () => this.bridge!.closeAgentOutput!(id),
+      abort: () => this.bridge?.abortAgentOutput?.(id) ?? this.bridge!.closeAgentOutput!(id)
+    };
   }
 
   minimize(): void {

@@ -1,4 +1,5 @@
-import { splitOnQuiet } from './speech-recognizer';
+import { audioTrackSampleRate, splitOnQuiet } from './speech-recognizer';
+import { TranscriptionError } from './transcription-errors';
 
 const RATE = 16000;
 
@@ -74,5 +75,24 @@ describe('splitOnQuiet', () => {
     expect(windows[0].from).toBe(0);
     expect(windows[windows.length - 1].to).toBe(70 * RATE);
     for (const window of windows) expect(window.to).toBeGreaterThan(window.from);
+  });
+});
+
+describe('TranscriptionError diagnostics', () => {
+  it('reads the AAC sample rate from both supported Mediabunny APIs', async () => {
+    await expectAsync(audioTrackSampleRate({ getSampleRate: async () => 48000 })).toBeResolvedTo(48000);
+    await expectAsync(audioTrackSampleRate({ sampleRate: 44100 })).toBeResolvedTo(44100);
+  });
+
+  it('preserves the stage, code, details and original cause', () => {
+    const cause = new Error('AAC decoder rejected the packet');
+    const error = new TranscriptionError('Audio preparation failed during decoding-aac-audio', 'Try WAV.', {
+      code: 'audio_decode_failed', stage: 'decoding-aac-audio', details: { codec: 'aac', sampleRate: 48000 }, cause
+    });
+    expect(error.code).toBe('audio_decode_failed');
+    expect(error.stage).toBe('decoding-aac-audio');
+    expect(error.details).toEqual({ codec: 'aac', sampleRate: 48000 });
+    expect(error.cause).toBe(cause);
+    expect(error.message).toContain('decoding-aac-audio');
   });
 });

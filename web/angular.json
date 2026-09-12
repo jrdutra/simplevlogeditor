@@ -57,7 +57,7 @@
             "production": {
               "budgets": [
                 { "type": "initial", "maximumWarning": "3mb", "maximumError": "5mb" },
-                { "type": "anyComponentStyle", "maximumWarning": "28kb", "maximumError": "40kb" }
+                { "type": "anyComponentStyle", "maximumWarning": "40kb", "maximumError": "50kb" }
               ],
               "outputHashing": "all"
             },
@@ -87,7 +87,15 @@
             "polyfills": ["zone.js", "zone.js/testing"],
             "tsConfig": "tsconfig.spec.json",
             "webWorkerTsConfig": "tsconfig.worker.json",
-            "assets": ["src/favicon.ico", "src/assets"],
+            "assets": [
+              "src/favicon.ico",
+              "src/assets",
+              {
+                "glob": "ort-wasm-simd-threaded{,.asyncify}.wasm",
+                "input": "node_modules/onnxruntime-web/dist/",
+                "output": "assets/onnxruntime/"
+              }
+            ],
             "styles": ["@angular/material/prebuilt-themes/purple-green.css", "src/styles.css"],
             "scripts": []
           }

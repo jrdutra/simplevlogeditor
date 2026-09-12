@@ -717,6 +717,359 @@
   background: rgba(43, 42, 55, 0.55);
 }
 
+/* MCP work stays in sight while the timeline underneath changes. The user can
+   clear it when the hand-off is understood, like dismissing a small terminal. */
+.progresso-agente {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1800;
+  width: min(680px, calc(100vw - 36px));
+  max-height: min(58vh, 34rem);
+  background: linear-gradient(135deg, rgba(0, 255, 209, 0.055), rgba(43, 42, 55, 0.55) 55%);
+  border-color: rgba(0, 255, 209, 0.24);
+  box-shadow: 0 18px 52px rgba(0, 0, 0, 0.56), 0 0 26px rgba(0, 255, 209, 0.08);
+}
+
+.progresso-agente .registro-console { height: min(30vh, 14rem); }
+
+.agente-status,
+.agente-ativo {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.agente-status mat-icon { width: 19px; height: 19px; font-size: 19px; color: var(--aqua); }
+.agente-ativo { color: var(--aqua); font-size: 0.76rem; font-weight: 600; }
+.agente-pulso {
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--aqua);
+  box-shadow: 0 0 0 rgba(0, 255, 209, 0.45);
+  animation: agente-pulso 1.4s ease-out infinite;
+}
+
+@keyframes agente-pulso {
+  70% { box-shadow: 0 0 0 0.45rem rgba(0, 255, 209, 0); }
+  100% { box-shadow: 0 0 0 rgba(0, 255, 209, 0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agente-pulso { animation: none; }
+}
+
+@media (max-width: 640px) {
+  .progresso-agente { right: 8px; bottom: 8px; width: calc(100vw - 16px); }
+}
+
+/* A controller is not a background daemon: this surface deliberately occupies
+   the editor while the timeline underneath continues to update. */
+.agente-modal-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  display: grid;
+  place-items: center;
+  padding: 5vh 5vw;
+  box-sizing: border-box;
+  max-width: 100vw;
+  max-height: 100vh;
+  overflow: hidden;
+  background: radial-gradient(circle at 50% 45%, rgba(37, 99, 235, 0.12), rgba(2, 8, 23, 0.58) 72%);
+  perspective: 1400px;
+}
+
+.agente-modal {
+  position: relative;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  width: 90vw;
+  height: 90vh;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 2rem);
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  overflow: hidden;
+  border: 2px solid #3b82f6;
+  border-radius: 18px;
+  /* Twenty percent transparent, as requested; the timeline stays perceptible
+     without competing with terminal text. */
+  background: rgba(8, 15, 31, 0.8);
+  box-shadow:
+    0 34px 90px rgba(0, 0, 0, 0.72),
+    0 14px 32px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(191, 219, 254, 0.18),
+    0 0 34px rgba(37, 99, 235, 0.44);
+  transform: rotateX(0.45deg) translateZ(24px);
+}
+
+.agente-modal::before {
+  content: '';
+  position: absolute;
+  inset: -22px;
+  z-index: -1;
+  border-radius: 30px;
+  background: radial-gradient(closest-side, rgba(59, 130, 246, 0.52), rgba(37, 99, 235, 0) 76%);
+  filter: blur(10px);
+  animation: agente-respira 2.4s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.agente-modal::after {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  z-index: 3;
+  padding: 7px;
+  border-radius: 23px;
+  background: conic-gradient(
+    from var(--glow-angle, 0deg),
+    transparent 0deg,
+    rgba(125, 211, 252, 0.98) 28deg,
+    transparent 72deg,
+    transparent 170deg,
+    rgba(37, 99, 235, 0.94) 208deg,
+    transparent 252deg,
+    transparent 360deg
+  );
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  animation: agente-gira 3.8s linear infinite;
+  pointer-events: none;
+}
+
+.agente-modal > * { position: relative; z-index: 4; min-width: 0; flex: 0 0 auto; }
+
+.agente-modal-cabeca {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1.15rem 1.25rem;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.34);
+  background: linear-gradient(110deg, rgba(37, 99, 235, 0.23), rgba(8, 15, 31, 0.38));
+  border-radius: 16px 16px 0 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.agente-marca {
+  display: grid;
+  place-items: center;
+  width: 3.5rem;
+  height: 3.5rem;
+  flex: 0 0 auto;
+  border: 1px solid rgba(125, 211, 252, 0.56);
+  border-radius: 14px;
+  background: rgba(2, 8, 23, 0.68);
+  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+}
+
+.agente-marca img { width: 2.45rem; height: 2.45rem; }
+
+.agente-modal-identidade {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.22rem;
+}
+
+.agente-modal-identidade strong { color: #eff6ff; font-size: 1.05rem; letter-spacing: 0.01em; }
+.agente-modal-identidade strong,
+.agente-modal-identidade span { overflow-wrap: anywhere; }
+.agente-modal-identidade span { color: #a9c3e6; font-size: 0.82rem; line-height: 1.45; }
+.agente-modal-fechar { flex: 0 0 auto; color: #bfdbfe; }
+.agente-ativo.agente-desconectado { color: #fbbf24; }
+.agente-ativo.agente-desconectado .agente-pulso {
+  background: #f59e0b;
+  box-shadow: 0 0 0 rgba(245, 158, 11, 0.42);
+  animation: none;
+}
+
+.agente-modal-ferramentas {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 0.85rem;
+  border-bottom: 1px solid rgba(96, 165, 250, 0.22);
+  background: rgba(2, 8, 23, 0.42);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.agente-recuperacao {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: #93c5fd;
+  font: 0.72rem/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agente-recuperacao mat-icon { width: 17px; height: 17px; font-size: 17px; }
+
+.agente-modal-console {
+  flex: 1 1 auto !important;
+  width: calc(100% - 1.8rem);
+  max-width: calc(100% - 1.8rem);
+  height: 100%;
+  min-height: 0;
+  min-width: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable both-edges;
+  margin: 0.9rem;
+  padding: 0.85rem 0.75rem;
+  border: 1px solid rgba(59, 130, 246, 0.38);
+  border-radius: 10px;
+  background: rgba(2, 8, 23, 0.88);
+  box-shadow: inset 0 12px 28px rgba(0, 0, 0, 0.42);
+  font-size: clamp(0.74rem, 1vw, 0.9rem);
+  box-sizing: border-box;
+}
+
+.agente-modal-console .registro-linha {
+  display: grid;
+  grid-template-columns: max-content max-content max-content 0.8rem minmax(0, 1fr);
+  align-items: start;
+  gap: 0.48rem;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+}
+
+.agente-modal-console .registro-hora,
+.agente-modal-console .registro-nivel,
+.agente-modal-console .registro-modulo { white-space: nowrap; }
+.agente-modal-console .registro-nivel { color: #8aa8cb; font-weight: 700; }
+.agente-modal-console .registro-modulo { color: #b49cff; }
+.agente-modal-console .registro-texto {
+  min-width: 0;
+  max-width: 100%;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.agente-modal-console .nivel-debug .registro-nivel { color: #7dd3fc; }
+.agente-modal-console .nivel-info .registro-nivel { color: #86efac; }
+.agente-modal-console .nivel-warn .registro-nivel { color: #fbbf24; }
+.agente-modal-console .nivel-error .registro-nivel { color: #fb7185; }
+
+.agente-diagnostico {
+  flex: 0 1 auto !important;
+  max-height: min(42%, 22rem);
+  min-width: 0;
+  margin: 0 0.9rem 0.9rem;
+  border: 1px solid rgba(251, 113, 133, 0.48);
+  border-radius: 10px;
+  color: #dbeafe;
+  background: rgba(30, 8, 21, 0.92);
+  overflow: auto;
+}
+.agente-diagnostico summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.8rem;
+  padding: 0.65rem 0.75rem;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+.agente-diagnostico-resumo { color: #fda4af; }
+.agente-diagnostico pre {
+  max-height: 11rem;
+  margin: 0;
+  padding: 0.75rem;
+  overflow: auto;
+  border-block: 1px solid rgba(251, 113, 133, 0.24);
+  color: #cbd5e1;
+  background: #070b14;
+  font: 0.7rem/1.45 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.agente-diagnostico-acoes {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+  padding: 0.55rem 0.7rem;
+}
+.agente-diagnostico-acoes span { color: #93c5fd; font-size: 0.75rem; }
+
+.agente-controle-indicador {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 2500;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  max-width: min(34rem, calc(100vw - 44px));
+  padding: 0.7rem 0.9rem;
+  border: 1px solid #3b82f6;
+  border-radius: 14px;
+  color: #dbeafe;
+  background: rgba(8, 15, 31, 0.8);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.58), 0 0 25px rgba(37, 99, 235, 0.42);
+  cursor: pointer;
+}
+
+.agente-controle-indicador img { width: 1.9rem; height: 1.9rem; }
+
+@keyframes agente-gira { to { --glow-angle: 360deg; } }
+@keyframes agente-respira {
+  0%, 100% { opacity: 0.48; transform: scale(0.992); }
+  50% { opacity: 1; transform: scale(1.012); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agente-modal::before,
+  .agente-modal::after { animation: none; }
+}
+
+@media (max-width: 700px) {
+  .agente-modal-fundo { padding: 3vh 3vw; }
+  .agente-modal { width: 94vw; height: 94vh; }
+  .agente-modal-cabeca { align-items: flex-start; gap: 0.65rem; padding: 0.85rem; }
+  .agente-marca { width: 2.7rem; height: 2.7rem; }
+  .agente-marca img { width: 1.9rem; height: 1.9rem; }
+  .agente-modal-identidade span { display: none; }
+  .agente-ativo { margin-left: auto; }
+}
+
+@media (max-width: 960px) {
+  .agente-modal-console .registro-linha {
+    grid-template-columns: max-content max-content minmax(0, 1fr);
+    gap: 0.28rem 0.45rem;
+    padding-bottom: 0.3rem;
+  }
+  .agente-modal-console .registro-modulo { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  .agente-modal-console .registro-marca { display: none; }
+  .agente-modal-console .registro-texto { grid-column: 1 / -1; padding-left: 0.35rem; }
+}
+
+@media (max-height: 620px) {
+  .agente-modal-fundo { padding: 0.5rem; }
+  .agente-modal { width: calc(100vw - 1rem); height: calc(100vh - 1rem); max-width: none; max-height: none; border-radius: 12px; }
+  .agente-modal-cabeca { padding: 0.45rem 0.65rem; gap: 0.5rem; }
+  .agente-marca { width: 2.25rem; height: 2.25rem; border-radius: 9px; }
+  .agente-marca img { width: 1.55rem; height: 1.55rem; }
+  .agente-modal-identidade span { display: none; }
+  .agente-modal-ferramentas { padding-block: 0.25rem; }
+  .agente-modal-console { margin-block: 0.45rem; }
+  .agente-diagnostico { max-height: 38%; margin-bottom: 0.45rem; }
+}
+
 /*
  * Rendering is modal because every editable control behind it is deliberately
  * disabled for the lifetime of the encoder. The panel is portalled to body,
@@ -736,16 +1089,57 @@
 }
 
 .render-modal {
+  position: relative;
+  isolation: isolate;
   width: min(1080px, 100%);
   max-height: calc(100vh - 48px);
   max-height: calc(100dvh - 48px);
   padding: 18px;
   gap: 12px;
-  background: var(--panel-dark, #071426);
-  border-color: rgba(209, 96, 255, 0.34);
-  border-radius: 14px;
-  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.62), 0 0 36px rgba(182, 37, 255, 0.12);
+  background: linear-gradient(145deg, rgba(17, 25, 48, 0.97), rgba(5, 11, 26, 0.97));
+  border: 1px solid rgba(167, 139, 250, 0.58);
+  border-radius: 18px;
+  box-shadow: 0 34px 90px rgba(0, 0, 0, 0.72), 0 14px 32px rgba(0, 0, 0, 0.48), inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 38px rgba(124, 58, 237, 0.25);
+  transform: perspective(1200px) rotateX(0.4deg) translateZ(18px);
   overflow: hidden;
+}
+
+.agente-conclusao-fundo {
+  position: fixed;
+  inset: 0;
+  z-index: 4300;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  box-sizing: border-box;
+  background: rgba(2, 8, 23, 0.72);
+  backdrop-filter: blur(6px);
+}
+
+.agente-conclusao-modal {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 1rem;
+  width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100vh - 2rem);
+  padding: 1.25rem;
+  box-sizing: border-box;
+  overflow: auto;
+  border: 1px solid rgba(96, 165, 250, 0.7);
+  border-radius: 18px;
+  color: #dbeafe;
+  background: linear-gradient(145deg, rgba(16, 30, 58, 0.98), rgba(5, 11, 26, 0.98));
+  box-shadow: 0 32px 82px rgba(0, 0, 0, 0.72), 0 13px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 36px rgba(37, 99, 235, 0.35);
+  transform: perspective(1200px) rotateX(0.6deg) translateZ(24px);
+}
+.agente-conclusao-modal h2 { margin: 0 0 0.45rem; color: #eff6ff; }
+.agente-conclusao-modal p { margin: 0.25rem 0; color: #a9c3e6; line-height: 1.5; }
+.agente-conclusao-acoes {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.6rem;
 }
 
 .render-modal .registro-console {
@@ -846,7 +1240,7 @@
 .preview-fundo {
   position: fixed;
   inset: 0;
-  z-index: 1000;
+  z-index: 4200;
   display: grid;
   place-items: center;
   padding: 1.25rem;
@@ -2051,6 +2445,18 @@ ul.reconectar-nomes li {
 
 .registro-fail .registro-marca,
 .registro-fail .registro-texto { color: #ff7b7b; }
+
+.agente-command .registro-marca,
+.agente-command .registro-texto { color: #63d9ff; font-weight: 600; }
+
+.agente-action .registro-marca,
+.agente-action .registro-texto { color: var(--text-main); }
+
+.agente-done .registro-marca,
+.agente-done .registro-texto { color: #5ce08f; }
+
+.agente-fail .registro-marca,
+.agente-fail .registro-texto { color: #ff7b7b; }
 
 /* Responsive workspace inside the maximized application frame. */
 :host { display: block; min-width: 0; }

@@ -1,13 +1,23 @@
 import { TestBed } from '@angular/core/testing';
-import { DEFAULT_PROJECT, DEFAULT_TEXT_DRAFT } from './video-editor-defaults';
+import { DEFAULT_PROJECT, DEFAULT_TEXT_DRAFT, readingSeconds } from './video-editor-defaults';
 import { TextClip } from './video-editor.models';
 import { restoreProject, serializeProject } from './video-editor-project.store';
 import { TagDialogComponent } from './tag-dialog.component';
-import { DEFAULT_TAG, TAG_POSITIONS, clampTag, specialShape, tagLifetime } from './tag-overlay';
+import { DEFAULT_TAG, TAG_POSITIONS, clampTag, specialShape, tagHold, tagLifetime } from './tag-overlay';
 import { drawQrTagCode, qrTagError, qrTagMatrix } from './tag-qrcode';
 import { drawTag, measureTag } from './tag-renderer';
 
 describe('QR Code tags', () => {
+  it('uses the slower text-card defaults and the smaller, longer subscribe tag', () => {
+    expect(DEFAULT_TEXT_DRAFT.revealSeconds).toBe(7.5);
+    expect(DEFAULT_TEXT_DRAFT.holdSeconds).toBe(6);
+    expect(readingSeconds('Subscribe')).toBeGreaterThanOrEqual(6);
+    expect(specialShape('social-subscribe')!.fit).toBe(0.35);
+    const regular = clampTag({ ...DEFAULT_TAG, shape: 'social-photo', text: 'Subscribe', holdAuto: true });
+    const subscribe = clampTag({ ...regular, shape: 'social-subscribe' });
+    expect(tagHold(subscribe)).toBeCloseTo(tagHold(regular) * 5);
+  });
+
   it('preserves the separate payload in both the clip and the project template', () => {
     const tag = clampTag({ ...DEFAULT_TAG, shape: 'qr-photo', text: 'Visit our site', qrText: 'https://example.com/?q=ação&n=1' });
     const clip: TextClip = {

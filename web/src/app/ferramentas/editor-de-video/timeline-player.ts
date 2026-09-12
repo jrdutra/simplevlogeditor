@@ -32,6 +32,7 @@ import { clampSpeed, volumeGain } from './video-editor-defaults';
 import { clipIndexAt, fadeGainAt, sourceTimeAt, transitionAt } from './video-editor-timeline';
 import { TransitionPainter } from './video-transitions';
 import { ClipPlan, ProjectPlan, isMediaClip } from './video-editor.models';
+import { imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
 
 /** Widest the preview is composed at. Beyond this it costs more than it shows. */
 const PREVIEW_WIDTH = 960;
@@ -913,7 +914,7 @@ export class TimelinePlayer {
   private async ensureBitmap(id: string, file: File): Promise<void> {
     if (this.bitmaps.has(id) && this.bitmapFiles.get(id) === file) return;
 
-    const bitmap = await createImageBitmap(file).catch(() => null);
+    const bitmap = await imageBitmapForFile(file).catch(() => null);
     if (!bitmap) return;
 
     const current = this.plan?.clips.find((entry) => entry.clip.id === id) ?? null;
@@ -978,7 +979,7 @@ export class TimelinePlayer {
   private urlFor(file: File): string {
     let url = this.urls.get(file);
     if (!url) {
-      url = URL.createObjectURL(file);
+      url = mediaObjectUrl(file);
       this.urls.set(file, url);
     }
     return url;

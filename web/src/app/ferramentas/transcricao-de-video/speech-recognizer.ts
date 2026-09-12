@@ -8,6 +8,15 @@ export { transcribe } from './transcription-client';
 /** One hour of mono 16 kHz floats uses about 230 MB, plus model memory. */
 export const MAX_MINUTES = 60;
 
+/** Mediabunny exposed the rate as a field in older releases and as an async
+ * method in newer ones. Supporting both is essential for MP4/AAC projects
+ * restored with either runtime bundle. */
+export async function audioTrackSampleRate(
+  track: { sampleRate?: number; getSampleRate?: () => Promise<number> }
+): Promise<number> {
+  return typeof track.getSampleRate === 'function' ? track.getSampleRate() : Number(track.sampleRate);
+}
+
 /** Energy-preserving fallback for stereo recordings with opposite polarity.
  * Normal recordings are averaged; only severe cancellation selects a channel. */
 export function downmix(input: Float32Array, channels: number): Float32Array {
@@ -51,10 +60,13 @@ export async function readSpeechAudio(
   onProgress: (report: TranscriptionProgress) => void,
   signal: AbortSignal
 ): Promise<Float32Array> {
-  const library = await loadMediabunny();
-  const input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+  let stage = 'loading-decoder';
+  let input: InstanceType<(Awaited<ReturnType<typeof loadMediabunny>>)['Input']> | null = null;
 
   try {
+    const library = await loadMediabunny();
+    input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+    stage = 'probing-audio-track';
     const track = await input.getPrimaryAudioTrack();
     if (!track) {
       throw new TranscriptionError(
@@ -67,6 +79,7 @@ export async function readSpeechAudio(
     // it. Firefox has no AAC on some systems, and a Chromium build without the
     // proprietary codecs has neither AAC nor H.264 — asking first turns the
     // library's internal complaint into an answer the reader can act on.
+    stage = 'checking-codec-support';
     if (!(await track.canDecode())) {
       throw new TranscriptionError(
         `This browser has no decoder for the recording's audio (${track.codec ?? 'unknown codec'}).`,
@@ -74,6 +87,7 @@ export async function readSpeechAudio(
       );
     }
 
+    stage = 'reading-media-duration';
     const seconds = await input.computeDuration();
     if (seconds > MAX_MINUTES * 60) {
       throw new TranscriptionError(
@@ -85,13 +99,15 @@ export async function readSpeechAudio(
     if (!Number.isFinite(seconds) || seconds <= 0) {
       throw new TranscriptionError('The recording has no valid duration.', 'Try exporting it as WAV or MP4.');
     }
-    const rate = track.sampleRate;
+    const trackWithRate = track as typeof track & { sampleRate?: number; getSampleRate?: () => Promise<number> };
+    const rate = await audioTrackSampleRate(trackWithRate);
     if (!Number.isFinite(rate) || rate <= 0) throw new TranscriptionError('Invalid audio sample rate.');
     const decoded = new Float32Array(Math.ceil(seconds * WHISPER_SAMPLE_RATE));
     const sink = new library.AudioSampleSink(track);
     let frames = 0;
     // Resample bounded blocks with 50 ms of filter context. Sample timestamps
     // preserve initial delays and gaps instead of shifting captions earlier.
+    stage = `decoding-${String(track.codec || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}-audio`;
     for (let start = 0; start < seconds; start += 10) {
       if (signal.aborted) throw new TranscriptionCanceled();
       const end = Math.min(seconds, start + 10);
@@ -122,8 +138,16 @@ export async function readSpeechAudio(
     }
     if (!frames) throw new TranscriptionError('No audio samples could be decoded.');
     return decoded;
+  } catch (error) {
+    if (error instanceof TranscriptionCanceled || error instanceof TranscriptionError) throw error;
+    const original = error instanceof Error ? error.message : String(error);
+    throw new TranscriptionError(
+      `Audio preparation failed during ${stage}: ${original}`,
+      `File: ${file.name}; type: ${file.type || 'unknown'}; size: ${file.size} bytes.`,
+      { code: 'audio_decode_failed', stage, details: { fileName: file.name, mimeType: file.type, size: file.size }, cause: error }
+    );
   } finally {
-    input.dispose();
+    input?.dispose();
   }
 }
 

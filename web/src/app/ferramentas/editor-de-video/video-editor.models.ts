@@ -314,6 +314,8 @@ export interface MediaClip {
   /** Stable across reordering, so the list can be tracked without index churn. */
   id: string;
   file: File;
+  /** Absolute local path for Electron path-backed media. Never contains bytes. */
+  sourcePath?: string;
   summary: MediaSummary;
   /**
    * The deeper inspection the analyser needs, fetched the first time this clip
@@ -330,7 +332,7 @@ export interface MediaClip {
    * other respect and `awaitingFile` says so; dropping the same files in again
    * matches them by this and the edit continues.
    */
-  fileRef?: { name: string; size: number; lastModified: number };
+  fileRef?: { name: string; size: number; lastModified: number; path?: string };
   /** True while `file` is an empty stand-in rather than the reader's media. */
   awaitingFile?: boolean;
   /** `null` means "follow the project"; anything else is this clip's own copy. */

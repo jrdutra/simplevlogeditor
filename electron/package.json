@@ -9,6 +9,10 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
+    "mcp": "node src/mcp-host.js",
+    "mcp:dev": "node src/mcp-host.js --dev",
+    "test:mcp": "node --test src/mcp-server.test.js src/media-import-service.test.js src/editor-process-manager.test.js src/server.test.js src/agent-ui-contract.test.js",
+    "test:mcp:lifecycle": "node scripts/smoke-lifecycle.js",
     "build:web": "npm --prefix ../web run build:site",
     "dist": "npm --prefix ../web run build",
     "pack": "electron-builder --win && node scripts/publish-installer.js"

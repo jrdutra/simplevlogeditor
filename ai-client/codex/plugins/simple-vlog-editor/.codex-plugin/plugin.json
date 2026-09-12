@@ -1,0 +1,35 @@
+{
+  "name": "simple-vlog-editor",
+  "version": "2.0.0+codex.20260912024243",
+  "description": "Understand and edit complete videos in the visible SimpleVlogEditor through its local MCP server.",
+  "author": {
+    "name": "SimpleVlogEditor"
+  },
+  "keywords": [
+    "video",
+    "editing",
+    "transcription",
+    "mcp",
+    "push-in"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Simple Vlog Editor",
+    "shortDescription": "Understand and edit videos through MCP.",
+    "longDescription": "Controls the visible SimpleVlogEditor timeline, inspects synchronized speech and source frames, and applies reversible video edits through a local MCP server.",
+    "developerName": "SimpleVlogEditor",
+    "category": "Productivity",
+    "capabilities": [
+      "Video analysis",
+      "Timeline editing",
+      "Local MCP"
+    ],
+    "defaultPrompt": [
+      "Edit my vlog and remove repeated or failed takes.",
+      "Inspect every clip and create a clean rough cut.",
+      "Add captions, QR tags and subtle push-ins."
+    ],
+    "brandColor": "#00FFD1"
+  },
+  "mcpServers": "./.mcp.json"
+}

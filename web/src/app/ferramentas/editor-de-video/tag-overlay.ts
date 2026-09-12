@@ -155,11 +155,11 @@ export const TAG_SPECIALS: readonly TagSpecialDefinition[] = [
   { id: 'petals-blob', label: 'Petals \u2014 falling', family: 'Petals', natural: { width: 407, height: 291 }, fit: 0.32, ink: '#fff8fc', weight: 700, tracking: 1 / 36, enter: 3.06, leave: 1.76, textAt: 1.57, textAnim: 'letters' },
   { id: 'petals-wind', label: 'Petals \u2014 on the wind', family: 'Petals', natural: { width: 424, height: 303 }, fit: 0.33, ink: '#fff9fc', weight: 700, tracking: 0.8 / 36, enter: 3.25, leave: 1.85, textAt: 1.81, textAnim: 'fade' },
   { id: 'social-photo', label: 'Social \u2014 photo handle', family: 'Social', natural: { width: 1080, height: 230 }, fit: 0.7, ink: '#ffffff', weight: 800, tracking: -1.8 / 61, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
-  { id: 'social-subscribe', label: 'Social \u2014 subscribe', family: 'Social', natural: { width: 1050, height: 220 }, fit: 0.7, ink: '#ffffff', weight: 900, tracking: -3 / 68, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
+  { id: 'social-subscribe', label: 'Social \u2014 subscribe', family: 'Social', natural: { width: 1050, height: 220 }, fit: 0.35, ink: '#ffffff', weight: 900, tracking: -3 / 68, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
   { id: 'news-plate', label: 'Broadcast \u2014 lower third', family: 'Broadcast', natural: { width: 900, height: 170 }, fit: 0.8, ink: '#ffffff', weight: 500, tracking: 1.6 / 29, enter: 2.55, leave: 1.05, textAt: 1.28, textAnim: 'letters' },
   { id: 'paper-tear', label: 'Paper \u2014 torn open', family: 'Paper', natural: { width: 850, height: 160 }, fit: 0.58, ink: '#5a2140', weight: 700, tracking: 0.7 / 43, enter: 1.75, leave: 1.27, textAt: 1.007, textAnim: 'fade' },
   { id: 'qr-photo', label: 'QR Code — social gradient', family: 'QR Code', natural: { width: 1080, height: 230 }, verticalOverflow: 73, fit: 0.7, ink: '#ffffff', weight: 800, tracking: -1.8 / 61, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
-  { id: 'qr-subscribe', label: 'QR Code — social red', family: 'QR Code', natural: { width: 1050, height: 220 }, verticalOverflow: 75, fit: 0.7, ink: '#ffffff', weight: 900, tracking: -3 / 68, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
+  { id: 'qr-subscribe', label: 'QR Code — social red', family: 'QR Code', natural: { width: 1050, height: 220 }, verticalOverflow: 75, fit: 0.35, ink: '#ffffff', weight: 900, tracking: -3 / 68, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
   { id: 'qr-market-yellow', label: 'QR Code — yellow marketplace', family: 'QR Code', natural: { width: 1080, height: 230 }, verticalOverflow: 73, fit: 0.7, ink: '#25315a', weight: 700, tracking: -0.02, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' },
   { id: 'qr-shop-orange', label: 'QR Code — orange shopping', family: 'QR Code', natural: { width: 1080, height: 230 }, verticalOverflow: 73, fit: 0.7, ink: '#ffffff', weight: 700, tracking: -0.02, enter: 1.1, leave: 0.65, textAt: 0, textAnim: 'none' }
 ];
@@ -808,7 +808,9 @@ export function clampTag(tag: ClipTag): ClipTag {
 
 /** The seconds the tag is readable, whether that was typed or worked out. */
 export function tagHold(tag: ClipTag): number {
-  return tag.holdAuto ? holdFromText(tag.text) : tag.holdSeconds;
+  const automatic = holdFromText(tag.text);
+  const subscribe = tag.shape === 'social-subscribe' || tag.shape === 'qr-subscribe';
+  return tag.holdAuto ? (subscribe ? automatic * 5 : automatic) : tag.holdSeconds;
 }
 
 /**

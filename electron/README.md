@@ -120,3 +120,11 @@ internet connection the tab icons render as their ligature names**. Self-hosting
 the two families in `web/src/assets/fonts` and pointing `web/src/index.html` at
 them fixes it, and is the one thing standing between this and an app that is
 fully offline.
+
+## MCP automation
+
+The application also contains a local stdio MCP server for multimodal agent
+editing. It exposes the media inventory, source/output timeline, word-timed
+transcription, silence and waveform analysis, exact frames and contact sheets,
+atomic edit batches, undo/redo and direct export. Setup and the complete safety
+model are documented in [MCP.md](MCP.md).

@@ -1,4 +1,5 @@
 import { Injectable } from '@angular/core';
+import { imageBitmapForFile } from '../../shared/desktop/path-backed-file';
 import type { AudioSample, Output, OutputFormat, Target, VideoSample } from 'mediabunny';
 
 import { ensureMp3Encoder, loadMediabunny, MediabunnyLib } from '../../services/mediabunny/mediabunny-loader';
@@ -1254,7 +1255,7 @@ export class VideoEditorRenderService {
       }
 
       if (clip.summary.kind === 'image') {
-        const bitmap = await createImageBitmap(clip.file);
+        const bitmap = await imageBitmapForFile(clip.file);
         return new StillSide(bitmap, bitmap.width, bitmap.height, () => bitmap.close());
       }
 
@@ -1304,7 +1305,7 @@ export class VideoEditorRenderService {
     let bitmap: ImageBitmap;
 
     try {
-      bitmap = await createImageBitmap(clip.file);
+      bitmap = await imageBitmapForFile(clip.file);
     } catch {
       throw new EditorError(
         `"${clip.summary.fileName}" could not be decoded as an image.`,

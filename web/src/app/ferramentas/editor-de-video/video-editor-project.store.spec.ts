@@ -27,4 +27,12 @@ describe('video editor project persistence', () => {
       SILENT_CUT_REPLACEMENT.default
     );
   });
+
+  it('preserves the MCP project revision across save, restart and recovery', () => {
+    const stored = serializeProject([], project(0.65), 7, { projectRevision: 25 });
+    const restored = restoreProject(JSON.parse(JSON.stringify(stored)));
+
+    expect(stored.projectRevision).toBe(25);
+    expect(restored.projectRevision).toBe(25);
+  });
 });

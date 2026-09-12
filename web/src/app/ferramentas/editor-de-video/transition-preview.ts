@@ -13,6 +13,7 @@
  */
 
 import { EditorClip, isMediaClip } from './video-editor.models';
+import { imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
 
 /** How far from the edge of a clip to sample, so a black first frame is skipped. */
 const EDGE_MARGIN = 0.15;
@@ -38,7 +39,7 @@ export async function captureEdgeFrame(clip: EditorClip, edge: 'in' | 'out'): Pr
 
   if (clip.summary.kind === 'image') {
     try {
-      const bitmap = await createImageBitmap(clip.file);
+      const bitmap = await imageBitmapForFile(clip.file);
       return { image: bitmap, width: bitmap.width, height: bitmap.height, release: () => bitmap.close() };
     } catch {
       return null;
@@ -47,7 +48,7 @@ export async function captureEdgeFrame(clip: EditorClip, edge: 'in' | 'out'): Pr
 
   if (!clip.summary.videoUsable || clip.awaitingFile) return null;
 
-  const url = URL.createObjectURL(clip.file);
+  const url = mediaObjectUrl(clip.file);
   const video = document.createElement('video');
   video.muted = true;
   video.playsInline = true;

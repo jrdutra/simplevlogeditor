@@ -9,6 +9,7 @@ const send = (message: TranscriptionResponse) => postMessage(message);
 addEventListener('message', async ({ data }: MessageEvent<TranscriptionRequest>) => {
   // One job per worker. The owner terminates it on completion or cancellation,
   // releasing ONNX memory even after model download or inference fails.
+  let stage = 'initializing-model';
   try {
     const { samples, options } = data;
     if (isDigitalSilence(samples)) {
@@ -32,6 +33,7 @@ addEventListener('message', async ({ data }: MessageEvent<TranscriptionRequest>)
           ratio: total > 0 ? Math.min(1, loaded / total) : null, detail: event.file } });
       }
     });
+    stage = 'model-inference';
     const words: Cue[] = [];
     for (const window of recognitionWindows(samples.length, RATE)) {
       send({ type: 'progress', progress: { stage: 'listening', ratio: window.keepFrom / samples.length,
@@ -52,6 +54,16 @@ addEventListener('message', async ({ data }: MessageEvent<TranscriptionRequest>)
     }
     send({ type: 'done', words });
   } catch (error) {
-    send({ type: 'error', message: error instanceof Error ? error.message : String(error) });
+    const typed = error as Error & { code?: string };
+    send({ type: 'error', error: {
+      name: typed?.name || 'Error',
+      message: typed?.message || String(error),
+      stack: typed?.stack,
+      code: typed?.code,
+      stage,
+      model: data.options.model,
+      language: data.options.language || 'auto',
+      recoverable: true
+    } });
   }
 });

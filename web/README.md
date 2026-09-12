@@ -83,3 +83,15 @@ src/assets/
 `tools.data.ts` is the single source: the home grid, the tab strip, each tool
 page's `<title>` and description, and the site's `ItemList` structured data all
 read from it. Adding a tool means adding an entry there and a route.
+
+## Agent automation surface
+
+The video editor registers a transport-neutral, versioned command handler when
+it runs inside the Electron shell. The contract is in
+`ferramentas/editor-de-video/editor-agent-api.ts`; Electron transports it over
+IPC to its MCP stdio server. Browser builds do not expose filesystem access.
+
+The surface uses stable clip and asset IDs, explicit source/output timing,
+revision checks and atomic edit batches. It also exposes the editor's existing
+Whisper word timing and media decoders for transcripts, frames and contact
+sheets, so an agent can inspect the complete source material before editing.

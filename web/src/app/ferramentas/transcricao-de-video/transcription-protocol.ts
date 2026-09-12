@@ -7,4 +7,13 @@ export type TranscriptionResponse =
   | { type: 'progress'; progress: TranscriptionProgress }
   | { type: 'partial'; words: Cue[] }
   | { type: 'done'; words: Cue[] }
-  | { type: 'error'; message: string };
+  | { type: 'error'; error: {
+      name: string;
+      message: string;
+      stack?: string;
+      code?: string;
+      stage: string;
+      model: string;
+      language: string;
+      recoverable: boolean;
+    } };

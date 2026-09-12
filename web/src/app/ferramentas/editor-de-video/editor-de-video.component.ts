@@ -20,9 +20,9 @@ import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
 
 import { DataService } from '../../data.service';
-import { describeZoomPlan, planAutoZooms } from '../../shared/media/auto-zoom';
+import { clampAutoZoom, describeZoomPlan, planAutoZooms } from '../../shared/media/auto-zoom';
 import { LoudnessControlComponent } from '../../shared/media/loudness-control.component';
-import { GainEnvelope, LoudnessSettings, describeLoudness, planGainEnvelope } from '../../shared/media/loudness';
+import { GainEnvelope, LoudnessSettings, clampLoudness, describeLoudness, planGainEnvelope } from '../../shared/media/loudness';
 import { MediaProbeService } from '../juntador-de-midias/media-probe.service';
 import { MergeError } from '../juntador-de-midias/media-merger.models';
 import { AUDIO_FORMATS, RESOLUTIONS, VIDEO_FORMATS, audioFormat, videoFormat } from '../juntador-de-midias/media-merger-formats';
@@ -32,6 +32,7 @@ import { ProcessingEngineSelectorService } from '../cortador-de-silencio/process
 import { MediaToolError, OperationCanceledError } from '../cortador-de-silencio/silence-cutter.models';
 import { detectionSettingsChanged } from '../cortador-de-silencio/silence-cutter.models';
 import { detectSilence, totalDuration as totalRangeDuration } from '../cortador-de-silencio/silence-detector';
+import { clampSettings as clampSilenceSettings } from '../cortador-de-silencio/silence-cutter-presets';
 import { SilenceWaveformComponent } from '../cortador-de-silencio/waveform.component';
 import { drawFrame } from '../criador-de-video-texto/text-scene-renderer';
 import {
@@ -70,7 +71,8 @@ import {
   SuppressionProgress
 } from '../supressao-de-ruido/noise-suppression.models';
 import { BodyPortalDirective } from '../../shared/ui/body-portal.directive';
-import { DesktopService } from '../../shared/desktop/desktop.service';
+import { AgentRuntimeInfo, AgentSystemEvent, DesktopService } from '../../shared/desktop/desktop.service';
+import { DesktopFileDescriptor, PathBackedFile, imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
 import { measureLeadingSilence } from './leading-silence';
 import { AudioSourceDialogComponent } from './audio-source-dialog.component';
 import { TransitionDialogComponent } from './transition-dialog.component';
@@ -80,21 +82,30 @@ import {
   TAG_FINISHES,
   TAG_LIMITS,
   TAG_SHAPES,
+  TAG_SPECIALS,
   TAG_POSITIONS,
   TAG_POSITION_LABELS,
   TagPosition,
   clampTag,
   clampTagNumber,
   holdFromText,
+  shapeIsQr,
   specialShape,
   tagHold
 } from './tag-overlay';
-import { TRANSITIONS, transitionDefinition } from './video-transitions';
+import { qrTagError } from './tag-qrcode';
+import { TRANSITIONS, TRANSITION_SECONDS, transitionDefinition } from './video-transitions';
 import { ClipEditsPanelComponent } from './clip-edits-panel.component';
 import { HelpHintComponent } from './help-hint.component';
 import { TimelinePlayer } from './timeline-player';
 import { placeWords, spokenEntries, spokenSpan } from './timeline-transcript';
 import { VideoEditorRenderService } from './video-editor-render.service';
+import {
+  TRANSCRIPTION_LANGUAGE_ALIASES,
+  TRANSCRIPTION_MODEL_ALIASES,
+  resolveTranscriptionLanguage,
+  resolveTranscriptionModel
+} from './transcription-options';
 import {
   RestoredProject,
   StoredProject,
@@ -121,6 +132,7 @@ import {
   DEFAULT_SOUND_FADE,
   DEFAULT_TEXT_DRAFT,
   DEFAULT_TRANSITION,
+  FADE_SECONDS,
   IMAGE_SECONDS,
   MANUAL_ZOOM_LIMITS,
   REFRAME_FITS,
@@ -134,12 +146,25 @@ import {
   clampSoundFade,
   clampSpeed,
   clampTimelapseTarget,
+  clampVolume,
   cloneEdits,
   readingSeconds,
   speedLabel,
   timelapseSpeedFor
 } from './video-editor-defaults';
 import { HelpPanelComponent } from '../../shared/ui/help-panel.component';
+import {
+  EDITOR_AGENT_API_VERSION,
+  EditorAgentBatch,
+  EditorAgentError,
+  EditorAgentFrameRequest,
+  EditorAgentOperation,
+  EditorAgentProjectPatch,
+  EditorAgentRequest,
+  EditorAgentResponse,
+  finiteNumber,
+  stringValue
+} from './editor-agent-api';
 import {
   buildProjectPlan,
   clipAt,
@@ -192,6 +217,7 @@ import {
   FrameAspect,
   ManualZoom,
   MediaClip,
+  MediaSummary,
   PlayableClip,
   ProjectPlan,
   RenderLogEntry,
@@ -612,6 +638,31 @@ interface RenderLogLine {
   text: string;
 }
 
+type AgentLogKind = 'command' | 'action' | 'done' | 'fail';
+type AgentLogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+
+/** A concise, user-facing account of changes requested through MCP. */
+interface AgentLogLine {
+  seq: number;
+  timestamp: string;
+  level: AgentLogLevel;
+  module: string;
+  kind: AgentLogKind;
+  text: string;
+}
+
+interface AgentDiagnostic {
+  incidentId: string;
+  createdAt: string;
+  operation: string;
+  summary: string;
+  fullText: string;
+  retryable: boolean;
+  request: EditorAgentRequest;
+}
+
+const AGENT_LOG_LIMIT = 500;
+
 const STAGE_LABEL: Record<RenderProgress['stage'], string> = {
   preparing: 'Preparing',
   analyzing: 'Listening to the clips',
@@ -850,6 +901,23 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** Set when a line arrives, cleared once the console has been scrolled. */
   private logDirty = false;
   result: RenderResult | null = null;
+
+  /** Commands and visible edits arriving from an attached MCP client. */
+  agentLog: AgentLogLine[] = [];
+  agentLogOpen = true;
+  private agentLogMinimizedByUser = false;
+  agentWorking = false;
+  agentDiagnostic: AgentDiagnostic | null = null;
+  agentDiagnosticMessage = '';
+  agentCompletionOpen = false;
+  agentCompletionSummary = '';
+  private agentLogSeq = 0;
+  private agentLogFollowing = true;
+  private agentLogDirty = false;
+  private agentTranscriptionQueue: Promise<void> = Promise.resolve();
+  private lastAgentTranscriptStage = '';
+  private agentTranscriptStageTimeout?: (stage: string) => void;
+  @ViewChild('agentLogConsole') private agentLogConsole?: ElementRef<HTMLDivElement>;
 
   /* ------------------------------------------------------- the transcript */
 
@@ -1236,6 +1304,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private boardLigacoesCache: LigacaoBoard[] = [];
   private boardLarguraCache = 0;
   private boardAlturaCache = 0;
+  /** Unregisters the desktop automation bridge when this route is left. */
+  private stopAgentBridge: (() => void) | null = null;
+  private stopAgentSystemEvents: (() => void) | null = null;
+  private stopAgentCancelBridge: (() => void) | null = null;
+  private readonly agentOperationControllers = new Map<string, AbortController>();
+  private currentAgentOperationId = '';
 
   constructor(
     private readonly dataService: DataService,
@@ -1244,7 +1318,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     private readonly analyser: AudioAnalysisService,
     private readonly selector: ProcessingEngineSelectorService,
     private readonly renderer: VideoEditorRenderService,
-    private readonly desktop: DesktopService,
+    readonly desktop: DesktopService,
     private readonly zone: NgZone,
     private readonly cdr: ChangeDetectorRef,
     @Inject(PLATFORM_ID) private readonly platformId: object
@@ -1264,9 +1338,26 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // first change made can be taken back like any other.
     this.pending = this.snapshot();
     this.pendingSignature = this.signature(this.pending);
+    this.stopAgentBridge = this.desktop.registerAgentHandler((request) =>
+      this.zone.run(() => this.handleAgentRequest(request as EditorAgentRequest))
+    );
+    this.stopAgentSystemEvents = this.desktop.onAgentSystemEvent((entry) => this.onAgentSystemEvent(entry));
+    this.stopAgentCancelBridge = this.desktop.registerAgentCancelHandler((operationId) => this.zone.run(() => {
+      this.agentOperationControllers.get(operationId)?.abort();
+      this.cancelAnalyses();
+      this.pushAgentLog('action', `Cancellation requested for operation ${operationId}`, 'MCP control', 'WARN');
+    }));
   }
 
   ngOnDestroy(): void {
+    this.stopAgentBridge?.();
+    this.stopAgentBridge = null;
+    this.stopAgentSystemEvents?.();
+    this.stopAgentSystemEvents = null;
+    this.stopAgentCancelBridge?.();
+    this.stopAgentCancelBridge = null;
+    for (const controller of this.agentOperationControllers.values()) controller.abort();
+    this.agentOperationControllers.clear();
     this.pararEspelhoBoard();
     this.apagarGiroBoard();
     this.controller?.abort();
@@ -1329,6 +1420,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       // with one that came out of storage.
       this.nextId = Math.max(restored.nextId, this.highestStoredId(restored.clips) + 1);
       this.restoredAt = restored.savedAt;
+      this.revision = Math.max(this.revision, restored.projectRevision);
       this.closeAllDialogs();
       this.closeTimelinePreview();
     } finally {
@@ -1455,7 +1547,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
       if (!isMediaClip(clip) && clip.backgroundRef && !clip.backgroundFile && matchesRef(file, clip.backgroundRef)) {
         clip.backgroundFile = file;
-        clip.backgroundUrl = URL.createObjectURL(file);
+        clip.backgroundUrl = mediaObjectUrl(file);
         used = true;
       }
     }
@@ -1494,7 +1586,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       return;
     }
 
-    this.saveState = writeStoredProject(this.clips, this.project, this.nextId);
+    this.saveState = writeStoredProject(this.clips, this.project, this.nextId, this.revision);
   }
 
   openSaveChooser(): void {
@@ -1529,7 +1621,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** The whole edit: the clips, their cuts, their tags, and every setting. */
   exportProject(): void {
-    this.writeDocument(serializeProject(this.clips, this.project, this.nextId), 'video-editor-project');
+    this.writeDocument(serializeProject(this.clips, this.project, this.nextId, { projectRevision: this.revision }), 'video-editor-project');
     this.saveChooser = false;
     this.resumePreview();
     this.message = 'Project saved. It holds the edit, not the media — open it and add the same files again.';
@@ -2658,7 +2750,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.expandedCaptionId = null;
     this.playhead = 0;
     if (isPlatformBrowser(this.platformId) && !clip.awaitingFile) {
-      clip.previewUrl ??= URL.createObjectURL(clip.file);
+      clip.previewUrl ??= mediaObjectUrl(clip.file);
     }
   }
 
@@ -2687,7 +2779,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   openPreview(clip: EditorClip): void {
     if (!isMediaClip(clip) || !isPlatformBrowser(this.platformId) || clip.awaitingFile) return;
     this.suspendPreview();
-    clip.previewUrl ??= URL.createObjectURL(clip.file);
+    clip.previewUrl ??= mediaObjectUrl(clip.file);
     this.preview = clip;
   }
 
@@ -6524,7 +6616,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     if (clip.backgroundUrl) URL.revokeObjectURL(clip.backgroundUrl);
     clip.backgroundFile = file;
-    clip.backgroundUrl = URL.createObjectURL(file);
+    clip.backgroundUrl = mediaObjectUrl(file);
     this.touch();
     await this.refreshTextPreview();
   }
@@ -7279,6 +7371,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.transcriptStage = TRANSCRIPT_STAGE[progress.stage] ?? '';
     this.transcriptDetail = progress.detail ?? '';
     this.transcriptRatio = progress.ratio === null ? null : Math.min(1, Math.max(0, progress.ratio));
+    if (this.agentWorking && progress.stage !== this.lastAgentTranscriptStage) {
+      this.lastAgentTranscriptStage = progress.stage;
+      this.agentTranscriptStageTimeout?.(progress.stage);
+      const percent = progress.ratio === null ? '' : ` (${Math.round(progress.ratio * 100)}%)`;
+      this.pushAgentLog('action', `${this.transcriptStage || progress.stage}${percent}${progress.detail ? ` — ${progress.detail}` : ''}`, 'transcribe', 'DEBUG');
+    }
     this.cdr.markForCheck();
   }
 
@@ -7382,12 +7480,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private async captureThumbnail(clip: MediaClip): Promise<void> {
     if (!isPlatformBrowser(this.platformId) || clip.summary.kind === 'audio') return;
 
-    const url = URL.createObjectURL(clip.file);
+    const url = mediaObjectUrl(clip.file);
 
     try {
       const source =
         clip.summary.kind === 'image'
-          ? await createImageBitmap(clip.file).catch(() => null)
+          ? await imageBitmapForFile(clip.file).catch(() => null)
           : await this.grabFirstFrame(url, clip.summary.durationSeconds);
       if (!source) return;
 
@@ -8561,6 +8659,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // which the box it goes into is on the page.
     if (this.boardRotuloFoco) this.focarRotuloBoard();
 
+    if (this.agentLogDirty) {
+      this.agentLogDirty = false;
+      const agentConsole = this.agentLogConsole?.nativeElement;
+      if (agentConsole && this.agentLogFollowing) agentConsole.scrollTop = agentConsole.scrollHeight;
+    }
+
     if (!this.logDirty) return;
     this.logDirty = false;
 
@@ -8573,6 +8677,96 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const console = this.logConsole?.nativeElement;
     if (!console) return;
     this.logFollowing = console.scrollHeight - console.scrollTop - console.clientHeight <= LOG_STICK;
+  }
+
+  toggleAgentLog(): void {
+    this.agentLogOpen = !this.agentLogOpen;
+    if (this.agentLogOpen) {
+      this.agentLogFollowing = true;
+      this.agentLogDirty = true;
+    }
+  }
+
+  get agentControllerLabel(): string {
+    const controller = this.desktop.agentControl().controller;
+    return controller === 'chatgpt' ? 'ChatGPT' : controller === 'codex' ? 'Codex' : 'AI client';
+  }
+
+  openAgentLog(): void {
+    this.agentLogOpen = true;
+    this.agentLogMinimizedByUser = false;
+    this.agentLogFollowing = true;
+    this.agentLogDirty = true;
+  }
+
+  closeAgentLog(): void {
+    this.agentLogOpen = false;
+    this.agentLogMinimizedByUser = true;
+  }
+
+  clearAgentLog(): void {
+    if (this.agentWorking) return;
+    this.agentLog = [];
+    this.agentLogSeq = 0;
+  }
+
+  onAgentLogScroll(): void {
+    const console = this.agentLogConsole?.nativeElement;
+    if (!console) return;
+    this.agentLogFollowing = console.scrollHeight - console.scrollTop - console.clientHeight <= LOG_STICK;
+  }
+
+  agentLogMark(kind: AgentLogKind): string {
+    switch (kind) {
+      case 'command': return '$';
+      case 'action': return '>';
+      case 'done': return '*';
+      case 'fail': return 'x';
+    }
+  }
+
+  private onAgentSystemEvent(entry: AgentSystemEvent): void {
+    const kind: AgentLogKind = entry.level === 'ERROR' ? 'fail' : entry.level === 'WARN' ? 'action' : 'done';
+    this.pushAgentLog(kind, entry.message, entry.module || 'MCP bridge', entry.level, entry.timestamp);
+    if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
+  }
+
+  async copyAgentDiagnostic(): Promise<void> {
+    if (!this.agentDiagnostic) return;
+    try {
+      await navigator.clipboard.writeText(this.agentDiagnostic.fullText);
+      this.agentDiagnosticMessage = 'Diagnóstico copiado.';
+    } catch {
+      this.agentDiagnosticMessage = 'Não foi possível copiar automaticamente; use Salvar diagnóstico.';
+    }
+  }
+
+  saveAgentDiagnostic(): void {
+    const diagnostic = this.agentDiagnostic;
+    if (!diagnostic) return;
+    const blob = new Blob([diagnostic.fullText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `simplevlogeditor-diagnostic-${diagnostic.incidentId}.txt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.agentDiagnosticMessage = 'Diagnóstico salvo.';
+  }
+
+  async retryAgentDiagnostic(): Promise<void> {
+    const diagnostic = this.agentDiagnostic;
+    if (!diagnostic?.retryable || this.agentWorking) return;
+    this.agentDiagnosticMessage = '';
+    await this.handleAgentRequest({
+      ...diagnostic.request,
+      id: crypto.randomUUID(),
+      arguments: { ...diagnostic.request.arguments, requestId: crypto.randomUUID() }
+    }).catch(() => undefined);
+  }
+
+  get agentLogTail(): string {
+    return this.agentLog.length ? this.agentLog[this.agentLog.length - 1].text : '';
   }
 
   /**
@@ -8629,6 +8823,1622 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * undo instant instead of a second decode. Everything the reader can actually
    * change is copied, because that is precisely what must not be shared.
    */
+  // ---------------------------------------------------------- agent API
+
+  /**
+   * The transport-neutral automation entry point used by the Electron MCP
+   * host. It intentionally speaks in stable ids and source/output seconds; no
+   * command below clicks controls or depends on which panel happens to be open.
+   */
+  async handleAgentRequest(request: EditorAgentRequest): Promise<EditorAgentResponse> {
+    if (!request || typeof request.name !== 'string') {
+      throw new EditorAgentError('The editor command must have a name.');
+    }
+
+    const args = request.arguments ?? {};
+    const operationId = String(request.id || args['requestId'] || crypto.randomUUID());
+    const operationController = new AbortController();
+    this.agentOperationControllers.set(operationId, operationController);
+    this.currentAgentOperationId = operationId;
+    this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'started', percent: 0 });
+    this.agentWorking = true;
+    if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
+    if (request.name !== 'apply_edit_batch' && request.name !== '__has_media_path') this.pushAgentLog('command', this.agentCommandLabel(request.name, args), request.name, 'INFO');
+    else this.pushAgentLog('command', `Applying edit batch: ${String(args['label'] || 'Agent edit')}`, request.name, 'INFO');
+    await this.paintAgentProgress();
+
+    try {
+      let result: unknown;
+
+      switch (request.name) {
+        case 'get_editor_capabilities': result = this.agentCapabilities(); break;
+        case 'get_project': result = this.agentProject(); break;
+        case 'list_assets': result = this.agentAssets(); break;
+        case 'get_timeline': result = this.agentTimeline(); break;
+        case 'add_media': result = await this.agentAddMedia(args); break;
+        case '__has_media_path': result = this.agentHasMediaPath(args); break;
+        case '__import_media_path': result = await this.agentImportMediaPath(args); break;
+        case 'open_project': result = await this.agentOpenProject(args); break;
+        case 'save_project': result = await this.agentSaveProject(args); break;
+        case 'set_project_soundtrack': result = await this.agentSetProjectSoundtrack(args, operationController.signal, operationId); break;
+        case 'finish_editing': result = this.agentFinishEditing(args); break;
+        case 'preview': result = await this.agentPreview(args); break;
+        case 'apply_edit_batch': result = await this.agentApplyBatch(args as unknown as EditorAgentBatch, operationController.signal, operationId); break;
+        case 'undo': {
+          const possible = this.canUndo;
+          this.undo();
+          result = { undone: possible };
+          break;
+        }
+        case 'redo': {
+          const possible = this.canRedo;
+          this.redo();
+          result = { redone: possible };
+          break;
+        }
+        case 'analyze_silence': result = await this.agentAnalyzeSilence(args, operationController.signal, operationId); break;
+        case 'get_waveform_page': result = this.agentWaveformPage(args); break;
+        case 'transcribe': result = await this.agentTranscribe(args, operationController.signal); break;
+        case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest); break;
+        case 'get_contact_sheet': result = await this.agentContactSheet(args); break;
+        case 'export': result = await this.agentExport(args); break;
+        default: throw new EditorAgentError(`Unknown editor command "${request.name}".`, 'unknown_command');
+      }
+
+      if (request.name !== '__has_media_path') this.pushAgentLog('done', `${this.agentCommandNoun(request.name)} completed`, request.name, 'INFO');
+      this.desktop.reportAgentProgress({ operationId, state: 'applied', stage: 'completed', percent: 100 });
+      return { apiVersion: EDITOR_AGENT_API_VERSION, projectRevision: this.revision, result };
+    } catch (error) {
+      const friendly = error instanceof Error ? error.message : String(error);
+      this.pushAgentLog('fail', friendly, request.name, 'ERROR');
+      this.agentDiagnostic = await this.captureAgentDiagnostic(error, request);
+      this.agentDiagnosticMessage = '';
+      this.desktop.reportAgentProgress({
+        operationId,
+        state: operationController.signal.aborted ? 'cancelled' : 'failed',
+        stage: error && typeof error === 'object' && 'stage' in error ? error.stage : 'failed'
+      });
+      throw error;
+    } finally {
+      this.agentOperationControllers.delete(operationId);
+      if (this.currentAgentOperationId === operationId) this.currentAgentOperationId = '';
+      this.agentWorking = false;
+      await this.paintAgentProgress();
+    }
+  }
+
+  private agentCommandLabel(name: string, args: Record<string, unknown>): string {
+    const mediaName = () => {
+      const id = args['clipId'];
+      const clip = typeof id === 'string' ? this.clips.find((candidate) => candidate.id === id) : null;
+      return clip && isMediaClip(clip) ? clip.summary.fileName : clip && isTextClip(clip) ? clip.draft.text.slice(0, 36) || 'text card' : 'project';
+    };
+    switch (name) {
+      case 'get_editor_capabilities': return 'Reading editor capabilities';
+      case 'get_project': return 'Reading project';
+      case 'list_assets': return 'Listing project media';
+      case 'get_timeline': return 'Reading timeline';
+      case 'add_media': return `Importing ${Array.isArray(args['paths']) ? args['paths'].length : 0} media file(s)`;
+      case '__import_media_path': return `Importing ${String((args['descriptor'] as { name?: unknown } | undefined)?.name ?? 'local media')}`;
+      case '__has_media_path': return 'Checking for duplicate local media';
+      case 'open_project': return `Opening project ${String(args['path'] ?? '')}`;
+      case 'save_project': return `Saving project to ${String(args['path'] ?? '')}`;
+      case 'set_project_soundtrack': return `Setting project soundtrack to ${String(args['path'] ?? '')}`;
+      case 'finish_editing': return 'Finishing the AI editing session';
+      case 'preview': return `${String(args['action'] ?? 'open')} timeline preview`;
+      case 'apply_edit_batch': return `Applying ${Array.isArray(args['operations']) ? args['operations'].length : 0} timeline edit(s)`;
+      case 'undo': return 'Undoing the last edit';
+      case 'redo': return 'Redoing the last edit';
+      case 'analyze_silence': return args['clipId'] ? `Finding pauses in ${mediaName()}` : 'Finding pauses in all videos';
+      case 'transcribe': return `Understanding video ${mediaName()}`;
+      case 'get_frames': return `Inspecting frames from ${mediaName()}`;
+      case 'get_contact_sheet': return `Understanding the pictures in ${mediaName()}`;
+      case 'export': return `Exporting project to ${String(args['path'] ?? '')}`;
+      default: return `Running MCP command ${name}`;
+    }
+  }
+
+  private agentCommandNoun(name: string): string {
+    const labels: Record<string, string> = {
+      get_editor_capabilities: 'Capability discovery',
+      get_project: 'Project read', list_assets: 'Media inventory', get_timeline: 'Timeline read',
+      add_media: 'Media import', open_project: 'Project open', save_project: 'Project save', set_project_soundtrack: 'Project soundtrack', finish_editing: 'AI edit', preview: 'Preview command',
+      __import_media_path: 'Media file import', __has_media_path: 'Duplicate check',
+      apply_edit_batch: 'Edit batch', undo: 'Undo', redo: 'Redo',
+      analyze_silence: 'Silence analysis', get_waveform_page: 'Waveform page', transcribe: 'Video understanding', get_frames: 'Frame inspection',
+      get_contact_sheet: 'Visual inspection', export: 'Export'
+    };
+    return labels[name] ?? name;
+  }
+
+  private pushAgentLog(
+    kind: AgentLogKind,
+    text: string,
+    module = 'Editor',
+    level: AgentLogLevel = kind === 'fail' ? 'ERROR' : 'INFO',
+    timestamp = new Date().toISOString()
+  ): void {
+    this.agentLog.push({
+      seq: this.agentLogSeq++,
+      timestamp: this.formatAgentTimestamp(timestamp),
+      level,
+      module,
+      kind,
+      text
+    });
+    if (this.agentLog.length > AGENT_LOG_LIMIT) this.agentLog.splice(0, this.agentLog.length - AGENT_LOG_LIMIT);
+    this.agentLogDirty = true;
+    this.cdr.markForCheck();
+  }
+
+  private formatAgentTimestamp(value: string): string {
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return value;
+    const part = (number: number, width = 2) => String(number).padStart(width, '0');
+    return `${date.getFullYear()}-${part(date.getMonth() + 1)}-${part(date.getDate())} ${part(date.getHours())}:${part(date.getMinutes())}:${part(date.getSeconds())}.${part(date.getMilliseconds(), 3)}`;
+  }
+
+  private async captureAgentDiagnostic(error: unknown, request: EditorAgentRequest): Promise<AgentDiagnostic> {
+    const incidentId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const runtime: AgentRuntimeInfo = await this.desktop.getAgentRuntimeInfo().catch(() => ({}));
+    const typed = error as Error & {
+      code?: string; stage?: string; details?: unknown; cause?: unknown;
+      exitCode?: number; signal?: string; stdout?: string; stderr?: string;
+    };
+    const retryable = ['transcribe', 'analyze_silence', 'get_frames', 'get_contact_sheet', 'get_project', 'list_assets', 'get_timeline']
+      .includes(request.name) || (request.name === 'apply_edit_batch' && request.arguments?.['dryRun'] === true);
+    const recentLogs = this.agentLog.slice(-40).map((line) =>
+      `[${line.timestamp}] [${line.level}] [${line.module}] ${line.text}`);
+    const diagnostic = {
+      incidentId,
+      timestamp: createdAt,
+      editor: runtime,
+      operation: request.name,
+      parameters: this.maskAgentParameters(request.arguments ?? {}),
+      identifiers: {
+        requestId: request.arguments?.['requestId'] ?? request.id ?? null,
+        clipId: request.arguments?.['clipId'] ?? null,
+        assetId: request.arguments?.['assetId'] ?? null,
+        projectRevision: this.revision,
+        sessionId: this.desktop.agentControl().sessionId ?? runtime.sessionId ?? null
+      },
+      connection: this.desktop.agentControl(),
+      queue: { state: this.agentWorking ? 'failed' : 'idle', currentOperation: request.name },
+      error: this.serializeAgentError(error),
+      checkpoint: { path: this.desktop.agentControl().recoveryPath ?? null },
+      project: { revision: this.revision, clipCount: this.clips.length, duration: this.plan.totalDuration },
+      retryable,
+      nextSteps: retryable
+        ? ['Review the stage and original cause below.', 'Correct invalid media/model settings if shown.', 'Use Tentar novamente after the cause is addressed.']
+        : ['Review whether the project was rolled back.', 'Inspect the recovery checkpoint before repeating a mutating command.', 'Send this complete diagnostic to support.'],
+      recentLogs
+    };
+    const fullText = `Simple Vlog Editor diagnostic\n${JSON.stringify(diagnostic, null, 2)}`;
+    return {
+      incidentId, createdAt, operation: request.name,
+      summary: `${typed?.name || 'Error'}${typed?.stage ? ` at ${typed.stage}` : ''}: ${typed?.message || String(error)}`,
+      fullText, retryable, request
+    };
+  }
+
+  private serializeAgentError(error: unknown, seen = new Set<unknown>()): unknown {
+    if (!(error instanceof Error)) return { type: typeof error, message: String(error) };
+    if (seen.has(error)) return { name: 'CircularError', message: 'Circular cause omitted.' };
+    seen.add(error);
+    const extended = error as Error & Record<string, unknown>;
+    return {
+      type: error.constructor?.name || 'Error', name: error.name, message: error.message,
+      code: extended['code'] ?? null, stage: extended['stage'] ?? null,
+      stack: error.stack ?? null, details: extended['details'] ?? null,
+      exitCode: extended['exitCode'] ?? null, signal: extended['signal'] ?? null,
+      stdout: extended['stdout'] ?? null, stderr: extended['stderr'] ?? null,
+      cause: extended['cause'] ? this.serializeAgentError(extended['cause'], seen) : null
+    };
+  }
+
+  private maskAgentParameters(value: unknown, key = ''): unknown {
+    if (/token|secret|password|authorization|api[-_]?key/i.test(key)) return '[REDACTED]';
+    if (Array.isArray(value)) return value.map((entry) => this.maskAgentParameters(entry));
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(Object.entries(value as Record<string, unknown>)
+        .map(([entryKey, entry]) => [entryKey, this.maskAgentParameters(entry, entryKey)]));
+    }
+    return value;
+  }
+
+  /** Gives Angular and the canvas preview one browser frame to show each MCP edit. */
+  private async paintAgentProgress(): Promise<void> {
+    this.cdr.detectChanges();
+    await new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, 50);
+      requestAnimationFrame(finish);
+    });
+  }
+
+  private agentProject(): unknown {
+    return {
+      apiVersion: EDITOR_AGENT_API_VERSION,
+      revision: this.revision,
+      duration: this.plan.totalDuration,
+      clipCount: this.clips.length,
+      project: serializeProject(this.clips, this.project, this.nextId, { projectRevision: this.revision })
+    };
+  }
+
+  private agentCapabilities(): unknown {
+    return {
+      commands: [
+        'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'add_media', 'open_project', 'save_project', 'set_project_soundtrack', 'finish_editing', 'preview',
+        'analyze_silence', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export'
+      ],
+      operationTypes: [
+        'remove_clip', 'move_clip', 'duplicate_clip', 'add_text_clip', 'update_text_clip', 'set_text_background',
+        'add_transition', 'update_transition', 'split_clip', 'trim_clip', 'clear_trim', 'set_image_duration',
+        'delete_source_range', 'restore_source_ranges', 'set_detected_range', 'set_speed', 'set_volume', 'set_audio_mode', 'set_clip_edits',
+        'clear_clip_overrides', 'attach_audio', 'detach_audio', 'add_caption', 'update_caption', 'remove_caption',
+        'set_tag', 'remove_tag', 'add_push_in', 'update_push_in', 'remove_push_in',
+        'add_zoom', 'update_zoom', 'remove_zoom', 'set_project_settings'
+      ],
+      pushIn: {
+        preferredOperations: ['add_push_in', 'update_push_in', 'remove_push_in'],
+        legacyAliases: ['add_zoom', 'update_zoom', 'remove_zoom'],
+        timeSpace: 'source',
+        scalePercent: MANUAL_ZOOM_LIMITS.scalePercent,
+        rampSeconds: MANUAL_ZOOM_LIMITS.rampSeconds,
+        durationSeconds: MANUAL_ZOOM_LIMITS.seconds,
+        note: 'A push-in ramps from 1x to scalePercent, holds for the selected source interval, and optionally eases back out.'
+      },
+      tagShapes: [
+        ...TAG_SHAPES.map((item) => ({ id: item.id, label: item.label, qr: false })),
+        ...TAG_SPECIALS.map((item) => ({ id: item.id, label: item.label, family: item.family, qr: shapeIsQr(item.id) }))
+      ],
+      transitions: TRANSITIONS.map((item) => ({ id: item.id, label: item.label, description: item.description })),
+      textCards: {
+        fonts: FONTS.map((item) => item.id),
+        animations: ANIMATIONS.map((item) => item.id),
+        legibility: LEGIBILITY_OPTIONS.map((item) => item.id),
+        align: ['left', 'center', 'right'],
+        vertical: ['top', 'middle', 'bottom']
+      },
+      captions: {
+        presets: CAPTION_PRESETS.map((item) => item.id),
+        fonts: CAPTION_FONTS.map((item) => item.value)
+      },
+      project: {
+        aspects: ASPECTS.map((item) => item.value),
+        reframes: REFRAME_FITS.map((item) => item.value),
+        resolutions: ['auto', ...RESOLUTIONS.map((item) => item.value)],
+        videoFormats: VIDEO_FORMATS.map((item) => item.id),
+        audioFormats: AUDIO_FORMATS.map((item) => item.id)
+      },
+      audio: {
+        defaultTarget: 'project',
+        note: 'Omit clipId when attaching generally requested music or background audio. Use clipId only for an explicitly named section.'
+      },
+      semantics: {
+        mutable: ['add_media', 'open_project', 'set_project_soundtrack', 'apply_edit_batch', 'undo', 'redo'],
+        derivedState: ['analyze_silence'],
+        readOnly: ['get_project', 'list_assets', 'get_timeline', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet'],
+        waveform: 'analyze_silence returns summary metadata by default; use includeWaveform with a bounded page or get_waveform_page.'
+      }
+    };
+  }
+
+  private agentAssetId(clip: MediaClip): string {
+    const ref = clip.fileRef ?? { name: clip.file.name, size: clip.file.size, lastModified: clip.file.lastModified };
+    let hash = 2166136261;
+    const source = `${ref.name}\u0000${ref.size}\u0000${ref.lastModified}`;
+    for (let i = 0; i < source.length; i++) {
+      hash ^= source.charCodeAt(i);
+      hash = Math.imul(hash, 16777619);
+    }
+    return `asset-${(hash >>> 0).toString(16).padStart(8, '0')}`;
+  }
+
+  private agentAssets(): unknown[] {
+    const assets = new Map<string, { id: string; clips: string[]; file: unknown; available: boolean }>();
+    for (const clip of this.clips.filter(isMediaClip)) {
+      const id = this.agentAssetId(clip);
+      const current = assets.get(id);
+      if (current) {
+        current.clips.push(clip.id);
+        continue;
+      }
+      assets.set(id, {
+        id,
+        clips: [clip.id],
+        available: !clip.awaitingFile,
+        file: {
+          name: clip.summary.fileName,
+          ...(clip.sourcePath ? { path: clip.sourcePath } : {}),
+          size: clip.summary.fileSize,
+          lastModified: clip.fileRef?.lastModified ?? clip.file.lastModified,
+          ...clip.summary
+        }
+      });
+    }
+    return [...assets.values()];
+  }
+
+  private agentTimeline(): unknown {
+    const planById = new Map(this.plan.clips.map((entry) => [entry.clip.id, entry]));
+    return {
+      revision: this.revision,
+      duration: this.plan.totalDuration,
+      clips: this.clips.map((clip, index) => {
+        const entry = planById.get(clip.id);
+        const base = {
+          id: clip.id,
+          kind: clip.kind,
+          index,
+          outputStart: entry?.outputStart ?? null,
+          outputDuration: entry?.outputDuration ?? 0
+        };
+        if (isTransitionClip(clip)) return { ...base, settings: clip.settings };
+        if (isTextClip(clip)) return {
+          ...base,
+          draft: clip.draft,
+          tag: clip.tag ?? null,
+          edits: this.editsFor(clip),
+          replacementAudio: clip.replacementAudio?.summary.fileName ?? null,
+          background: clip.backgroundFile?.name ?? clip.backgroundRef?.name ?? null
+        };
+        return {
+          ...base,
+          assetId: this.agentAssetId(clip),
+          source: clip.summary.fileName,
+          sourceDuration: clip.summary.durationSeconds,
+          inPoint: clip.inPoint ?? 0,
+          outPoint: clip.outPoint ?? clip.summary.durationSeconds,
+          keepRanges: entry?.keepRanges ?? [],
+          removedRanges: removedRanges(clip, this.editsFor(clip)),
+          manualCuts: clip.manualCuts,
+          detectedSilences: clip.detected,
+          speed: this.editsFor(clip).speed,
+          audioMode: this.editsFor(clip).audioMode,
+          edits: this.editsFor(clip),
+          captions: clip.captions ?? [],
+          tag: clip.tag ?? null,
+          manualZooms: clip.manualZooms ?? [],
+          pushIns: clip.manualZooms ?? [],
+          replacementAudio: clip.replacementAudio?.summary.fileName ?? null
+        };
+      })
+    };
+  }
+
+  private async agentAddMedia(args: Record<string, unknown>): Promise<unknown> {
+    const paths = args['paths'];
+    if (!Array.isArray(paths) || !paths.every((path) => typeof path === 'string')) {
+      throw new EditorAgentError('paths must be an array of file paths.', 'invalid_arguments');
+    }
+    const at = args['atIndex'] === undefined ? undefined : finiteNumber(args['atIndex'], 'atIndex');
+    const files = await this.desktop.readAgentFiles(paths as string[]);
+    const clips = await this.add(files, at);
+    for (const clip of clips) this.pushAgentLog('action', `Added ${clip.file.name} to the timeline`);
+    await this.paintAgentProgress();
+    return { added: clips.map((clip) => ({ clipId: clip.id, assetId: this.agentAssetId(clip), name: clip.file.name })) };
+  }
+
+  private agentHasMediaPath(args: Record<string, unknown>): { present: boolean; clipId?: string; assetId?: string } {
+    const sourcePath = stringValue(args['path'], 'path');
+    const key = this.agentPathKey(sourcePath);
+    const clip = this.clips.find((candidate): candidate is MediaClip =>
+      isMediaClip(candidate) && !!candidate.sourcePath && this.agentPathKey(candidate.sourcePath) === key
+    );
+    return clip && !clip.awaitingFile ? { present: true, clipId: clip.id, assetId: this.agentAssetId(clip) } : { present: false };
+  }
+
+  /** Commits one already-probed descriptor. No video bytes cross this call. */
+  private async agentImportMediaPath(args: Record<string, unknown>): Promise<unknown> {
+    const descriptor = args['descriptor'] as DesktopFileDescriptor | undefined;
+    const summary = args['summary'] as MediaSummary | undefined;
+    if (!descriptor || typeof descriptor.url !== 'string' || typeof descriptor.filePath !== 'string' || !summary) {
+      throw new EditorAgentError('A path-backed descriptor and probed summary are required.', 'invalid_arguments');
+    }
+    if (args['expectedRevision'] !== undefined && finiteNumber(args['expectedRevision'], 'expectedRevision') !== this.revision) {
+      throw new EditorAgentError('The project changed before this media file could be committed.', 'revision_conflict', {
+        expectedRevision: args['expectedRevision'], actualRevision: this.revision
+      });
+    }
+    const duplicate = this.agentHasMediaPath({ path: descriptor.filePath });
+    if (duplicate.present && args['skipDuplicates'] !== false) return { status: 'already_present', ...duplicate };
+
+    const file = new PathBackedFile(descriptor);
+    const waiting = this.clips.find((candidate): candidate is MediaClip =>
+      isMediaClip(candidate) && !!candidate.awaitingFile && !!candidate.sourcePath &&
+      this.agentPathKey(candidate.sourcePath) === this.agentPathKey(descriptor.filePath!)
+    );
+    if (waiting) {
+      waiting.file = file;
+      waiting.summary = summary;
+      waiting.awaitingFile = false;
+      waiting.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: descriptor.filePath };
+      waiting.previewUrl = null;
+      this.enqueueThumbnail(waiting);
+      this.touch();
+      this.pushAgentLog('action', `Reconnected ${file.name} from its local path`);
+      await this.paintAgentProgress();
+      return { status: 'imported', relinked: true, clipId: waiting.id, assetId: this.agentAssetId(waiting), name: file.name };
+    }
+    const clip: MediaClip = {
+      kind: 'media', id: `clip-${this.nextId++}`, file, sourcePath: descriptor.filePath,
+      summary, info: null, overrides: null, detected: [], manualCuts: [], analysis: null,
+      analyzedWith: null, replacementAudio: null, caption: null, previewUrl: null, thumbUrl: null
+    };
+    const requested = args['atIndex'] === undefined ? this.clips.length : Math.trunc(finiteNumber(args['atIndex'], 'atIndex'));
+    const position = Math.max(0, Math.min(requested, this.clips.length));
+    this.clips.splice(position, 0, clip);
+    this.enqueueThumbnail(clip);
+    this.applyTimelapseTarget();
+    this.touch();
+    this.pushAgentLog('action', `Added ${clip.file.name} to the timeline`);
+    await this.paintAgentProgress();
+    await this.openTimelinePreview();
+    return { status: 'imported', clipId: clip.id, assetId: this.agentAssetId(clip), name: clip.file.name };
+  }
+
+  private agentPathKey(sourcePath: string): string {
+    return sourcePath.replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase('en-US');
+  }
+
+  private async agentOpenProject(args: Record<string, unknown>): Promise<unknown> {
+    const path = stringValue(args['path'], 'path');
+    if (args['expectedRevision'] !== undefined && finiteNumber(args['expectedRevision'], 'expectedRevision') !== this.revision) {
+      throw new EditorAgentError('The project changed before open_project could run.', 'revision_conflict', {
+        expectedRevision: args['expectedRevision'], actualRevision: this.revision,
+        nextStep: 'Call get_project and retry with its current projectRevision.'
+      });
+    }
+    const [file] = await this.desktop.readAgentFiles([path]);
+    let parsed: unknown;
+    try { parsed = JSON.parse(await file.text()); }
+    catch { throw new EditorAgentError('The project file is not valid JSON.', 'invalid_project'); }
+
+    if (looksLikeSettingsDocument(parsed)) {
+      await this.applySettingsDocument(parsed, file.name);
+      return { kind: 'settings', path, revision: this.revision };
+    }
+    if (!looksLikeProject(parsed)) throw new EditorAgentError('The file is not a supported editor project.', 'invalid_project');
+    const stored = parsed as StoredProject;
+    this.applyRestored(restoreProject(stored));
+    const relink = await this.agentRelinkStoredPaths(stored);
+    this.cdr.markForCheck();
+    return {
+      kind: 'project', path, revision: this.revision,
+      restoredFromRevision: (parsed as StoredProject).projectRevision ?? null,
+      awaitingFiles: this.awaitingCount, awaitingSounds: this.awaitingSounds,
+      recoveryReport: relink
+    };
+  }
+
+  private async agentRelinkStoredPaths(stored: StoredProject): Promise<unknown> {
+    const paths = new Set<string>();
+    const addSound = (sound: { ref?: { path?: string } } | null | undefined) => {
+      if (sound?.ref?.path) paths.add(sound.ref.path);
+    };
+    addSound(stored.settings.defaultAudio);
+    for (const clip of stored.clips) {
+      if (clip.kind === 'media' && clip.file.path) paths.add(clip.file.path);
+      if (clip.kind !== 'transition') addSound(clip.replacementAudio);
+      if (clip.kind === 'text' && clip.background?.path) paths.add(clip.background.path);
+    }
+    let relinked = 0;
+    const unavailable: { path: string; error: string }[] = [];
+    for (const sourcePath of paths) {
+      try {
+        const [file] = await this.desktop.readAgentFiles([sourcePath]);
+        if (file && this.attachRestoredFile(file)) relinked++;
+      } catch (error) {
+        unavailable.push({ path: sourcePath, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    this.pushAgentLog(
+      unavailable.length ? 'action' : 'done',
+      `Recovery relinked ${relinked} stored media path(s); ${unavailable.length} remain unavailable.`,
+      'open_project', unavailable.length ? 'WARN' : 'INFO'
+    );
+    return {
+      requestedPaths: paths.size, relinked, unavailable,
+      awaitingFiles: this.awaitingCount, awaitingSounds: this.awaitingSounds,
+      recoverable: unavailable.length > 0
+    };
+  }
+
+  private async agentSaveProject(args: Record<string, unknown>): Promise<unknown> {
+    const path = stringValue(args['path'], 'path');
+    const kind = args['kind'] === 'settings' ? 'settings' : 'project';
+    const content = kind === 'settings'
+      ? settingsDocumentFrom(String(args['name'] || 'MCP settings'), this.project)
+      : serializeProject(this.clips, this.project, this.nextId, { projectRevision: this.revision });
+    const bytes = new TextEncoder().encode(JSON.stringify(content, null, 2));
+    const handle = await this.desktop.openAgentOutput(path);
+    try {
+      await handle.write(bytes);
+      await handle.close();
+    } catch (error) {
+      await handle.abort().catch(() => undefined);
+      throw error;
+    }
+    return { path, kind, bytes: bytes.byteLength, savedProjectRevision: this.revision };
+  }
+
+  private async agentSetProjectSoundtrack(
+    args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
+    const path = stringValue(args['path'], 'path');
+    const response = await this.agentApplyBatch({
+      expectedRevision: args['expectedRevision'] === undefined
+        ? undefined
+        : finiteNumber(args['expectedRevision'], 'expectedRevision'),
+      label: 'Set project soundtrack',
+      operations: [{
+        type: 'attach_audio', path,
+        skipLeadingSilence: args['skipLeadingSilence'] === undefined ? true : Boolean(args['skipLeadingSilence'])
+      }]
+    }, signal, operationId);
+    return {
+      ...(response as Record<string, unknown>),
+      target: 'project', path,
+      appliesTo: 'silent and timelapse clips according to project audio settings',
+      soundtrack: this.project.defaultAudio?.summary.fileName ?? null
+    };
+  }
+
+  private async agentPreview(args: Record<string, unknown>): Promise<unknown> {
+    const action = String(args['action'] ?? 'open');
+    if (!['open', 'play', 'pause', 'seek', 'close'].includes(action)) {
+      throw new EditorAgentError('preview action must be open, play, pause, seek or close.', 'invalid_arguments');
+    }
+    if (action === 'close') this.closeTimelinePreview();
+    else {
+      await this.openTimelinePreview();
+      if (action === 'seek') this.onScrub(finiteNumber(args['time'], 'time'));
+      if (action === 'play' && this.player && !this.player.playing) {
+        await this.zone.runOutsideAngular(() => this.player!.play());
+        this.previewPlaying = true;
+      }
+      if (action === 'pause' && this.player?.playing) {
+        this.zone.runOutsideAngular(() => this.player?.pause());
+        this.previewPlaying = false;
+      }
+    }
+    this.cdr.markForCheck();
+    return { open: this.previewOpen, playing: this.previewPlaying, time: this.previewTime, duration: this.plan.totalDuration };
+  }
+
+  private agentFinishEditing(args: Record<string, unknown>): unknown {
+    this.agentCompletionSummary = typeof args['summary'] === 'string' && args['summary'].trim()
+      ? args['summary'].trim().slice(0, 1000)
+      : 'The AI edit is complete and the recovery checkpoint is ready.';
+    // The completion choice replaces the activity console. Keeping the console
+    // open would cover the preview as soon as the user chooses to watch it.
+    this.agentLogOpen = false;
+    this.agentCompletionOpen = true;
+    this.cdr.markForCheck();
+    return { shown: true, choices: ['preview', 'render'], projectRevision: this.revision };
+  }
+
+  closeAgentCompletion(): void {
+    this.agentCompletionOpen = false;
+  }
+
+  async previewAgentCompletion(): Promise<void> {
+    this.agentCompletionOpen = false;
+    await this.openTimelinePreview();
+  }
+
+  async renderAgentCompletion(): Promise<void> {
+    this.agentCompletionOpen = false;
+    await this.export('video');
+  }
+
+  private agentMediaClip(id: unknown): MediaClip {
+    const clipId = stringValue(id, 'clipId');
+    const clip = this.clips.find((candidate): candidate is MediaClip => candidate.id === clipId && isMediaClip(candidate));
+    if (!clip) throw new EditorAgentError(`Media clip "${clipId}" was not found.`, 'not_found');
+    if (clip.awaitingFile) throw new EditorAgentError(`Media clip "${clipId}" is waiting for its source file.`, 'media_unavailable');
+    return clip;
+  }
+
+  private agentClip(id: unknown): EditorClip {
+    const clipId = stringValue(id, 'clipId');
+    const clip = this.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) throw new EditorAgentError(`Clip "${clipId}" was not found.`, 'not_found');
+    return clip;
+  }
+
+  private async agentApplyBatch(batch: EditorAgentBatch, signal?: AbortSignal, operationId = ''): Promise<unknown> {
+    if (!batch || !Array.isArray(batch.operations) || !batch.operations.length) {
+      throw new EditorAgentError('operations must be a non-empty array.', 'invalid_arguments');
+    }
+    if (batch.operations.length > 500) throw new EditorAgentError('A batch may contain at most 500 operations.', 'limit_exceeded');
+    if (batch.expectedRevision !== undefined && batch.expectedRevision !== this.revision) {
+      throw new EditorAgentError(
+        `Project revision ${batch.expectedRevision} is stale; the current revision is ${this.revision}.`,
+        'revision_conflict', {
+          expectedRevision: batch.expectedRevision, actualRevision: this.revision,
+          nextStep: 'Call get_project after every open/restart/recovery and retry with its current projectRevision.'
+        }
+      );
+    }
+
+    const before = this.snapshot();
+    const beforeDuration = this.plan.totalDuration;
+    const startRevision = this.revision;
+    this.applyingHistory = true;
+
+    try {
+      for (let operationIndex = 0; operationIndex < batch.operations.length; operationIndex++) {
+        if (signal?.aborted) throw new EditorAgentError('Edit batch cancellation was acknowledged before commit.', 'cancelled', {
+          terminalState: 'cancelled', rolledBack: true, appliedOperationsBeforeRollback: operationIndex
+        });
+        const operation = batch.operations[operationIndex];
+        const percent = Math.round(operationIndex * 100 / batch.operations.length);
+        if (operationId) this.desktop.reportAgentProgress({
+          operationId, state: 'processing', stage: batch.dryRun ? 'validating-batch' : 'applying-batch', percent,
+          operationIndex, operationCount: batch.operations.length,
+          clipId: 'clipId' in operation ? operation.clipId : null
+        });
+        this.pushAgentLog('action', `${batch.dryRun ? 'Simulating: ' : ''}${this.agentOperationLabel(operation)}`);
+        await this.paintAgentProgress();
+        await this.agentApplyOperation(operation);
+        if (!batch.dryRun) await this.paintAgentProgress();
+      }
+      // Planning is the strongest inexpensive invariant check: malformed cuts,
+      // joins and durations fail here before the transaction is committed.
+      this.planCache = null;
+      this.planRevision = -1;
+      const afterDuration = this.plan.totalDuration;
+
+      if (batch.dryRun) {
+        this.applySnapshot(before);
+        this.revision = startRevision;
+        return {
+          dryRun: true,
+          terminalState: 'validated',
+          operationCount: batch.operations.length,
+          durationBefore: beforeDuration,
+          durationAfter: afterDuration,
+          removedSeconds: Math.max(0, beforeDuration - afterDuration)
+        };
+      }
+
+      this.history.push(before);
+      if (this.history.length > HISTORY_LIMIT) this.history.shift();
+      this.future.length = 0;
+      this.revision = startRevision + 1;
+      this.pending = this.snapshot();
+      this.pendingSignature = this.signature(this.pending);
+      this.lastChangeAt = 0;
+      this.scheduleSave();
+      this.cdr.markForCheck();
+      return {
+        committed: true,
+        terminalState: 'applied',
+        label: batch.label ?? 'Agent edit',
+        operationCount: batch.operations.length,
+        durationBefore: beforeDuration,
+        durationAfter: afterDuration,
+        removedSeconds: Math.max(0, beforeDuration - afterDuration)
+      };
+    } catch (error) {
+      this.applySnapshot(before);
+      this.revision = startRevision;
+      if (error instanceof EditorAgentError && error.code === 'cancelled') throw error;
+      throw new EditorAgentError(
+        `Edit batch failed and was rolled back: ${error instanceof Error ? error.message : String(error)}`,
+        'batch_rolled_back',
+        {
+          terminalState: 'failed', rolledBack: true, restoredRevision: startRevision,
+          originalError: error instanceof Error ? { name: error.name, message: error.message, stack: error.stack } : String(error)
+        }
+      );
+    } finally {
+      this.applyingHistory = false;
+    }
+  }
+
+  private agentClipLabel(clipId: string): string {
+    const clip = this.clips.find((candidate) => candidate.id === clipId);
+    if (!clip) return clipId;
+    if (isMediaClip(clip)) return clip.summary.fileName;
+    if (isTextClip(clip)) return clip.draft.text.trim().slice(0, 42) || 'text card';
+    return `transition ${clip.id}`;
+  }
+
+  private agentOperationLabel(operation: EditorAgentOperation): string {
+    const label = 'clipId' in operation && typeof operation.clipId === 'string'
+      ? this.agentClipLabel(operation.clipId)
+      : '';
+    switch (operation.type) {
+      case 'remove_clip': return `Removing ${label}`;
+      case 'move_clip': return `Moving ${label} to timeline position ${operation.toIndex}`;
+      case 'duplicate_clip': return `Duplicating ${label}`;
+      case 'add_text_clip': return `Adding text card: ${operation.text.slice(0, 60)}`;
+      case 'update_text_clip': return `Updating text card: ${label}`;
+      case 'set_text_background': return operation.path ? `Adding a background to ${label}` : `Removing the background from ${label}`;
+      case 'add_transition': return `Adding a transition at timeline position ${operation.atIndex}`;
+      case 'update_transition': return `Updating ${label}`;
+      case 'split_clip': return `Cutting ${label} at ${operation.sourceTime.toFixed(2)}s`;
+      case 'trim_clip': return `Trimming ${label}`;
+      case 'clear_trim': return `Restoring the trim on ${label}`;
+      case 'set_image_duration': return `Changing the duration of ${label} to ${operation.durationSeconds}s`;
+      case 'delete_source_range': return `Cutting ${operation.start.toFixed(2)}s–${operation.end.toFixed(2)}s from ${label}`;
+      case 'restore_source_ranges': return `Restoring removed ranges in ${label}`;
+      case 'set_detected_range': return `${operation.enabled ? 'Removing' : 'Keeping'} detected pause ${operation.rangeIndex + 1} in ${label}`;
+      case 'set_speed': return `Changing the speed of ${label} to ${operation.speed}x`;
+      case 'set_volume': return `Changing the volume of ${label} to ${operation.volumePercent}%`;
+      case 'set_audio_mode': return `Changing the audio mode of ${label} to ${operation.mode}`;
+      case 'set_clip_edits': return `Updating effects on ${label}`;
+      case 'clear_clip_overrides': return `Returning ${label} to project defaults`;
+      case 'attach_audio': return operation.clipId ? `Adding audio to ${label}` : 'Adding the project soundtrack';
+      case 'detach_audio': return operation.clipId ? `Removing replacement audio from ${label}` : 'Removing the project soundtrack';
+      case 'add_caption': return `Adding a caption to ${label}: ${operation.text.slice(0, 60)}`;
+      case 'update_caption': return `Updating a caption on ${label}`;
+      case 'remove_caption': return `Removing a caption from ${label}`;
+      case 'set_tag': {
+        const tag = operation.tag;
+        return typeof tag['qrText'] === 'string' || String(tag['shape'] ?? '').startsWith('qr-')
+          ? `Adding a QR Code tag to ${label}`
+          : `Adding tag to ${label}: ${String(tag['text'] ?? '').slice(0, 60)}`;
+      }
+      case 'remove_tag': return `Removing the tag from ${label}`;
+      case 'add_zoom': return `Adding a zoom to ${label}`;
+      case 'add_push_in': return `Adding a dynamic push-in to ${label}`;
+      case 'update_zoom': return `Updating a zoom on ${label}`;
+      case 'update_push_in': return `Updating a dynamic push-in on ${label}`;
+      case 'remove_zoom': return `Removing a zoom from ${label}`;
+      case 'remove_push_in': return `Removing a dynamic push-in from ${label}`;
+      case 'set_project_settings': return 'Updating project settings';
+    }
+  }
+
+  private async agentApplyOperation(operation: EditorAgentOperation): Promise<void> {
+    switch (operation.type) {
+      case 'remove_clip': {
+        const clip = this.agentClip(operation.clipId);
+        this.remove(this.clips.indexOf(clip));
+        return;
+      }
+      case 'move_clip': {
+        const clip = this.agentClip(operation.clipId);
+        const from = this.clips.indexOf(clip);
+        const to = Math.max(0, Math.min(this.clips.length - 1, Math.round(finiteNumber(operation.toIndex, 'toIndex'))));
+        this.clips.splice(to, 0, this.clips.splice(from, 1)[0]);
+        this.touch();
+        return;
+      }
+      case 'duplicate_clip': this.duplicate(this.clips.indexOf(this.agentClip(operation.clipId))); return;
+      case 'add_text_clip': {
+        const at = operation.atIndex === undefined
+          ? this.clips.length
+          : Math.max(0, Math.min(this.clips.length, Math.round(finiteNumber(operation.atIndex, 'atIndex'))));
+        const clip: TextClip = {
+          kind: 'text',
+          id: `text-${this.nextId++}`,
+          draft: this.agentTextDraft(DEFAULT_TEXT_DRAFT, operation.text, operation.draft, operation.durationSeconds),
+          backgroundFile: null,
+          backgroundUrl: null,
+          replacementAudio: null,
+          overrides: null,
+          tag: null
+        };
+        this.clips.splice(at, 0, clip);
+        this.touch();
+        return;
+      }
+      case 'update_text_clip': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isTextClip(clip)) throw new EditorAgentError('update_text_clip requires a text card.', 'invalid_target');
+        clip.draft = this.agentTextDraft(clip.draft, operation.text, operation.draft, operation.durationSeconds);
+        this.touch();
+        return;
+      }
+      case 'set_text_background': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isTextClip(clip)) throw new EditorAgentError('set_text_background requires a text card.', 'invalid_target');
+        if (clip.backgroundUrl) URL.revokeObjectURL(clip.backgroundUrl);
+        if (operation.path === null) {
+          clip.backgroundFile = null;
+          clip.backgroundUrl = null;
+          clip.backgroundRef = undefined;
+        } else {
+          const [file] = await this.desktop.readAgentFiles([stringValue(operation.path, 'path')]);
+          if (!file.type.startsWith('image/')) throw new EditorAgentError('A text-card background must be an image.', 'invalid_media');
+          clip.backgroundFile = file;
+          clip.backgroundUrl = mediaObjectUrl(file);
+          clip.backgroundRef = undefined;
+        }
+        this.touch();
+        return;
+      }
+      case 'add_transition': {
+        const at = Math.round(finiteNumber(operation.atIndex, 'atIndex'));
+        if (!this.canInsertTransition(at)) {
+          throw new EditorAgentError('A transition must be placed between two playable clips.', 'invalid_range');
+        }
+        const clip: TransitionClip = {
+          kind: 'transition', id: `join-${this.nextId++}`,
+          settings: this.agentTransitionSettings(DEFAULT_TRANSITION, operation.settings)
+        };
+        this.clips.splice(at, 0, clip);
+        this.touch();
+        return;
+      }
+      case 'update_transition': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isTransitionClip(clip)) throw new EditorAgentError('update_transition requires a transition.', 'invalid_target');
+        clip.settings = this.agentTransitionSettings(clip.settings, operation.settings);
+        this.touch();
+        return;
+      }
+      case 'split_clip': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const sourceTime = finiteNumber(operation.sourceTime, 'sourceTime');
+        if (!this.canSplitAt(clip, sourceTime)) {
+          throw new EditorAgentError('The split must leave at least 0.2 seconds on both sides.', 'invalid_range');
+        }
+        this.splitClip(clip, sourceTime);
+        return;
+      }
+      case 'trim_clip': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const from = operation.inPoint ?? clip.inPoint ?? 0;
+        const to = operation.outPoint ?? clip.outPoint ?? clip.summary.durationSeconds;
+        if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || to > clip.summary.durationSeconds || to - from < MIN_CLIP_SECONDS) {
+          throw new EditorAgentError('trim_clip must leave at least 0.2 seconds inside the source.', 'invalid_range');
+        }
+        clip.inPoint = from > 0 ? from : undefined;
+        clip.outPoint = to < clip.summary.durationSeconds ? to : undefined;
+        this.touch();
+        return;
+      }
+      case 'clear_trim': this.clearTrim(this.agentMediaClip(operation.clipId)); return;
+      case 'set_image_duration': {
+        const clip = this.agentMediaClip(operation.clipId);
+        if (clip.summary.kind !== 'image') throw new EditorAgentError('set_image_duration requires an image clip.', 'invalid_target');
+        const duration = finiteNumber(operation.durationSeconds, 'durationSeconds');
+        clip.summary.durationSeconds = Math.max(IMAGE_SECONDS.min, Math.min(IMAGE_SECONDS.max, duration));
+        this.touch();
+        return;
+      }
+      case 'delete_source_range': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const start = finiteNumber(operation.start, 'start');
+        const end = finiteNumber(operation.end, 'end');
+        const bounds = clipBounds(clip);
+        if (start < bounds.start || end > bounds.end || end - start < 0.01) {
+          throw new EditorAgentError(`Cut must be inside ${bounds.start.toFixed(3)}..${bounds.end.toFixed(3)}.`, 'invalid_range');
+        }
+        clip.manualCuts = [...clip.manualCuts, { start, end, source: 'manual', enabled: true }];
+        this.touch();
+        return;
+      }
+      case 'restore_source_ranges': {
+        const clip = this.agentMediaClip(operation.clipId);
+        clip.manualCuts = [];
+        for (const range of clip.detected) range.enabled = false;
+        this.touch();
+        return;
+      }
+      case 'set_detected_range': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const at = Math.round(finiteNumber(operation.rangeIndex, 'rangeIndex'));
+        const range = clip.detected[at];
+        if (!range) throw new EditorAgentError(`Detected range ${at} was not found.`, 'not_found');
+        range.enabled = operation.enabled;
+        this.touch();
+        return;
+      }
+      case 'set_speed': {
+        const clip = this.agentClip(operation.clipId);
+        if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no playback speed.', 'invalid_target');
+        clip.overrides ??= cloneEdits(this.project.edits);
+        clip.overrides.speed = clampSpeed(finiteNumber(operation.speed, 'speed'));
+        this.touch();
+        return;
+      }
+      case 'set_volume': {
+        const clip = this.agentClip(operation.clipId);
+        if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no volume.', 'invalid_target');
+        clip.overrides ??= cloneEdits(this.project.edits);
+        clip.overrides.volumePercent = Math.max(VOLUME_LIMITS.min, Math.min(VOLUME_LIMITS.max, finiteNumber(operation.volumePercent, 'volumePercent')));
+        this.touch();
+        return;
+      }
+      case 'set_audio_mode': {
+        const clip = this.agentClip(operation.clipId);
+        if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no audio mode.', 'invalid_target');
+        if (!['original', 'replace', 'continue', 'mute'].includes(operation.mode)) {
+          throw new EditorAgentError('Unknown audio mode.', 'invalid_arguments');
+        }
+        clip.overrides ??= cloneEdits(this.project.edits);
+        clip.overrides.audioMode = operation.mode;
+        this.touch();
+        return;
+      }
+      case 'set_clip_edits': {
+        const clip = this.agentClip(operation.clipId);
+        if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no clip effects.', 'invalid_target');
+        const before = this.editsFor(clip);
+        clip.overrides = this.agentClipEdits(before, operation.edits);
+        if (isMediaClip(clip) && detectionSettingsChanged(before.silence, clip.overrides.silence)) this.invalidateAnalysis(clip);
+        this.touch();
+        return;
+      }
+      case 'clear_clip_overrides': {
+        const clip = this.agentClip(operation.clipId);
+        if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no clip effects.', 'invalid_target');
+        clip.overrides = null;
+        this.touch();
+        return;
+      }
+      case 'attach_audio': {
+        const [file] = await this.desktop.readAgentFiles([stringValue(operation.path, 'path')]);
+        if (operation.clipId) {
+          const clip = this.agentClip(operation.clipId);
+          if (isTransitionClip(clip)) throw new EditorAgentError('A transition cannot carry audio.', 'invalid_target');
+          await this.attachAudio(clip, file);
+          if (!clip.replacementAudio) throw new EditorAgentError(this.errorMessage || 'The audio could not be attached.', 'invalid_media');
+          if (operation.skipLeadingSilence !== undefined) {
+            clip.replacementAudio = { ...clip.replacementAudio, skipLeadingSilence: operation.skipLeadingSilence };
+          }
+        } else {
+          await this.setDefaultAudio(file);
+          if (!this.project.defaultAudio) throw new EditorAgentError(this.errorMessage || 'The project audio could not be attached.', 'invalid_media');
+          if (operation.skipLeadingSilence !== undefined) {
+            this.project = {
+              ...this.project,
+              defaultAudio: { ...this.project.defaultAudio, skipLeadingSilence: operation.skipLeadingSilence }
+            };
+          }
+        }
+        return;
+      }
+      case 'detach_audio': {
+        if (operation.clipId) this.detachAudio(this.agentClip(operation.clipId));
+        else this.clearDefaultAudio();
+        return;
+      }
+      case 'add_caption': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const previous = new Set((clip.captions ?? []).map((caption) => caption.id));
+        this.addCaption(clip, finiteNumber(operation.start, 'start'), stringValue(operation.text, 'text'));
+        if (operation.duration !== undefined) {
+          const caption = clip.captions?.find((candidate) => !previous.has(candidate.id));
+          if (caption) this.updateCaption(clip, caption, { durationSeconds: finiteNumber(operation.duration, 'duration'), durationAutomatic: false });
+        }
+        return;
+      }
+      case 'update_caption': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const caption = clip.captions?.find((candidate) => candidate.id === operation.captionId);
+        if (!caption) throw new EditorAgentError(`Caption "${operation.captionId}" was not found.`, 'not_found');
+        this.updateCaption(clip, caption, this.agentCaptionPatch(operation.caption));
+        return;
+      }
+      case 'remove_caption': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const caption = clip.captions?.find((candidate) => candidate.id === operation.captionId);
+        if (!caption) throw new EditorAgentError(`Caption "${operation.captionId}" was not found.`, 'not_found');
+        this.removeCaption(clip, caption);
+        return;
+      }
+      case 'set_tag': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isPlayable(clip)) throw new EditorAgentError('A transition cannot carry a tag.', 'invalid_target');
+        const patch = operation.tag ?? {};
+        const tag = clampTag({ ...(clip.tag ?? this.project.defaultTag), ...patch } as ClipTag);
+        if (!tag.text.trim()) throw new EditorAgentError('A tag must have visible text.', 'invalid_arguments');
+        if (shapeIsQr(tag.shape)) {
+          const error = qrTagError(tag.qrText ?? '');
+          if (error) throw new EditorAgentError(error, 'invalid_qr');
+        }
+        tag.holdSeconds = patch['holdSeconds'] === undefined && tag.holdAuto ? holdFromText(tag.text) : tag.holdSeconds;
+        clip.tag = tag;
+        this.touch();
+        return;
+      }
+      case 'remove_tag': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isPlayable(clip)) throw new EditorAgentError('A transition cannot carry a tag.', 'invalid_target');
+        clip.tag = null;
+        this.touch();
+        return;
+      }
+      case 'add_zoom': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const bounds = clipBounds(clip);
+        if (operation.start < bounds.start || operation.end > bounds.end) {
+          throw new EditorAgentError(`Zoom must be inside ${bounds.start.toFixed(3)}..${bounds.end.toFixed(3)}.`, 'invalid_range');
+        }
+        const zoom = clampManualZoom({
+          id: `zoom-${this.nextId++}`,
+          start: finiteNumber(operation.start, 'start'),
+          end: finiteNumber(operation.end, 'end'),
+          scalePercent: operation.scalePercent ?? MANUAL_ZOOM_LIMITS.scalePercent.default,
+          rampSeconds: operation.rampSeconds ?? MANUAL_ZOOM_LIMITS.rampSeconds.default,
+          easeOut: operation.easeOut ?? true
+        }, sourceDuration(clip));
+        if (zoom.end - zoom.start < 0.05) throw new EditorAgentError('A zoom must have a visible duration.', 'invalid_range');
+        clip.manualZooms = [...(clip.manualZooms ?? []), zoom].sort((a, b) => a.start - b.start);
+        this.touch();
+        return;
+      }
+      case 'add_push_in': {
+        return this.agentApplyOperation({
+          type: 'add_zoom',
+          clipId: operation.clipId,
+          start: operation.start,
+          end: operation.end,
+          scalePercent: operation.scalePercent,
+          rampSeconds: operation.rampSeconds,
+          easeOut: operation.easeOut
+        });
+      }
+      case 'update_zoom': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const index = (clip.manualZooms ?? []).findIndex((zoom) => zoom.id === operation.zoomId);
+        if (index < 0) throw new EditorAgentError(`Zoom "${operation.zoomId}" was not found.`, 'not_found');
+        const current = clip.manualZooms![index];
+        const next = clampManualZoom({ ...current, ...operation.zoom, id: current.id } as ManualZoom, sourceDuration(clip));
+        clip.manualZooms = clip.manualZooms!.map((zoom, at) => at === index ? next : zoom).sort((a, b) => a.start - b.start);
+        this.touch();
+        return;
+      }
+      case 'update_push_in': {
+        return this.agentApplyOperation({
+          type: 'update_zoom', clipId: operation.clipId, zoomId: operation.pushInId, zoom: operation.pushIn
+        });
+      }
+      case 'remove_zoom': {
+        const clip = this.agentMediaClip(operation.clipId);
+        const before = clip.manualZooms?.length ?? 0;
+        clip.manualZooms = (clip.manualZooms ?? []).filter((zoom) => zoom.id !== operation.zoomId);
+        if (clip.manualZooms.length === before) throw new EditorAgentError(`Zoom "${operation.zoomId}" was not found.`, 'not_found');
+        this.touch();
+        return;
+      }
+      case 'remove_push_in': {
+        return this.agentApplyOperation({
+          type: 'remove_zoom', clipId: operation.clipId, zoomId: operation.pushInId
+        });
+      }
+      case 'set_project_settings': {
+        this.agentSetProjectSettings(operation.settings);
+        return;
+      }
+      default:
+        throw new EditorAgentError(
+          `Unknown edit operation "${String((operation as { type?: unknown }).type)}".`,
+          'unknown_operation'
+        );
+    }
+  }
+
+  private agentTextDraft(
+    current: TextClip['draft'],
+    text: string | undefined,
+    patch: Record<string, unknown> | undefined,
+    durationSeconds: number | undefined
+  ): TextClip['draft'] {
+    const source = patch ?? {};
+    const next = { ...current };
+    if (text !== undefined) {
+      if (typeof text !== 'string' || !text.trim()) throw new EditorAgentError('A text card must contain text.', 'invalid_arguments');
+      next.text = text.slice(0, 4000);
+    }
+
+    const stringChoice = <T extends string>(key: string, allowed: readonly T[], value: T) => {
+      if (source[key] === undefined) return value;
+      if (typeof source[key] !== 'string' || !allowed.includes(source[key] as T)) {
+        throw new EditorAgentError(`Invalid text-card ${key}.`, 'invalid_arguments');
+      }
+      return source[key] as T;
+    };
+    const colour = (key: string, value: string) => {
+      if (source[key] === undefined) return value;
+      if (typeof source[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(source[key] as string)) {
+        throw new EditorAgentError(`${key} must be a six-digit hex colour.`, 'invalid_arguments');
+      }
+      return source[key] as string;
+    };
+    const number = (key: string, value: number, limits?: { min: number; max: number }) => {
+      if (source[key] === undefined) return value;
+      const parsed = finiteNumber(source[key], key);
+      return limits ? Math.max(limits.min, Math.min(limits.max, parsed)) : parsed;
+    };
+
+    if (source['text'] !== undefined) {
+      if (typeof source['text'] !== 'string' || !(source['text'] as string).trim()) {
+        throw new EditorAgentError('A text card must contain text.', 'invalid_arguments');
+      }
+      next.text = (source['text'] as string).slice(0, 4000);
+    }
+    next.fontId = stringChoice('fontId', FONTS.map((item) => item.id), next.fontId);
+    next.align = stringChoice('align', ['left', 'center', 'right'] as const, next.align);
+    next.vertical = stringChoice('vertical', ['top', 'middle', 'bottom'] as const, next.vertical);
+    next.legibility = stringChoice('legibility', LEGIBILITY_OPTIONS.map((item) => item.id), next.legibility);
+    next.animation = stringChoice('animation', ANIMATIONS.map((item) => item.id), next.animation);
+    next.color = colour('color', next.color);
+    next.backgroundColor = colour('backgroundColor', next.backgroundColor);
+    next.fontScale = number('fontScale', next.fontScale, TEXT_LIMITS.fontScale);
+    next.margin = number('margin', next.margin, TEXT_LIMITS.margin);
+    next.lineHeight = number('lineHeight', next.lineHeight, TEXT_LIMITS.lineHeight);
+    next.letterSpacing = number('letterSpacing', next.letterSpacing, TEXT_LIMITS.letterSpacing);
+    next.revealSeconds = number('revealSeconds', next.revealSeconds, TEXT_LIMITS.reveal);
+    next.holdSeconds = number('holdSeconds', next.holdSeconds, TEXT_LIMITS.hold);
+    if (source['fontWeight'] !== undefined) {
+      const weight = finiteNumber(source['fontWeight'], 'fontWeight');
+      if (!WEIGHTS.some((item) => item.value === weight)) throw new EditorAgentError('Unsupported text-card fontWeight.', 'invalid_arguments');
+      next.fontWeight = weight;
+    }
+    if (source['holdAuto'] !== undefined) next.holdAuto = Boolean(source['holdAuto']);
+
+    const textChanged = text !== undefined || source['text'] !== undefined;
+    if (textChanged && next.holdAuto !== false && source['holdSeconds'] === undefined && durationSeconds === undefined) {
+      next.holdSeconds = Math.round(readingSeconds(next.text) * 10) / 10;
+    }
+    if (durationSeconds !== undefined) {
+      const duration = finiteNumber(durationSeconds, 'durationSeconds');
+      if (duration < 0.2 || duration > 120) throw new EditorAgentError('durationSeconds must be between 0.2 and 120.', 'invalid_arguments');
+      next.revealSeconds = Math.min(next.revealSeconds, duration);
+      next.holdSeconds = Math.max(0, duration - next.revealSeconds);
+      next.holdAuto = false;
+    }
+    if (!next.text.trim()) throw new EditorAgentError('A text card must contain text.', 'invalid_arguments');
+    return next;
+  }
+
+  private agentTransitionSettings(current: TransitionSettings, patch: Record<string, unknown> | undefined): TransitionSettings {
+    const source = patch ?? {};
+    const kind = source['kind'] ?? current.kind;
+    if (typeof kind !== 'string' || !TRANSITIONS.some((item) => item.id === kind)) {
+      throw new EditorAgentError('Unknown transition kind.', 'invalid_arguments');
+    }
+    const seconds = source['seconds'] === undefined ? current.seconds : finiteNumber(source['seconds'], 'seconds');
+    const colour = source['colour'] ?? current.colour;
+    if (typeof colour !== 'string' || !/^#[0-9a-f]{6}$/i.test(colour)) {
+      throw new EditorAgentError('Transition colour must be a six-digit hex colour.', 'invalid_arguments');
+    }
+    return {
+      kind: kind as TransitionSettings['kind'],
+      seconds: Math.max(TRANSITION_SECONDS.min, Math.min(TRANSITION_SECONDS.max, seconds)),
+      colour
+    };
+  }
+
+  private agentClipEdits(current: ClipEdits, patch: Record<string, unknown>): ClipEdits {
+    if (!patch || typeof patch !== 'object') throw new EditorAgentError('edits must be an object.', 'invalid_arguments');
+    const next = cloneEdits(current);
+    if (patch['cutSilence'] !== undefined) next.cutSilence = Boolean(patch['cutSilence']);
+    if (patch['fadeIn'] !== undefined) next.fadeIn = Boolean(patch['fadeIn']);
+    if (patch['fadeOut'] !== undefined) next.fadeOut = Boolean(patch['fadeOut']);
+    if (patch['fadeSeconds'] !== undefined) {
+      const value = finiteNumber(patch['fadeSeconds'], 'fadeSeconds');
+      next.fadeSeconds = Math.max(FADE_SECONDS.min, Math.min(FADE_SECONDS.max, value));
+    }
+    if (patch['speed'] !== undefined) next.speed = clampSpeed(finiteNumber(patch['speed'], 'speed'));
+    if (patch['volumePercent'] !== undefined) next.volumePercent = clampVolume(finiteNumber(patch['volumePercent'], 'volumePercent'));
+    if (patch['audioMode'] !== undefined) {
+      if (!['original', 'replace', 'continue', 'mute'].includes(String(patch['audioMode']))) {
+        throw new EditorAgentError('Unknown audio mode.', 'invalid_arguments');
+      }
+      next.audioMode = patch['audioMode'] as ClipAudioMode;
+    }
+    if (patch['silence'] !== undefined) {
+      if (!patch['silence'] || typeof patch['silence'] !== 'object') throw new EditorAgentError('silence must be an object.', 'invalid_arguments');
+      const silence = patch['silence'] as Record<string, unknown>;
+      if (silence['channelMode'] !== undefined && !['combined', 'any', 'all'].includes(String(silence['channelMode']))) {
+        throw new EditorAgentError('Unknown silence channelMode.', 'invalid_arguments');
+      }
+      const merged = {
+        ...next.silence,
+        ...silence,
+        autoZoom: silence['autoZoom'] && typeof silence['autoZoom'] === 'object'
+          ? clampAutoZoom({ ...next.silence.autoZoom, ...(silence['autoZoom'] as object) })
+          : next.silence.autoZoom
+      };
+      next.silence = clampSilenceSettings(merged as ClipEdits['silence']);
+    }
+    return next;
+  }
+
+  private agentCaptionPatch(patch: Record<string, unknown>): Partial<ClipCaption> {
+    if (!patch || typeof patch !== 'object') throw new EditorAgentError('caption must be an object.', 'invalid_arguments');
+    const result: Partial<ClipCaption> = {};
+    if (patch['text'] !== undefined) result.text = stringValue(patch['text'], 'text').slice(0, 1000);
+    if (patch['startSeconds'] !== undefined) result.startSeconds = finiteNumber(patch['startSeconds'], 'startSeconds');
+    if (patch['durationSeconds'] !== undefined) {
+      result.durationSeconds = finiteNumber(patch['durationSeconds'], 'durationSeconds');
+      result.durationAutomatic = false;
+    }
+    if (patch['fontFamily'] !== undefined) {
+      const font = String(patch['fontFamily']);
+      if (!CAPTION_FONTS.some((item) => item.value === font)) throw new EditorAgentError('Unknown caption fontFamily.', 'invalid_arguments');
+      result.fontFamily = font as NonNullable<ClipCaption['fontFamily']>;
+    }
+    if (patch['fontWeight'] !== undefined) result.fontWeight = Math.max(100, Math.min(900, finiteNumber(patch['fontWeight'], 'fontWeight')));
+    if (patch['italic'] !== undefined) result.italic = Boolean(patch['italic']);
+    if (patch['fadeIn'] !== undefined) result.fadeIn = Boolean(patch['fadeIn']);
+    if (patch['fadeOut'] !== undefined) result.fadeOut = Boolean(patch['fadeOut']);
+    if (patch['shadowEnabled'] !== undefined) result.shadowEnabled = Boolean(patch['shadowEnabled']);
+    for (const key of ['textColor', 'outlineColor', 'shadowColor'] as const) {
+      if (patch[key] !== undefined) {
+        if (typeof patch[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(patch[key] as string)) {
+          throw new EditorAgentError(`${key} must be a six-digit hex colour.`, 'invalid_arguments');
+        }
+        result[key] = patch[key] as string;
+      }
+    }
+    for (const key of ['fontScale', 'bottomMargin', 'outlinePercent', 'fadeSeconds'] as const) {
+      if (patch[key] !== undefined) {
+        const limits = CAPTION_LIMITS[key];
+        result[key] = Math.max(limits.min, Math.min(limits.max, finiteNumber(patch[key], key)));
+      }
+    }
+    result.stylePreset = 'custom';
+    return result;
+  }
+
+  private agentSetProjectSettings(patch: EditorAgentProjectPatch): void {
+    if (!patch || typeof patch !== 'object') throw new EditorAgentError('settings must be an object.', 'invalid_arguments');
+    const previousEdits = this.project.edits;
+    const next = { ...this.project };
+    if (patch.aspect !== undefined) {
+      if (!ASPECTS.some((item) => item.value === patch.aspect)) throw new EditorAgentError('Unknown project aspect.', 'invalid_arguments');
+      next.aspect = patch.aspect;
+    }
+    if (patch.reframe !== undefined) {
+      if (!REFRAME_FITS.some((item) => item.value === patch.reframe)) throw new EditorAgentError('Unknown reframe mode.', 'invalid_arguments');
+      next.reframe = patch.reframe;
+    }
+    if (patch.resolution !== undefined) {
+      if (patch.resolution !== 'auto' && !RESOLUTIONS.some((item) => item.value === patch.resolution)) {
+        throw new EditorAgentError('Unknown output resolution.', 'invalid_arguments');
+      }
+      next.resolution = patch.resolution as ResolutionPreset;
+    }
+    if (patch.videoFormatId !== undefined) {
+      if (!VIDEO_FORMATS.some((item) => item.id === patch.videoFormatId)) throw new EditorAgentError('Unknown video format.', 'invalid_arguments');
+      next.videoFormatId = patch.videoFormatId;
+    }
+    if (patch.audioFormatId !== undefined) {
+      if (!AUDIO_FORMATS.some((item) => item.id === patch.audioFormatId)) throw new EditorAgentError('Unknown audio format.', 'invalid_arguments');
+      next.audioFormatId = patch.audioFormatId;
+    }
+    if (patch.timelapseTargetSeconds !== undefined) next.timelapseTargetSeconds = clampTimelapseTarget(patch.timelapseTargetSeconds);
+    if (patch.silentCutReplacementThreshold !== undefined) {
+      next.silentCutReplacementThreshold = clampSilentCutReplacementThreshold(patch.silentCutReplacementThreshold);
+    }
+    if (patch.soundFade !== undefined) next.soundFade = clampSoundFade({ ...next.soundFade, ...patch.soundFade });
+    if (patch.loudness !== undefined) next.loudness = clampLoudness({ ...next.loudness, ...patch.loudness } as LoudnessSettings);
+    if (patch.edits !== undefined) next.edits = this.agentClipEdits(next.edits, patch.edits);
+    if (patch.defaultTransition !== undefined) {
+      next.defaultTransition = patch.defaultTransition === null
+        ? null
+        : this.agentTransitionSettings(next.defaultTransition ?? DEFAULT_TRANSITION, patch.defaultTransition);
+    }
+    if (patch.defaultTag !== undefined) {
+      next.defaultTag = clampTag({ ...next.defaultTag, ...patch.defaultTag } as ClipTag);
+      if (shapeIsQr(next.defaultTag.shape)) {
+        const error = qrTagError(next.defaultTag.qrText ?? '');
+        if (error) throw new EditorAgentError(error, 'invalid_qr');
+      }
+    }
+    this.project = next;
+    if (detectionSettingsChanged(previousEdits.silence, next.edits.silence)) this.invalidateAnalyses();
+    this.applyTimelapseTarget();
+    this.touch();
+  }
+
+  private async agentAnalyzeSilence(args: Record<string, unknown>, signal?: AbortSignal, operationId = ''): Promise<unknown> {
+    const targets = args['clipId'] ? [this.agentMediaClip(args['clipId'])] : this.clips.filter(isMediaClip);
+    const revisionBefore = this.revision;
+    this.pushAgentLog('action', `Analyzing ${targets.length} clip(s) with ${this.analysisLanes} bounded worker lane(s)`, 'analyze_silence', 'DEBUG');
+    const cancel = () => this.cancelAnalyses();
+    signal?.addEventListener('abort', cancel, { once: true });
+    try {
+      if (operationId) this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'decoding-and-detecting-silence', percent: null });
+      await this.analyzeMany(targets);
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+    }
+    if (signal?.aborted) throw new EditorAgentError('Silence analysis was cancelled.', 'cancelled', { stage: 'audio-analysis' });
+    if (this.errorMessage) {
+      throw new EditorAgentError(`Silence analysis failed: ${this.errorMessage}`, 'analysis_failed', {
+        stage: 'audio-analysis', hint: this.errorHint, clipIds: targets.map((clip) => clip.id)
+      });
+    }
+    const includeWaveform = args['includeWaveform'] === true;
+    const offset = Math.max(0, Math.trunc(Number(args['waveformOffset']) || 0));
+    const limit = Math.max(1, Math.min(1000, Math.trunc(Number(args['waveformLimit']) || 250)));
+    return targets.map((clip) => ({
+      clipId: clip.id,
+      sourceDuration: clip.summary.durationSeconds,
+      silenceRanges: clip.detected,
+      waveform: clip.analysis ? {
+        duration: clip.analysis.waveform.duration,
+        secondsPerBucket: clip.analysis.waveform.secondsPerBucket,
+        bucketCount: clip.analysis.waveform.rms.length,
+        paginated: true,
+        ...(includeWaveform ? this.agentWaveformValues(clip, offset, limit) : {})
+      } : null
+    })).map((result) => ({ ...result, revisionBefore, projectRevision: this.revision, mutatesProject: this.revision !== revisionBefore }));
+  }
+
+  private agentWaveformPage(args: Record<string, unknown>): unknown {
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.analysis) throw new EditorAgentError('Analyze silence before requesting waveform pages.', 'analysis_required');
+    const offset = Math.max(0, Math.trunc(Number(args['offset']) || 0));
+    const limit = Math.max(1, Math.min(1000, Math.trunc(Number(args['limit']) || 250)));
+    return {
+      clipId: clip.id,
+      duration: clip.analysis.waveform.duration,
+      secondsPerBucket: clip.analysis.waveform.secondsPerBucket,
+      ...this.agentWaveformValues(clip, offset, limit)
+    };
+  }
+
+  private agentWaveformValues(clip: MediaClip, offset: number, limit: number): Record<string, unknown> {
+    const waveform = clip.analysis!.waveform;
+    const end = Math.min(waveform.rms.length, offset + limit);
+    return {
+      offset,
+      limit,
+      returned: Math.max(0, end - offset),
+      total: waveform.rms.length,
+      nextOffset: end < waveform.rms.length ? end : null,
+      min: Array.from(waveform.min.slice(offset, end)),
+      max: Array.from(waveform.max.slice(offset, end)),
+      rms: Array.from(waveform.rms.slice(offset, end))
+    };
+  }
+
+  private async agentTranscribe(args: Record<string, unknown>, signal?: AbortSignal): Promise<unknown> {
+    const task = this.agentTranscriptionQueue.catch(() => undefined).then(() => {
+      if (signal?.aborted) throw new TranscriptionCanceled();
+      return this.agentTranscribeNow(args, signal);
+    });
+    this.agentTranscriptionQueue = task.then(() => undefined, () => undefined);
+    return task;
+  }
+
+  private async agentTranscribeNow(args: Record<string, unknown>, outerSignal?: AbortSignal): Promise<unknown> {
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.summary.audioUsable) throw new EditorAgentError('This clip has no decodable audio.', 'media_unavailable');
+    if (typeof args['model'] === 'string') {
+      const modelId = resolveTranscriptionModel(args['model']);
+      if (!SPEECH_MODELS.some((model) => model.id === modelId)) {
+        throw new EditorAgentError(`Unknown transcription model "${args['model']}".`, 'invalid_model', {
+          acceptedAliases: Object.keys(TRANSCRIPTION_MODEL_ALIASES), validModels: SPEECH_MODELS.map((model) => model.id)
+        });
+      }
+      this.transcriptModelId = modelId;
+    }
+    if (typeof args['language'] === 'string') {
+      const languageCode = resolveTranscriptionLanguage(args['language']);
+      if (!SPEECH_LANGUAGES.some((language) => language.code === languageCode)) {
+        throw new EditorAgentError(`Unknown transcription language "${args['language']}".`, 'invalid_language', {
+          acceptedAliases: Object.keys(TRANSCRIPTION_LANGUAGE_ALIASES), validLanguages: SPEECH_LANGUAGES.map((language) => language.code || 'auto')
+        });
+      }
+      this.transcriptLanguage = languageCode;
+    }
+    if (args['denoise'] !== undefined) this.transcriptDenoise = Boolean(args['denoise']);
+    if (args['noiseEngine'] !== undefined) {
+      if (!NOISE_ENGINES.some((engine) => engine.id === args['noiseEngine'])) {
+        throw new EditorAgentError('Unknown transcription noise engine.', 'invalid_arguments');
+      }
+      this.transcriptEngine = args['noiseEngine'] as EngineId;
+    }
+    if (args['noiseStrength'] !== undefined) {
+      const strength = String(args['noiseStrength']).toLowerCase();
+      const index = NOISE_STRENGTHS.findIndex((item) => item.label.toLowerCase() === strength);
+      if (index < 0) throw new EditorAgentError('noiseStrength must be gentle, balanced or maximum.', 'invalid_arguments');
+      this.transcriptStrengthIndex = index;
+    }
+    if (this.transcriptDenoise) {
+      this.pushAgentLog('action', `Removing noise from ${clip.summary.fileName} for speech analysis`, 'transcribe', 'INFO');
+      await this.paintAgentProgress();
+    }
+    const entry = this.plan.clips.find((candidate) => candidate.clip.id === clip.id);
+    if (!entry) throw new EditorAgentError('The clip is not present in the playable timeline.', 'not_found');
+    const fullEntry = { ...entry, keepRanges: [{ start: 0, end: clip.summary.durationSeconds }] };
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    outerSignal?.addEventListener('abort', cancel, { once: true });
+    const timeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['timeoutMs']) || 15 * 60_000));
+    const stageTimeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['stageTimeoutMs']) || 5 * 60_000));
+    let timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
+    let stageTimedOut = false;
+    let timedOutStage = 'starting';
+    let stageTimer: ReturnType<typeof setTimeout> | undefined;
+    const armStageTimeout = (stage: string): void => {
+      if (stageTimer) clearTimeout(stageTimer);
+      timedOutStage = stage;
+      stageTimer = setTimeout(() => { stageTimedOut = true; controller.abort(); }, stageTimeoutMs);
+    };
+    this.agentTranscriptStageTimeout = armStageTimeout;
+    armStageTimeout('starting');
+    this.lastAgentTranscriptStage = '';
+    let words: Cue[];
+    try {
+      words = await this.wordsFor(clip, fullEntry, controller.signal);
+    } catch (error) {
+      if (stageTimedOut) {
+        throw new TranscriptionError(
+          `Transcription stage "${timedOutStage}" timed out after ${stageTimeoutMs} ms.`,
+          'Increase stageTimeoutMs, use a smaller model, or check decoder/model availability.',
+          { code: 'transcription_stage_timeout', stage: timedOutStage, details: { stageTimeoutMs }, cause: error }
+        );
+      }
+      if (timedOut) {
+        throw new TranscriptionError(
+          `Transcription timed out after ${timeoutMs} ms during ${this.transcriptStage || 'audio preparation'}.`,
+          'Increase timeoutMs or use a smaller model/shorter clip.',
+          { code: 'transcription_timeout', stage: this.transcriptStage || 'audio-preparation', cause: error }
+        );
+      }
+      if (outerSignal?.aborted || controller.signal.aborted) throw new TranscriptionCanceled();
+      throw error;
+    } finally {
+      clearTimeout(timer);
+      if (stageTimer) clearTimeout(stageTimer);
+      if (this.agentTranscriptStageTimeout === armStageTimeout) this.agentTranscriptStageTimeout = undefined;
+      outerSignal?.removeEventListener('abort', cancel);
+    }
+    return {
+      clipId: clip.id,
+      assetId: this.agentAssetId(clip),
+      timeSpace: 'source',
+      language: this.transcriptLanguage || 'auto',
+      model: this.transcriptModelId,
+      words,
+      quality: {
+        wordCount: words.length,
+        wordsPerMinute: clip.summary.durationSeconds > 0 ? Math.round(words.length * 60 / clip.summary.durationSeconds) : 0,
+        reviewRecommended: words.length === 0 || (clip.summary.durationSeconds > 20 && words.length < 4),
+        fallbackModel: 'onnx-community/whisper-large-v3-turbo_timestamped'
+      },
+      segments: groupWords(words, DEFAULT_SHAPE.lineLength, DEFAULT_SHAPE.maxLines, DEFAULT_SHAPE.maxSeconds),
+      outputWords: placeWords(words, entry)
+    };
+  }
+
+  private async agentContactSheet(args: Record<string, unknown>): Promise<unknown> {
+    const clip = this.agentMediaClip(args['clipId']);
+    const start = args['start'] === undefined ? clip.inPoint ?? 0 : finiteNumber(args['start'], 'start');
+    const end = args['end'] === undefined ? clip.outPoint ?? clip.summary.durationSeconds : finiteNumber(args['end'], 'end');
+    const interval = Math.max(0.25, args['interval'] === undefined ? 5 : finiteNumber(args['interval'], 'interval'));
+    if (end <= start) throw new EditorAgentError('end must be greater than start.', 'invalid_range');
+    const timestamps: number[] = [];
+    for (let at = start; at <= end && timestamps.length < 48; at += interval) timestamps.push(at);
+    if (!timestamps.length || timestamps[timestamps.length - 1] < end - 0.05) timestamps.push(end);
+    return this.agentFrames({
+      clipId: clip.id,
+      timestamps,
+      width: args['width'] === undefined ? 480 : finiteNumber(args['width'], 'width'),
+      quality: args['quality'] === undefined ? 0.72 : finiteNumber(args['quality'], 'quality')
+    });
+  }
+
+  private async agentFrames(request: EditorAgentFrameRequest): Promise<unknown> {
+    const clip = this.agentMediaClip(request.clipId);
+    if (!clip.summary.videoUsable && clip.summary.kind !== 'image') {
+      throw new EditorAgentError('This clip has no decodable picture.', 'media_unavailable');
+    }
+    if (!Array.isArray(request.timestamps) || !request.timestamps.length || request.timestamps.length > 64) {
+      throw new EditorAgentError('timestamps must contain between 1 and 64 source times.', 'invalid_arguments');
+    }
+    const width = Math.round(Math.max(96, Math.min(1280, request.width ?? 640)));
+    const quality = Math.max(0.25, Math.min(0.95, request.quality ?? 0.78));
+    const frames = await this.captureAgentFrames(clip, request.timestamps, width, quality);
+    return { clipId: clip.id, assetId: this.agentAssetId(clip), timeSpace: 'source', frames };
+  }
+
+  private async captureAgentFrames(clip: MediaClip, timestamps: readonly number[], width: number, quality: number): Promise<unknown[]> {
+    const sourceWidth = Math.max(1, clip.summary.width ?? width);
+    const sourceHeight = Math.max(1, clip.summary.height ?? Math.round(width * 9 / 16));
+    const height = Math.max(1, Math.round(width * sourceHeight / sourceWidth));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new EditorAgentError('Canvas is unavailable.', 'unsupported');
+
+    if (clip.summary.kind === 'image') {
+      const bitmap = await imageBitmapForFile(clip.file);
+      try {
+        context.drawImage(bitmap, 0, 0, width, height);
+        return [{ timestamp: 0, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality) }];
+      } finally { bitmap.close(); }
+    }
+
+    const video = document.createElement('video');
+    video.muted = true;
+    video.preload = 'auto';
+    const url = mediaObjectUrl(clip.file);
+    video.src = url;
+    try {
+      await this.waitAgentMedia(video, 'loadedmetadata');
+      const result: unknown[] = [];
+      for (const raw of timestamps) {
+        const duration = video.duration || clip.summary.durationSeconds;
+        const timestamp = Math.max(0, Math.min(Math.max(0, duration - 0.001), finiteNumber(raw, 'timestamp')));
+        if (Math.abs(video.currentTime - timestamp) > 0.001) {
+          video.currentTime = timestamp;
+          await this.waitAgentMedia(video, 'seeked');
+        }
+        context.drawImage(video, 0, 0, width, height);
+        result.push({ timestamp, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality) });
+      }
+      return result;
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  private waitAgentMedia(media: HTMLMediaElement, event: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => finish(new EditorAgentError(`Timed out waiting for media ${event}.`, 'media_timeout')), 15000);
+      const finish = (error?: Error) => {
+        clearTimeout(timer);
+        media.removeEventListener(event, ready);
+        media.removeEventListener('error', failed);
+        error ? reject(error) : resolve();
+      };
+      const ready = () => finish();
+      const failed = () => finish(new EditorAgentError('The video frame could not be decoded.', 'decode_failed'));
+      media.addEventListener(event, ready, { once: true });
+      media.addEventListener('error', failed, { once: true });
+    });
+  }
+
+  private async agentExport(args: Record<string, unknown>): Promise<unknown> {
+    const kind = args['kind'] === 'audio' ? 'audio' : 'video';
+    const path = stringValue(args['path'], 'path');
+    if (this.exporting) throw new EditorAgentError('An export is already running.', 'busy');
+    this.exporting = kind;
+    const controller = new AbortController();
+    const handle = await this.desktop.openAgentOutput(path);
+    try {
+      await this.runPendingAnalyses(controller.signal);
+      const plan = buildProjectPlan(this.clips, this.project, kind);
+      const format = kind === 'video' ? this.videoFormat : this.audioFormat;
+      const result = await this.renderer.render({
+        plan,
+        project: this.project,
+        kind,
+        format,
+        envelopes: this.buildEnvelopes(),
+        destination: { handle: handle as never, fileName: path.split(/[\\/]/).pop() ?? `edited.${format.extension}` },
+        signal: controller.signal,
+        onProgress: (progress) => { this.progress = progress; this.cdr.markForCheck(); }
+      });
+      return { path, kind, duration: result.plan.totalDuration, partial: result.partial };
+    } catch (error) {
+      await handle.abort().catch(() => undefined);
+      throw error;
+    } finally {
+      this.exporting = null;
+      this.progress = null;
+      this.cdr.markForCheck();
+    }
+  }
+
   private snapshot(): EditorSnapshot {
     return {
       board: this.snapshotBoard(),

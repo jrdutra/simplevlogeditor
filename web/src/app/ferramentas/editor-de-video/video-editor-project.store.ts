@@ -47,6 +47,7 @@ import type {
   TransitionClip,
   TransitionSettings
 } from './video-editor.models';
+import { pathBackedPath } from '../../shared/desktop/path-backed-file';
 import { isMediaClip, isTransitionClip } from './video-editor.models';
 import { DEFAULT_TRANSITION } from './video-editor-defaults';
 import { clampTransition } from './video-editor-timeline';
@@ -86,6 +87,8 @@ export interface StoredFileRef {
   name: string;
   size: number;
   lastModified: number;
+  /** Electron-only local path. No file contents are stored. */
+  path?: string;
 }
 
 export interface StoredMediaClip {
@@ -147,6 +150,8 @@ export type StoredClip = StoredMediaClip | StoredTextClip | StoredTransitionClip
 export interface StoredProject {
   version: number;
   savedAt: string;
+  /** Revision at save time. Older documents omit it and start a fresh scope. */
+  projectRevision?: number;
   nextId: number;
   settings: {
     edits: ClipEdits;
@@ -173,7 +178,8 @@ export interface StoredProject {
 }
 
 function refOf(file: File): StoredFileRef {
-  return { name: file.name, size: file.size, lastModified: file.lastModified };
+  const sourcePath = pathBackedPath(file);
+  return { name: file.name, size: file.size, lastModified: file.lastModified, ...(sourcePath ? { path: sourcePath } : {}) };
 }
 
 /** A soundtrack as it is written down, measurement and all. */
@@ -218,13 +224,14 @@ export function serializeProject(
   clips: readonly EditorClip[],
   project: ProjectSettings,
   nextId: number,
-  options: { thumbnails?: boolean } = {}
+  options: { thumbnails?: boolean; projectRevision?: number } = {}
 ): StoredProject {
   const keepThumbs = options.thumbnails !== false;
 
   return {
     version: PROJECT_VERSION,
     savedAt: new Date().toISOString(),
+    ...(Number.isFinite(options.projectRevision) ? { projectRevision: options.projectRevision } : {}),
     nextId,
     settings: {
       edits: cloneEdits(project.edits),
@@ -303,6 +310,7 @@ export interface RestoredProject {
   project: ProjectSettings;
   nextId: number;
   savedAt: string;
+  projectRevision: number;
 }
 
 /** Turns a stored document back into a timeline waiting for its files. */
@@ -350,6 +358,7 @@ export function restoreProject(stored: StoredProject): RestoredProject {
           id: clip.id,
           file: placeholder(clip.file),
           fileRef: clip.file,
+          ...(clip.file.path ? { sourcePath: clip.file.path } : {}),
           awaitingFile: true,
           summary: { ...clip.summary },
           info: null,
@@ -385,7 +394,10 @@ export function restoreProject(stored: StoredProject): RestoredProject {
         } satisfies TextClip)
   );
 
-  return { clips, project, nextId: stored.nextId, savedAt: stored.savedAt };
+  return {
+    clips, project, nextId: stored.nextId, savedAt: stored.savedAt,
+    projectRevision: Number.isFinite(stored.projectRevision) ? Math.max(0, Number(stored.projectRevision)) : 0
+  };
 }
 
 /**
@@ -419,18 +431,19 @@ export function looksLikeProject(value: unknown): value is StoredProject {
 export function writeStoredProject(
   clips: readonly EditorClip[],
   project: ProjectSettings,
-  nextId: number
+  nextId: number,
+  projectRevision?: number
 ): 'saved' | 'saved-without-thumbnails' | 'too-large' | 'unavailable' {
   if (typeof localStorage === 'undefined') return 'unavailable';
 
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeProject(clips, project, nextId)));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeProject(clips, project, nextId, { projectRevision })));
     return 'saved';
   } catch {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        JSON.stringify(serializeProject(clips, project, nextId, { thumbnails: false }))
+        JSON.stringify(serializeProject(clips, project, nextId, { thumbnails: false, projectRevision }))
       );
       return 'saved-without-thumbnails';
     } catch {

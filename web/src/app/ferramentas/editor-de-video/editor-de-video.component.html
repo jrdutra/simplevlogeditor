@@ -1640,8 +1640,113 @@
     }
   }
 
+  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentLogOpen) {
+    <button type="button" class="agente-controle-indicador" appBodyPortal (click)="openAgentLog()">
+      <img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+      <span><strong>{{ agentControllerLabel }}</strong> {{ desktop.agentControl().active ? 'is controlling the editor' : 'connection was lost' }}</span>
+      <span class="agente-pulso" aria-hidden="true"></span>
+    </button>
+  }
+
+  @if ((desktop.agentControl().visible || desktop.agentControl().active) && agentLogOpen) {
+    <div class="agente-modal-fundo" appBodyPortal>
+      <section class="agente-modal" role="dialog" aria-modal="true" aria-labelledby="agente-modal-titulo">
+        <header class="agente-modal-cabeca">
+          <span class="agente-marca">
+            <img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+          </span>
+          <span class="agente-modal-identidade">
+            <strong id="agente-modal-titulo">{{ desktop.agentControl().active ? agentControllerLabel + ' is controlling the editor' : agentControllerLabel + ' lost connection' }}</strong>
+            <span>{{ desktop.agentControl().active ? agentControllerLabel + ' is editing the video. Every action appears below and the project is continuously saved for recovery.' : 'The editor is waiting for reconnection. The recovery checkpoint remains available.' }}</span>
+          </span>
+          <span class="agente-ativo" [class.agente-desconectado]="!desktop.agentControl().active">
+            <span class="agente-pulso" aria-hidden="true"></span>
+            {{ !desktop.agentControl().active ? 'Disconnected' : agentWorking ? 'Working' : 'Connected' }}
+          </span>
+          <button mat-icon-button type="button" class="agente-modal-fechar" (click)="closeAgentLog()" aria-label="Minimize activity log">
+            <mat-icon>close_fullscreen</mat-icon>
+          </button>
+        </header>
+
+        @if (agentWorking) {
+          <mat-progress-bar mode="indeterminate"></mat-progress-bar>
+        }
+
+        <div class="agente-modal-ferramentas">
+          <span class="agente-recuperacao">
+            <mat-icon aria-hidden="true">save</mat-icon>
+            Recovery checkpoint: {{ desktop.agentControl().recoveryPath || 'ready' }}
+          </span>
+          <button mat-button type="button" (click)="clearAgentLog()" [disabled]="agentWorking || !agentLog.length">Clear log</button>
+        </div>
+
+        <div class="registro-console agente-modal-console" id="agente-registro-console" #agentLogConsole
+          (scroll)="onAgentLogScroll()" role="log" aria-live="polite" tabindex="0">
+          @if (!agentLog.length) {
+            <div class="registro-linha agente-action">
+              <span class="registro-hora">[waiting]</span>
+              <span class="registro-nivel">[INFO]</span>
+              <span class="registro-modulo">[MCP bridge]</span>
+              <span class="registro-marca" aria-hidden="true">&gt;</span>
+              <span class="registro-texto">Waiting for the next editor command…</span>
+            </div>
+          }
+          @for (line of agentLog; track line.seq) {
+            <div class="registro-linha agente-{{ line.kind }} nivel-{{ line.level.toLowerCase() }}">
+              <span class="registro-hora">[{{ line.timestamp }}]</span>
+              <span class="registro-nivel">[{{ line.level }}]</span>
+              <span class="registro-modulo">[{{ line.module }}]</span>
+              <span class="registro-marca" aria-hidden="true">{{ agentLogMark(line.kind) }}</span>
+              <span class="registro-texto">{{ line.text }}</span>
+            </div>
+          }
+        </div>
+
+        @if (agentDiagnostic; as diagnostic) {
+          <details class="agente-diagnostico">
+            <summary>
+              <span><strong>Operation failed</strong> · incident {{ diagnostic.incidentId }}</span>
+              <span class="agente-diagnostico-resumo">{{ diagnostic.summary }}</span>
+            </summary>
+            <pre>{{ diagnostic.fullText }}</pre>
+            <div class="agente-diagnostico-acoes">
+              <button mat-stroked-button type="button" (click)="copyAgentDiagnostic()">Copiar diagnóstico</button>
+              <button mat-stroked-button type="button" (click)="saveAgentDiagnostic()">Salvar diagnóstico</button>
+              <button mat-flat-button type="button" color="primary" (click)="retryAgentDiagnostic()"
+                [disabled]="agentWorking || !diagnostic.retryable">Tentar novamente</button>
+              @if (agentDiagnosticMessage) { <span>{{ agentDiagnosticMessage }}</span> }
+            </div>
+          </details>
+        }
+      </section>
+    </div>
+  }
+
+  @if (agentCompletionOpen) {
+    <div class="agente-conclusao-fundo" appBodyPortal>
+      <section class="agente-conclusao-modal" role="dialog" aria-modal="true" aria-labelledby="agente-conclusao-titulo">
+        <span class="agente-marca"><img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true"></span>
+        <div>
+          <h2 id="agente-conclusao-titulo">AI editing is complete</h2>
+          <p>{{ agentCompletionSummary }}</p>
+          <p>Would you like to watch the preview first or render the video now?</p>
+        </div>
+        <div class="agente-conclusao-acoes">
+          <button mat-stroked-button type="button" (click)="closeAgentCompletion()">Later</button>
+          <button mat-stroked-button type="button" (click)="previewAgentCompletion()">
+            <mat-icon>play_circle</mat-icon> Watch preview
+          </button>
+          <button mat-flat-button color="primary" type="button" (click)="renderAgentCompletion()">
+            <mat-icon>movie</mat-icon> Render now
+          </button>
+        </div>
+      </section>
+    </div>
+  }
+
   @if (progress || renderLog.length) {
-    <div class="progresso">
+    <div class="render-fundo" appBodyPortal>
+    <section class="progresso render-modal" role="dialog" aria-modal="true" aria-label="Rendering progress">
       @if (progress; as report) {
       <div class="progresso-topo">
         <span>
@@ -1705,6 +1810,7 @@
           }
         </div>
       }
+    </section>
     </div>
   }
 

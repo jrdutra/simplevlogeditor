@@ -1,0 +1,15 @@
+{
+  "name": "simple-vlog-editor-codex-client",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Codex launcher configured to edit SimpleVlogEditor projects through its local MCP server.",
+  "scripts": {
+    "start": "node src/client.mjs",
+    "doctor": "node src/client.mjs --doctor",
+    "test": "node --test src/client.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

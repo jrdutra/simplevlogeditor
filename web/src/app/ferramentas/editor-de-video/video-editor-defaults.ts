@@ -286,8 +286,8 @@ export const DEFAULT_TEXT_DRAFT: TextClipDraft = {
   lineHeight: 1.25,
   legibility: 'shadow',
   animation: 'rise',
-  revealSeconds: 2.5,
-  holdSeconds: 2,
+  revealSeconds: 7.5,
+  holdSeconds: 6,
   holdAuto: true
 };
 
@@ -305,9 +305,9 @@ export const DEFAULT_TEXT_DRAFT: TextClipDraft = {
  */
 export function readingSeconds(text: string): number {
   const characters = text.trim().length;
-  if (!characters) return TEXT_HOLD_FLOOR;
+  if (!characters) return TEXT_HOLD_FLOOR * 3;
 
-  return Math.min(TEXT_HOLD_CEILING, Math.max(TEXT_HOLD_FLOOR, TEXT_HOLD_FLOOR + characters / READING_RATE));
+  return 3 * Math.min(TEXT_HOLD_CEILING, Math.max(TEXT_HOLD_FLOOR, TEXT_HOLD_FLOOR + characters / READING_RATE));
 }
 
 /** Characters a second the card is timed for. Lower than subtitle practice. */
