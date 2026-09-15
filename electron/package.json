@@ -11,7 +11,7 @@
     "dev": "electron . --dev",
     "mcp": "node src/mcp-host.js",
     "mcp:dev": "node src/mcp-host.js --dev",
-    "test:mcp": "node --test src/mcp-roots.test.js src/roots-store-file.test.js src/mcp-server.test.js src/media-import-service.test.js src/editor-process-manager.test.js src/server.test.js src/agent-ui-contract.test.js src/idempotency-ledger.test.js src/recovery-checkpoint-store.test.js src/stable-origin.test.js src/editor-location.test.js",
+    "test:mcp": "node --test src/mcp-roots.test.js src/roots-store-file.test.js src/roots-consent.test.js src/mcp-server.test.js src/media-import-service.test.js src/editor-process-manager.test.js src/server.test.js src/agent-ui-contract.test.js src/idempotency-ledger.test.js src/recovery-checkpoint-store.test.js src/stable-origin.test.js src/editor-location.test.js",
     "test:mcp:lifecycle": "node scripts/smoke-lifecycle.js",
     "build:web": "npm --prefix ../web run build:site",
     "dist": "npm --prefix ../web run build",
@@ -61,6 +61,17 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "category": "public.app-category.video",
+      "icon": "../web/src/assets/icons/icon-256.png",
+      "extendInfo": {
+        "NSDesktopFolderUsageDescription": "SimpleVlogEditor opens the video, music and image files you choose from your Desktop, and writes exports back where you ask.",
+        "NSDocumentsFolderUsageDescription": "SimpleVlogEditor opens the video, music and image files you choose from your Documents, and writes exports back where you ask.",
+        "NSDownloadsFolderUsageDescription": "SimpleVlogEditor opens the video, music and image files you choose from your Downloads, and writes exports back where you ask.",
+        "NSMicrophoneUsageDescription": "SimpleVlogEditor records narration with your microphone only while you are recording.",
+        "NSCameraUsageDescription": "SimpleVlogEditor records video with your camera only while you are recording."
+      }
     }
   }
 }

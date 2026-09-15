@@ -1,0 +1,33 @@
+{
+  "name": "simple-vlog-editor",
+  "displayName": "Simple Vlog Editor",
+  "version": "1.2.0",
+  "description": "Understand and edit complete videos in the visible SimpleVlogEditor through its local MCP server.",
+  "author": {
+    "name": "SimpleVlogEditor"
+  },
+  "license": "UNLICENSED",
+  "keywords": [
+    "video",
+    "editing",
+    "noise-suppression",
+    "transcription",
+    "mcp",
+    "push-in",
+    "video-effects",
+    "background-caption",
+    "placed-images",
+    "allowed-folders"
+  ],
+  "mcpServers": {
+    "simple-vlog-editor": {
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/mcp-launcher.mjs"
+      ],
+      "env": {
+        "SVE_CONTROLLER": "claude-code"
+      }
+    }
+  }
+}
