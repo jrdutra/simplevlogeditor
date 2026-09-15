@@ -18,13 +18,6 @@ function normalized(file) {
   return process.platform === 'win32' ? value.toLowerCase() : value;
 }
 
-function withinRoots(candidate, roots) {
-  return roots.some((root) => {
-    const relative = path.relative(root, candidate);
-    return relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-  });
-}
-
 function clampConcurrency(value) {
   const number = Number(value);
   return Number.isInteger(number) ? Math.max(1, Math.min(2, number)) : 1;
@@ -86,25 +79,36 @@ function probeWithFfprobe(file, options = {}) {
     };
     const abort = () => {
       child.kill();
-      finish(Object.assign(new Error('Media probe cancelled.'), { code: 'cancelled' }));
+      finish(Object.assign(new Error('Media probe cancelled.'), {
+        code: 'cancelled', stage: 'ffprobe', stdout, stderr
+      }));
     };
     const timer = setTimeout(() => {
       child.kill();
-      finish(Object.assign(new Error(`FFprobe timed out after ${timeoutMs} ms.`), { code: 'ffprobe_timeout' }));
+      finish(Object.assign(new Error(`FFprobe timed out after ${timeoutMs} ms.`), {
+        code: 'ffprobe_timeout', stage: 'ffprobe', stdout, stderr
+      }));
     }, timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) return abort();
     child.stdout.on('data', (chunk) => {
       if (stdout.length < 2_000_000) stdout += chunk.toString('utf8');
     });
     child.stderr.on('data', (chunk) => {
       if (stderr.length < 64_000) stderr += chunk.toString('utf8');
     });
-    child.once('error', (error) => finish(Object.assign(error, { code: 'ffprobe_unavailable' })));
+    child.once('error', (error) => finish(Object.assign(error, {
+      code: 'ffprobe_unavailable', stage: 'ffprobe', stdout, stderr
+    })));
     child.once('exit', (code) => {
       if (finished) return;
-      if (code !== 0) return finish(Object.assign(new Error(stderr.trim() || `FFprobe exited with code ${code}.`), { code: 'ffprobe_failed', exitCode: code }));
+      if (code !== 0) return finish(Object.assign(new Error(stderr.trim() || `FFprobe exited with code ${code}.`), {
+        code: 'ffprobe_failed', stage: 'ffprobe', exitCode: code, stdout, stderr
+      }));
       try { finish(null, JSON.parse(stdout)); }
-      catch { finish(Object.assign(new Error('FFprobe returned invalid JSON.'), { code: 'ffprobe_invalid_output' })); }
+      catch { finish(Object.assign(new Error('FFprobe returned invalid JSON.'), {
+        code: 'ffprobe_invalid_output', stage: 'ffprobe', stdout, stderr
+      })); }
     });
   });
 }
@@ -113,7 +117,14 @@ class MediaImportService {
   constructor(options) {
     this.callEditor = options.callEditor;
     this.registerMedia = options.registerMedia;
-    this.roots = options.roots || (() => []);
+    /**
+     * The one path check, shared with the editor window and with every other
+     * MCP file operation. It was a second copy of the rule here, which is how a
+     * folder could be reachable through one door and refused through another.
+     */
+    this.admit = options.admit || ((candidate) => {
+      throw Object.assign(new Error(`No folder is allowed: ${candidate}`), { code: 'path_not_allowed' });
+    });
     this.fs = options.fs || fs;
     this.probe = options.probe || probeWithFfprobe;
     this.logger = options.logger || createLogger('media-import');
@@ -350,9 +361,7 @@ class MediaImportService {
   async #prepare(job, file, seen) {
     const started = Date.now();
     try {
-      const roots = this.roots().map((root) => path.resolve(root));
-      const requested = path.resolve(file.path);
-      if (!withinRoots(requested, roots)) throw Object.assign(new Error(`Path is outside the allowed roots: ${requested}`), { code: 'path_not_allowed' });
+      const requested = this.admit(file.path);
       const extension = path.extname(requested).toLowerCase();
       const mime = SUPPORTED.get(extension);
       if (!mime) { file.status = 'unsupported'; return { file, ready: false }; }
@@ -362,7 +371,8 @@ class MediaImportService {
         if (error.code === 'ENOENT') { file.status = 'missing'; file.error = safeError(error); return { file, ready: false }; }
         throw error;
       }
-      if (!withinRoots(real, roots)) throw Object.assign(new Error(`Resolved path is outside the allowed roots: ${real}`), { code: 'path_not_allowed' });
+      // Checked again after realpath: a symlink must not lead out of the roots.
+      this.admit(real);
       const stat = await this.fs.stat(real);
       if (!stat.isFile()) throw Object.assign(new Error(`Not a file: ${real}`), { code: 'not_a_file' });
       const handle = await this.fs.open(real, 'r');
@@ -398,4 +408,4 @@ class MediaImportService {
   }
 }
 
-module.exports = { MediaImportService, probeWithFfprobe, summaryFromProbe, normalized, withinRoots, SUPPORTED };
+module.exports = { MediaImportService, probeWithFfprobe, summaryFromProbe, normalized, SUPPORTED };

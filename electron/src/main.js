@@ -22,6 +22,11 @@ const { restoreState, trackWindow } = require('./window-state');
 const { editorEndpoint } = require('./ipc-endpoint');
 const { MediaImportService } = require('./media-import-service');
 const { createLogger, safeError } = require('./structured-log');
+const { IdempotencyLedger } = require('./idempotency-ledger');
+const { RecoveryCheckpointStore } = require('./recovery-checkpoint-store');
+const { preferredPort, rememberPort } = require('./stable-origin');
+const { editorLocationFile, rememberEditorLocation } = require('./editor-location');
+const { RootStore } = require('./mcp-roots');
 
 /**
  * Below this the console stops being one.
@@ -37,21 +42,46 @@ const MCP_OPEN = process.argv.includes('--mcp-open');
 const DEV_URL = process.env.SVE_DEV_URL || 'http://localhost:4200';
 const log = createLogger('electron-main');
 
-/** Files reachable by automation. The client opts into roots explicitly. */
-const MCP_ROOTS = new Set((process.env.SVE_MCP_ROOTS || process.cwd())
-  .split(path.delimiter)
-  .filter(Boolean)
-  .map((entry) => path.resolve(entry)));
+/**
+ * Files reachable by the editor, from its own window and from MCP alike.
+ *
+ * Built once the application knows where the user's folders are — `app.getPath`
+ * is what supplies the defaults, so this cannot be a module-level constant. See
+ * mcp-roots.js for the layers and the denylist.
+ */
+let rootStoreInstance = null;
+
+function ownApplicationData() {
+  // roots.json and the recovery checkpoint live inside AppData by design, and
+  // the denylist refuses AppData wholesale. These two survive it.
+  const found = [];
+  for (const attempt of [() => app.getPath('userData'), () => path.join(app.getPath('appData'), 'SimpleVlogEditor'),
+    () => process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'SimpleVlogEditor')]) {
+    try { const value = attempt(); if (value) found.push(value); } catch { /* not every platform defines it */ }
+  }
+  return found;
+}
+
+function rootStore() {
+  if (!rootStoreInstance) {
+    rootStoreInstance = new RootStore({
+      getPath: (name) => app.getPath(name),
+      allowances: ownApplicationData(),
+      onChange: (state) => {
+        log.info('mcp_roots_changed', { roots: state.roots, rootSource: state.rootSource });
+        publishRootState(state);
+      }
+    });
+    log.info('mcp_roots', rootStoreInstance.describe());
+  }
+  return rootStoreInstance;
+}
 
 function admittedPath(candidate) {
-  if (typeof candidate !== 'string' || !candidate.trim()) throw new Error('A non-empty file path is required.');
-  const resolved = path.resolve(candidate);
-  const admitted = [...MCP_ROOTS].some((root) => {
-    const relative = path.relative(root, resolved);
-    return relative === '' || (!relative.startsWith('..' + path.sep) && relative !== '..' && !path.isAbsolute(relative));
-  });
-  if (!admitted) throw new Error(`The path is outside SVE_MCP_ROOTS: ${resolved}`);
-  return resolved;
+  // The standalone recovery document is the sole host-owned path the renderer
+  // may reopen; all caller-selected media and outputs remain constrained to the
+  // allowed roots.
+  return rootStore().admit(candidate, { allowances: [recoveryProjectPath()] });
 }
 
 const MIME = new Map(Object.entries({
@@ -78,9 +108,9 @@ const editorSessionId = randomUUID();
 let lastAgentController = 'mcp';
 let hadAgentConnection = false;
 let lastAgentConnectionAt = null;
-let recoveryRoot = [...MCP_ROOTS][0] || process.cwd();
-let checkpointQueue = Promise.resolve();
+let recoveryRoot = null;
 let restoreAttemptedPath = null;
+const mutationLedger = new IdempotencyLedger({ limit: 500 });
 
 function fromOurApp(contents) {
   const url = contents?.getURL?.() ?? '';
@@ -112,13 +142,52 @@ const outputFiles = new Map();
 let agentBridgeWired = false;
 let windowControlsWired = false;
 
-function recoveryProjectPath() {
-  return path.join(recoveryRoot, 'simplevlogeditor-recovery.sve.json');
+const TERMINAL_OPERATION_STATES = new Set(['applied', 'failed', 'cancelled', 'recovered']);
+
+function activeAgentOperations() {
+  return [...agentOperations.values()].filter((operation) => !TERMINAL_OPERATION_STATES.has(operation.state));
 }
 
+/** Keeps operation polling useful without retaining frame pixels or unbounded transcripts. */
+function summarizeOperationResult(value, depth = 0, seen = new Set()) {
+  if (value === null || value === undefined || typeof value === 'number' || typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length > 4000 ? `${value.slice(0, 4000)}… [truncated]` : value;
+  if (typeof value !== 'object') return String(value);
+  if (seen.has(value)) return '[circular]';
+  if (depth >= 5) return Array.isArray(value) ? `[array:${value.length}]` : '[object]';
+  seen.add(value);
+  if (Array.isArray(value)) {
+    const items = value.slice(0, 100).map((entry) => summarizeOperationResult(entry, depth + 1, seen));
+    if (value.length > items.length) items.push(`[${value.length - items.length} more item(s)]`);
+    return items;
+  }
+  const result = {};
+  for (const [key, entry] of Object.entries(value).slice(0, 100)) {
+    result[key] = key === 'dataUrl' ? '[image data omitted]' : summarizeOperationResult(entry, depth + 1, seen);
+  }
+  return result;
+}
+
+function recoveryProjectPath() {
+  const root = recoveryRoot || path.join(app.getPath('userData'), 'recovery');
+  return path.join(root, 'simplevlogeditor-recovery.sve.json');
+}
+
+const checkpointStore = new RecoveryCheckpointStore(() => recoveryProjectPath());
+
+/**
+ * Which client is driving, reduced to the names the editor knows how to dress.
+ *
+ * The value arrives from the client's own `SVE_CONTROLLER`, so it is whatever a
+ * plugin author wrote: the Claude Code plugin sends `claude-code`, and a person
+ * configuring the server by hand might reasonably write `claude`. Both mean the
+ * same window, so both fold into one name rather than falling through to the
+ * generic badge.
+ */
 function normalizedController(value) {
   const name = String(value || '').trim().toLowerCase();
   if (name === 'codex' || name === 'chatgpt') return name;
+  if (name === 'claude' || name === 'claude-code' || name === 'claude_code' || name === 'claudecode') return 'claude-code';
   return 'mcp';
 }
 
@@ -129,7 +198,10 @@ function agentControlState() {
     active: connected,
     visible: connected || hadAgentConnection,
     connectionStatus: connected ? 'connected' : hadAgentConnection ? 'disconnected' : 'idle',
-    controller: controllers.includes('codex') ? 'codex' : controllers.includes('chatgpt') ? 'chatgpt' : lastAgentController,
+    // First match wins, and the order is only a tie-break for the rare case of
+    // two clients connected at once: the badge can name one of them, and the
+    // full list is published beside it for anything that wants both.
+    controller: ['codex', 'chatgpt', 'claude-code'].find((name) => controllers.includes(name)) || lastAgentController,
     controllers,
     sessionId: editorSessionId,
     lastConnectionAt: lastAgentConnectionAt,
@@ -140,6 +212,16 @@ function agentControlState() {
 function publishAgentControlState() {
   if (agentContents && !agentContents.isDestroyed()) {
     agentContents.send('agent:control-state', agentControlState());
+  }
+}
+
+/**
+ * The Allowed folders screen and the consent dialog both read this, and both
+ * must see a change the moment it happens rather than on the next restart.
+ */
+function publishRootState(state) {
+  if (agentContents && !agentContents.isDestroyed()) {
+    agentContents.send('roots:state', state);
   }
 }
 
@@ -169,6 +251,9 @@ function callEditor(request) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
     const operationId = String(request?.arguments?.requestId || request?.id || randomUUID());
+    let settled = false;
+    let readyRetry = null;
+    let readyWaiter = null;
     const operation = {
       operationId, name: request.name, state: 'processing', stage: 'dispatching', percent: null,
       startedAt: new Date(started).toISOString(), updatedAt: new Date(started).toISOString(),
@@ -176,7 +261,14 @@ function callEditor(request) {
     };
     agentOperations.set(operationId, operation);
     while (agentOperations.size > 500) agentOperations.delete(agentOperations.keys().next().value);
+    const clearReadyWait = () => {
+      if (readyRetry) clearTimeout(readyRetry);
+      readyRetry = null;
+      if (readyWaiter) agentReadyWaiters.delete(readyWaiter);
+      readyWaiter = null;
+    };
     const send = () => {
+      if (settled) return;
       if (!agentContents || agentContents.isDestroyed()) {
         operation.state = 'unresponsive';
         operation.stage = 'waiting-for-renderer';
@@ -186,13 +278,28 @@ function callEditor(request) {
           const error = Object.assign(new Error('The editor did not become ready.'), { code: 'renderer_unresponsive' });
           operation.state = 'failed';
           operation.error = { code: error.code, message: error.message };
+          operation.updatedAt = new Date().toISOString();
+          settled = true;
+          clearReadyWait();
           return reject(error);
         }
-        const waiter = () => { agentReadyWaiters.delete(waiter); send(); };
-        agentReadyWaiters.add(waiter);
+        if (!readyWaiter) {
+          readyWaiter = () => {
+            clearReadyWait();
+            send();
+          };
+          agentReadyWaiters.add(readyWaiter);
+        }
+        if (!readyRetry) {
+          readyRetry = setTimeout(() => {
+            readyRetry = null;
+            send();
+          }, 250);
+        }
         return;
       }
 
+      clearReadyWait();
       const id = `agent-${++agentSequence}`;
       const timer = setTimeout(() => {
         agentPending.delete(id);
@@ -201,23 +308,32 @@ function callEditor(request) {
         operation.elapsedMs = Date.now() - started;
         operation.updatedAt = new Date().toISOString();
         operation.error = { code: 'editor_timeout', message: `Editor command "${request.name}" timed out.` };
+        settled = true;
         reject(Object.assign(new Error(operation.error.message), { code: operation.error.code, details: { operationId } }));
       }, 30 * 60 * 1000);
       agentPending.set(id, {
         operationId,
         resolve: (value) => {
           clearTimeout(timer);
+          if (settled) return;
+          settled = true;
           operation.state = 'applied';
           operation.stage = 'completed';
           operation.percent = 100;
           operation.elapsedMs = Date.now() - started;
           operation.updatedAt = new Date().toISOString();
           operation.projectRevision = value?.projectRevision ?? null;
-          operation.result = { apiVersion: value?.apiVersion, projectRevision: value?.projectRevision };
+          operation.result = {
+            apiVersion: value?.apiVersion,
+            projectRevision: value?.projectRevision,
+            value: summarizeOperationResult(value?.result)
+          };
           resolve(value);
         },
         reject: (error) => {
           clearTimeout(timer);
+          if (settled) return;
+          settled = true;
           operation.state = error?.code === 'cancelled' ? 'cancelled' : 'failed';
           operation.stage = error?.details?.stage || operation.stage;
           operation.elapsedMs = Date.now() - started;
@@ -240,21 +356,40 @@ function agentResponse(result, projectRevision = 0) {
 }
 
 async function checkpointProject(reason = 'Automatic checkpoint') {
-  const checkpointPath = recoveryProjectPath();
-  checkpointQueue = checkpointQueue.catch(() => undefined).then(async () => {
-    const response = await callEditor({
-      name: 'save_project',
-      arguments: { path: checkpointPath, kind: 'project', name: 'Automatic Codex recovery' }
-    });
-    log.info('project_checkpoint_saved', { path: checkpointPath, reason, projectRevision: response.projectRevision });
-    return agentResponse({
-      saved: true,
-      path: checkpointPath,
-      reason,
-      projectRevision: response.projectRevision
-    }, response.projectRevision);
+  const response = await callEditor({ name: 'get_project', arguments: {} });
+  const document = response.result?.project;
+  const clipCount = Number(response.result?.clipCount || 0);
+  const saved = clipCount > 0
+    ? await checkpointStore.write(document, response.projectRevision, reason)
+    : await checkpointStore.remove(response.projectRevision, reason);
+  log.info(clipCount > 0 ? 'project_checkpoint_saved' : 'project_checkpoint_removed', {
+    path: saved.path, reason, projectRevision: response.projectRevision, source: 'electron-snapshot'
   });
-  return checkpointQueue;
+  return agentResponse({
+    saved: clipCount > 0,
+    removed: clipCount === 0,
+    path: saved.path,
+    reason,
+    projectRevision: response.projectRevision
+  }, response.projectRevision);
+}
+
+async function checkpointRendererProject(payload) {
+  const result = await checkpointStore.write(
+    payload?.document,
+    payload?.projectRevision,
+    payload?.reason || 'Editor autosave'
+  );
+  if (!result.skipped) log.info('project_checkpoint_saved', {
+    path: result.path, reason: result.reason, projectRevision: result.projectRevision, source: 'renderer-autosave'
+  });
+  return result;
+}
+
+async function clearRendererCheckpoint(payload) {
+  const result = await checkpointStore.remove(payload?.projectRevision, payload?.reason || 'Project cleared');
+  log.info('project_checkpoint_removed', { path: result.path, projectRevision: result.projectRevision });
+  return result;
 }
 
 async function recoveryState() {
@@ -297,7 +432,7 @@ function commandVersion(command) {
   });
 }
 
-async function routeAgentRequest(request) {
+async function executeAgentRequest(request) {
   const args = request?.arguments || {};
   switch (request?.name) {
     case 'add_media':
@@ -323,41 +458,63 @@ async function routeAgentRequest(request) {
       const status = mediaImports.resume(args.jobId);
       return agentResponse(status, status.projectRevision);
     }
-    case 'health_check':
+    case 'health_check': {
+      const activeOperations = activeAgentOperations();
       return agentResponse({
-        state: agentContents && !agentContents.isDestroyed() ? (mediaImports.activeJob ? 'processing' : 'ready') : 'starting',
+        state: agentContents && !agentContents.isDestroyed()
+          ? (mediaImports.activeJob || activeOperations.length ? 'processing' : 'ready')
+          : 'starting',
         connectionStatus: agentControlState().connectionStatus,
         electronPid: process.pid,
         sessionId: editorSessionId,
-        queue: mediaImports.diagnostics()
+        // Reported here as well as in get_diagnostics: a caller that hit
+        // path_not_allowed should not need a second tool to see what is allowed.
+        ...rootStore().describe(),
+        queue: mediaImports.diagnostics(),
+        operations: {
+          activeCount: activeOperations.length,
+          active: activeOperations.slice(-20).map(({ operationId, name, state, stage, percent, startedAt, updatedAt }) => ({
+            operationId, name, state, stage, percent, startedAt, updatedAt
+          }))
+        }
       });
+    }
     case 'get_operation_status': {
       const operation = agentOperations.get(String(args.operationId || ''));
       if (!operation) throw Object.assign(new Error(`Operation "${args.operationId}" was not found in this editor session.`), { code: 'operation_not_found' });
-      return agentResponse({ ...operation, sessionId: editorSessionId });
+      return agentResponse({ ...operation, sessionId: editorSessionId, terminal: TERMINAL_OPERATION_STATES.has(operation.state) }, operation.projectRevision);
     }
     case 'cancel_operation': {
       const operationId = String(args.operationId || '');
       const operation = agentOperations.get(operationId);
       if (!operation) throw Object.assign(new Error(`Operation "${operationId}" was not found in this editor session.`), { code: 'operation_not_found' });
-      if (['applied', 'failed', 'cancelled', 'recovered'].includes(operation.state)) {
-        return agentResponse({ ...operation, cancellationRequested: false, terminal: true });
+      if (TERMINAL_OPERATION_STATES.has(operation.state)) {
+        return agentResponse({ ...operation, cancellationRequested: false, terminal: true }, operation.projectRevision);
       }
       operation.state = 'canceling';
       operation.stage = 'cancellation-requested';
       operation.updatedAt = new Date().toISOString();
       if (agentContents && !agentContents.isDestroyed()) agentContents.send('agent:cancel', { operationId });
-      return agentResponse({ ...operation, cancellationRequested: true, terminal: false });
+      return agentResponse({ ...operation, cancellationRequested: true, terminal: false }, operation.projectRevision);
     }
     case 'get_diagnostics': {
       const [ffmpeg, ffprobe] = await Promise.all([commandVersion(process.env.SVE_FFMPEG || 'ffmpeg'), commandVersion(process.env.SVE_FFPROBE || 'ffprobe')]);
+      const recentOperations = [...agentOperations.values()].slice(-20).map((operation) => ({
+        operationId: operation.operationId, name: operation.name, state: operation.state,
+        stage: operation.stage, percent: operation.percent, elapsedMs: operation.elapsedMs,
+        projectRevision: operation.projectRevision, error: operation.error,
+        startedAt: operation.startedAt, updatedAt: operation.updatedAt
+      }));
       return agentResponse({
         editorVersion: app.getVersion(), apiVersion: 2, protocolVersion: 2, electronPid: process.pid,
         sessionId: editorSessionId, platform: process.platform, arch: process.arch,
         versions: process.versions,
         windowCount: BrowserWindow.getAllWindows().length,
         rendererReady: Boolean(agentContents && !agentContents.isDestroyed()),
-        roots: [...MCP_ROOTS], imports: mediaImports.diagnostics(), memory: process.memoryUsage(),
+        ...rootStore().describe(),
+        imports: mediaImports.diagnostics(), operations: recentOperations,
+        idempotency: { cachedMutations: mutationLedger.size, scope: 'editor-session-and-recovery-project' },
+        connection: agentControlState(), memory: process.memoryUsage(),
         externalTools: { ffmpeg, ffprobe }
       });
     }
@@ -381,20 +538,44 @@ async function routeAgentRequest(request) {
       return response;
     }
     default: {
-      if (request.name === 'apply_edit_batch' && args.dryRun !== true) {
-        await checkpointProject(`Before edit batch: ${String(args.label || 'Agent edit')}`);
+      if ((request.name === 'apply_edit_batch' && args.dryRun !== true) || request.name === 'suppress_noise') {
+        await checkpointProject(request.name === 'suppress_noise'
+          ? 'Before noise suppression'
+          : `Before edit batch: ${String(args.label || 'Agent edit')}`);
+      }
+      let completionCheckpoint = null;
+      if (request.name === 'finish_editing') {
+        try { completionCheckpoint = await checkpointProject('AI editing completed'); }
+        catch (error) { log.warn('completion_checkpoint_failed', { error }); }
       }
       const response = await callEditor(request);
+      if (request.name === 'finish_editing' && response.result && typeof response.result === 'object') {
+        response.result = {
+          ...response.result,
+          checkpoint: completionCheckpoint?.result || null
+        };
+      }
       if (request.name === 'get_editor_capabilities' && response.result && typeof response.result === 'object') {
-        response.result.hostCommands = ['health_check', 'get_operation_status', 'cancel_operation', 'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor'];
+        const hostCommands = [
+          'queue_media_import', 'get_import_status', 'cancel_import', 'resume_import',
+          'health_check', 'get_operation_status', 'cancel_operation', 'get_diagnostics',
+          'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor'
+        ];
+        response.result.hostCommands = hostCommands;
+        response.result.commands = [...new Set([...(Array.isArray(response.result.commands) ? response.result.commands : []), ...hostCommands])];
         response.result.control = {
           visibleWindow: true,
           activityModal: true,
-          automaticCheckpoint: recoveryProjectPath()
+          automaticCheckpoint: recoveryProjectPath(),
+          manualEditCheckpoint: true,
+          mutationIdempotency: 'requestId scoped to editor session and recovery project',
+          orderedRendererLane: true,
+          priorityCommands: ['health_check', 'get_operation_status', 'cancel_operation', 'get_import_status', 'cancel_import', 'get_diagnostics', 'get_recovery_state', 'close_editor', 'restart_editor']
         };
       }
       const mutatesProject = request.name === 'undo' || request.name === 'redo' ||
         request.name === 'open_project' || request.name === 'set_project_soundtrack' || request.name === 'analyze_silence' ||
+        request.name === 'analyze_noise' || request.name === 'suppress_noise' ||
         (request.name === 'apply_edit_batch' && args.dryRun !== true);
       if (mutatesProject) {
         try { await checkpointProject(`After ${request.name}`); }
@@ -403,6 +584,39 @@ async function routeAgentRequest(request) {
       return response;
     }
   }
+}
+
+const IDEMPOTENT_PROJECT_MUTATIONS = new Set([
+  'add_media',
+  'queue_media_import',
+  'open_project',
+  'set_project_soundtrack',
+  'apply_edit_batch',
+  'undo',
+  'redo',
+  'analyze_silence',
+  'analyze_noise',
+  'suppress_noise'
+]);
+
+/**
+ * A lost bridge response must never turn one edit into two edits. The ledger is
+ * scoped to this Electron session and recovery project: reconnecting MCP hosts
+ * replay the original result, while a restarted editor requires a fresh state
+ * read and fresh request ids, as advertised by the protocol.
+ */
+async function routeAgentRequest(request) {
+  if (!IDEMPOTENT_PROJECT_MUTATIONS.has(request?.name) || request?.arguments?.dryRun === true) {
+    return executeAgentRequest(request);
+  }
+  const args = request.arguments || {};
+  const requestId = args.requestId;
+  const payload = {
+    name: request.name,
+    arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'requestId'))
+  };
+  const scope = `${editorSessionId}:${recoveryProjectPath()}`;
+  return mutationLedger.run(scope, requestId, payload, () => executeAgentRequest(request));
 }
 
 /** The editor owns a stable endpoint. MCP adapters may disconnect/reconnect without closing it. */
@@ -425,12 +639,11 @@ function startEditorBridgeServer() {
         if (!authenticated) {
           if (envelope.type !== 'hello' || envelope.protocolVersion !== 2) { socket.destroy(); continue; }
           authenticated = true;
-          const admittedRoots = [];
-          for (const root of envelope.roots || []) if (typeof root === 'string' && path.isAbsolute(root)) {
-            const resolved = path.resolve(root);
-            MCP_ROOTS.add(resolved);
-            admittedRoots.push(resolved);
-          }
+          const declared = (envelope.roots || []).filter((root) => typeof root === 'string' && path.isAbsolute(root));
+          rootStore().setLayer('mcp-client', declared);
+          const admittedRoots = rootStore().entries()
+            .filter((entry) => entry.source === 'mcp-client')
+            .map((entry) => entry.path);
           if (admittedRoots[0]) {
             const nextRecoveryRoot = admittedRoots[0];
             if (nextRecoveryRoot !== recoveryRoot) {
@@ -451,6 +664,18 @@ function startEditorBridgeServer() {
             ? `${controller === 'codex' ? 'Codex' : controller === 'chatgpt' ? 'ChatGPT' : 'AI client'} connection restored.`
             : `${controller === 'codex' ? 'Codex' : controller === 'chatgpt' ? 'ChatGPT' : 'AI client'} connected to the editor.`);
           restoreCheckpointIfEmpty().catch((error) => log.warn('project_checkpoint_restore_failed', { error }));
+          continue;
+        }
+        // The MCP client can answer roots/list after the handshake, and can
+        // change its mind later through roots/list_changed. Both arrive here.
+        if (envelope.type === 'roots') {
+          const declared = (envelope.roots || []).filter((root) => typeof root === 'string' && path.isAbsolute(root));
+          if (rootStore().setLayer('mcp-client', declared)) {
+            publishAgentSystemLog('INFO', 'MCP bridge',
+              declared.length
+                ? `The MCP client connected ${declared.length} folder${declared.length === 1 ? '' : 's'}.`
+                : 'The MCP client disconnected its folders.');
+          }
           continue;
         }
         routeAgentRequest(envelope.request)
@@ -475,7 +700,9 @@ function startEditorBridgeServer() {
     const heartbeat = setInterval(() => {
       if (!socket.destroyed && authenticated) socket.write(JSON.stringify({
         type: 'heartbeat', pid: process.pid, windowCount: BrowserWindow.getAllWindows().length,
-        state: agentContents && !agentContents.isDestroyed() ? (mediaImports?.activeJob ? 'busy' : 'ready') : 'starting'
+        state: agentContents && !agentContents.isDestroyed()
+          ? (mediaImports?.activeJob || activeAgentOperations().length ? 'busy' : 'ready')
+          : 'starting'
       }) + '\n');
     }, 5000);
     heartbeat.unref();
@@ -508,7 +735,12 @@ function wireAgentBridge() {
       `${lastAgentController === 'codex' ? 'Codex' : lastAgentController === 'chatgpt' ? 'ChatGPT' : 'AI client'} is connected and controlling the editor.`
     );
     for (const waiter of [...agentReadyWaiters]) waiter();
-    restoreCheckpointIfEmpty().catch((error) => log.warn('project_checkpoint_restore_failed', { error }));
+    // An MCP-launched window receives its project root in the bridge hello.
+    // Waiting for that hello avoids restoring an unrelated standalone
+    // user-data checkpoint during the few milliseconds before it arrives.
+    if (!MCP_OPEN || agentControllers.size > 0) {
+      restoreCheckpointIfEmpty().catch((error) => log.warn('project_checkpoint_restore_failed', { error }));
+    }
   });
 
   ipcMain.handle('agent:runtime-info', (event) => {
@@ -518,6 +750,16 @@ function wireAgentBridge() {
       sessionId: editorSessionId, platform: process.platform, arch: process.arch,
       versions: process.versions
     };
+  });
+
+  ipcMain.handle('project:checkpoint', async (event, payload) => {
+    if (!fromOurApp(event.sender)) throw new Error('A recovery save was requested by an unknown page.');
+    return checkpointRendererProject(payload);
+  });
+
+  ipcMain.handle('project:checkpoint-clear', async (event, payload) => {
+    if (!fromOurApp(event.sender)) throw new Error('A recovery reset was requested by an unknown page.');
+    return clearRendererCheckpoint(payload);
   });
 
   ipcMain.on('agent:response', (event, envelope) => {
@@ -545,6 +787,10 @@ function wireAgentBridge() {
     operation.elapsedMs = Date.now() - Date.parse(operation.startedAt);
     operation.updatedAt = new Date().toISOString();
     operation.etaMs = Number.isFinite(progress.etaMs) ? Math.max(0, progress.etaMs) : null;
+    for (const key of ['operationIndex', 'operationCount', 'frameIndex', 'frameCount', 'clipIndex', 'clipCount']) {
+      if (Number.isFinite(progress[key])) operation[key] = progress[key];
+    }
+    if (typeof progress.clipName === 'string') operation.clipName = progress.clipName.slice(0, 500);
   });
 
   ipcMain.handle('agent:read-files', async (event, paths) => {
@@ -574,7 +820,20 @@ function wireAgentBridge() {
     const parent = await fs.stat(realParent);
     if (!parent.isDirectory()) throw new Error('The export parent is not a directory.');
     const id = randomUUID();
-    outputFiles.set(id, { handle: await fs.open(file, 'w'), file, cursor: 0 });
+    try {
+      const existing = admittedPath(await fs.realpath(file));
+      const existingStat = await fs.stat(existing);
+      if (!existingStat.isFile()) throw new Error('The export destination is not a file.');
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
+    // Render beside the destination and publish it only after the writer has
+    // closed successfully. Cancellation or an encoder failure can then remove
+    // only this temporary file, never an older export or saved project.
+    const temporary = admittedPath(path.join(realParent, `.${path.basename(file)}.${id}.sve-writing`));
+    outputFiles.set(id, {
+      handle: await fs.open(temporary, 'wx'), file, temporary, cursor: 0
+    });
     return id;
   });
 
@@ -594,7 +853,19 @@ function wireAgentBridge() {
     const output = outputFiles.get(id);
     if (!output) return;
     outputFiles.delete(id);
-    await output.handle.close();
+    try {
+      await output.handle.sync();
+      await output.handle.close();
+      await fs.rename(output.temporary, output.file);
+    } catch (error) {
+      await output.handle.close().catch(() => {});
+      error.details = {
+        ...(error.details && typeof error.details === 'object' ? error.details : {}),
+        destination: output.file,
+        recoverableTemporaryFile: output.temporary
+      };
+      throw error;
+    }
   });
 
   ipcMain.handle('agent:output-abort', async (event, id) => {
@@ -603,7 +874,7 @@ function wireAgentBridge() {
     if (!output) return;
     outputFiles.delete(id);
     await output.handle.close().catch(() => {});
-    await fs.unlink(output.file).catch(() => {});
+    await fs.unlink(output.temporary).catch(() => {});
   });
 }
 
@@ -844,9 +1115,29 @@ function wirePermissions(session) {
 if (gotSingleInstanceLock) app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
+  await rememberEditorLocation(
+    editorLocationFile(process.env.LOCALAPPDATA, app.getPath('userData')),
+    {
+      sourceRoot: path.resolve(__dirname, '..', '..'),
+      executablePath: app.getPath('exe'),
+      resourcesPath: process.resourcesPath
+    }
+  ).catch((error) => log.warn('editor_location_not_registered', { error: safeError(error) }));
+
   // The loopback server also owns private, range-enabled media URLs, including
-  // in development where the UI itself is served by Angular's dev server.
-  server = await startServer(siteRoot());
+  // in development where the UI itself is served by Angular's dev server. In
+  // production its port is remembered, because localStorage and IndexedDB are
+  // scoped to the complete origin and must survive an application restart.
+  const originStateFile = path.join(app.getPath('userData'), 'loopback-origin.json');
+  const wantedPort = DEV ? 0 : await preferredPort(originStateFile, `${app.getName()}:${app.getPath('userData')}`);
+  server = await startServer(siteRoot(), { port: wantedPort, fallbackToRandom: true });
+  if (!DEV) {
+    await rememberPort(originStateFile, server.port);
+    if (server.usedFallback) log.warn('loopback_port_changed', {
+      preferredPort: wantedPort, actualPort: server.port,
+      reason: 'preferred_port_in_use'
+    });
+  }
   origin = DEV ? DEV_URL : server.origin;
 
   wireWindowControls();
@@ -856,7 +1147,7 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
   mediaImports = new MediaImportService({
     callEditor,
     registerMedia: (file, stat, type) => ({ filePath: file, name: path.basename(file), type, size: stat.size, lastModified: stat.mtimeMs, url: server.registerMedia(file, stat, type) }),
-    roots: () => [...MCP_ROOTS],
+    admit: (candidate) => admittedPath(candidate),
     stateFile: path.join(app.getPath('userData'), 'mcp-import-jobs.json'),
     checkpoint: (reason) => checkpointProject(reason)
   });
@@ -875,7 +1166,10 @@ app.on('window-all-closed', () => {
 });
 
 app.on('will-quit', async () => {
-  for (const output of outputFiles.values()) await output.handle.close().catch(() => {});
+  for (const output of outputFiles.values()) {
+    await output.handle.close().catch(() => {});
+    await fs.unlink(output.temporary).catch(() => {});
+  }
   outputFiles.clear();
   if (bridgeServer) await new Promise((done) => bridgeServer.close(() => done())).catch(() => {});
   if (server) await server.close();

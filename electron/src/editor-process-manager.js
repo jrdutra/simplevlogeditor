@@ -5,11 +5,13 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const electron = require('electron');
 const { editorEndpoint } = require('./ipc-endpoint');
+const { splitRoots } = require('./mcp-roots');
 const { createLogger } = require('./structured-log');
 
 const RETRY_MS = 750;
 const START_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 30 * 60_000;
+const HEARTBEAT_TIMEOUT_MS = 20_000;
 
 function recoverable(message, code = 'editor_unavailable', details = {}) {
   return Object.assign(new Error(message), {
@@ -21,9 +23,10 @@ function recoverable(message, code = 'editor_unavailable', details = {}) {
 class EditorProcessManager {
   constructor(options = {}) {
     this.endpoint = options.endpoint || editorEndpoint();
+    this.dev = options.dev ?? process.argv.includes('--dev');
     this.spawnEditor = options.spawnEditor || (() => spawn(
       electron,
-      [path.join(__dirname, '..'), '--mcp-open'],
+      [path.join(__dirname, '..'), '--mcp-open', ...(this.dev ? ['--dev'] : [])],
       {
         detached: true,
         stdio: ['ignore', 'ignore', 'inherit'],
@@ -38,6 +41,7 @@ class EditorProcessManager {
     this.socket = null;
     this.buffer = '';
     this.sequence = 0;
+    this.clientRoots = [];
     this.pending = new Map();
     this.ensurePromise = null;
     this.state = 'starting';
@@ -46,6 +50,15 @@ class EditorProcessManager {
     this.windowCount = 0;
     this.lastHeartbeat = null;
     this.closed = false;
+    this.heartbeatWatchdog = setInterval(() => {
+      if (!this.socket || this.socket.destroyed || !this.lastHeartbeat) return;
+      const silentForMs = Date.now() - this.lastHeartbeat;
+      if (silentForMs <= HEARTBEAT_TIMEOUT_MS) return;
+      this.logger.warn('ipc_heartbeat_timeout', { silentForMs, endpoint: this.endpoint });
+      this.lastError = `No editor heartbeat for ${silentForMs} ms.`;
+      this.socket.destroy();
+    }, 5000);
+    this.heartbeatWatchdog.unref?.();
   }
 
   async ensureEditorRunning() {
@@ -102,16 +115,45 @@ class EditorProcessManager {
     });
   }
 
+  /**
+   * Only what this process was explicitly told, never its working directory:
+   * the host is started by whatever launched the MCP client, so its working
+   * directory says nothing about what the user wants reachable. Electron
+   * supplies the defaults, and folders the MCP client reported arrive later
+   * through `setClientRoots`.
+   */
+  #roots() {
+    return [...new Set([...splitRoots(process.env.SVE_MCP_ROOTS || ''), ...this.clientRoots])];
+  }
+
+  /**
+   * Folders the MCP client reported through roots/list. Forwarded to the editor
+   * immediately when a connection is up, and replayed in the next hello
+   * otherwise, so a client that answers late is not lost.
+   */
+  setClientRoots(roots) {
+    const next = (roots || []).filter((root) => typeof root === 'string' && path.isAbsolute(root)).map((root) => path.resolve(root));
+    if (next.join('\u0000') === this.clientRoots.join('\u0000')) return false;
+    this.clientRoots = next;
+    this.logger.info('mcp_client_roots', { roots: next });
+    if (this.socket && this.state === 'ready') {
+      this.socket.write(JSON.stringify({ type: 'roots', protocolVersion: 2, roots: this.#roots() }) + '\n');
+    }
+    return true;
+  }
+
   #adopt(socket) {
     this.socket?.destroy();
     this.socket = socket;
     this.buffer = '';
     this.state = 'ready';
+    this.lastError = null;
+    this.lastHeartbeat = Date.now();
     socket.setEncoding('utf8');
     socket.write(JSON.stringify({
       type: 'hello', protocolVersion: 2, pid: process.pid,
       controller: process.env.SVE_CONTROLLER || 'codex',
-      roots: (process.env.SVE_MCP_ROOTS || process.cwd()).split(path.delimiter).filter(Boolean).map((root) => path.resolve(root))
+      roots: this.#roots()
     }) + '\n');
     socket.on('data', (chunk) => this.#receive(chunk));
     socket.on('close', () => this.#disconnected(socket, 'closed'));
@@ -216,12 +258,15 @@ class EditorProcessManager {
       lastHeartbeat: this.lastHeartbeat ? new Date(this.lastHeartbeat).toISOString() : null,
       lastError: this.lastError,
       pendingCalls: this.pending.size,
+      declaredRoots: this.#roots(),
+      clientRoots: [...this.clientRoots],
       memory: process.memoryUsage()
     };
   }
 
   close() {
     this.closed = true;
+    clearInterval(this.heartbeatWatchdog);
     this.socket?.destroy();
     this.socket = null;
   }

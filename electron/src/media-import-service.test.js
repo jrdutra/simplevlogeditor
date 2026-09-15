@@ -31,7 +31,14 @@ function harness(options = {}) {
   let active = 0;
   let peak = 0;
   const service = new MediaImportService({
-    roots: () => [ROOT],
+    // The same shape main.js passes: one admit() shared with the editor window.
+    admit: (candidate) => {
+      const resolved = path.resolve(candidate);
+      const relative = path.relative(ROOT, resolved);
+      const inside = relative === '' || (relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
+      if (!inside) throw Object.assign(new Error(`The editor has not been allowed to use this folder: ${resolved}.`), { code: 'path_not_allowed' });
+      return resolved;
+    },
     fs: options.fs || fakeFs(),
     probe: options.probe || (async () => {
       active++;
