@@ -28,11 +28,18 @@ import { drawFrame } from '../criador-de-video-texto/text-scene-renderer';
 import { fontStack } from '../criador-de-video-texto/text-video-presets';
 import type { SceneBackground, TextScene } from '../criador-de-video-texto/text-video.models';
 import { FrameSource, canvasOfSize, composeFrame } from './frame-compositor';
-import { clampSpeed, volumeGain } from './video-editor-defaults';
-import { clipIndexAt, fadeGainAt, sourceTimeAt, transitionAt } from './video-editor-timeline';
+import { imageBehindSubject, imagesAt, loadPlanImages } from './clip-image';
+import { SubjectSegmentationClient, SubjectSurface, subjectFailureMessage } from './subject-segmentation';
+import { SubjectEffectPreview } from './subject-effect-preview';
+import { zoomScaleAt } from '../../shared/media/auto-zoom';
+import { clampSpeed, isBackgroundCaption, volumeGain } from './video-editor-defaults';
+import { captionAt, clipIndexAt, fadeGainAt, sourceTimeAt, transitionAt, videoEffectSectionAt } from './video-editor-timeline';
 import { TransitionPainter } from './video-transitions';
 import { ClipPlan, ProjectPlan, isMediaClip } from './video-editor.models';
 import { imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
+import { activeNoiseAudio } from './clip-noise';
+import { effectNeedsSubject } from './video-effects';
+import { disposeFrameEffects, frameEffectWarning } from './frame-compositor';
 
 /** Widest the preview is composed at. Beyond this it costs more than it shows. */
 const PREVIEW_WIDTH = 960;
@@ -71,6 +78,7 @@ export interface PlayerCallbacks {
   /** Called on every drawn frame, so the page can follow the playhead. */
   onTick: (time: number, clipIndex: number) => void;
   onEnded: () => void;
+  onEffectStatus?: (message: string) => void;
 }
 
 export class TimelinePlayer {
@@ -114,6 +122,10 @@ export class TimelinePlayer {
    */
   private incomingMounting = false;
   private readonly painter = new TransitionPainter();
+  private readonly subjectSegmentation = new SubjectSegmentationClient();
+  private readonly effectFrames = [new SubjectEffectPreview(), new SubjectEffectPreview()];
+  private readonly subjectFileIds = new WeakMap<File, number>();
+  private nextSubjectFileId = 1;
 
   /**
    * How wide the canvas is composed, before the plan's own size caps it.
@@ -220,6 +232,21 @@ export class TimelinePlayer {
     this.elements.videoB?.pause();
 
     this.draw();
+
+    // Decoding is asynchronous and drawing is not, so the first frame after a
+    // picture is placed is drawn without it and the redraw below is what puts it
+    // on screen. Guarded on the plan still being current: a reader who placed
+    // two pictures quickly would otherwise get the first decode redrawing a
+    // timeline that has already moved on.
+    void loadPlanImages(plan).then(() => {
+      if (this.plan === plan) this.draw();
+    });
+  }
+
+  /** A derived cleaned soundtrack changed without changing picture timing. */
+  invalidateSound(): void {
+    this.audioMounted = -1;
+    this.elements.audio.pause();
   }
 
   /** True when the clip at the playhead is the same one, timed the same way. */
@@ -324,6 +351,7 @@ export class TimelinePlayer {
 
   seek(time: number): void {
     if (!this.plan) return;
+    this.effectFrames.forEach(lane => lane.reset());
     this.time = Math.max(0, Math.min(time, this.plan.totalDuration));
     // Forcing a remount rather than only moving the decoder: a seek may land in
     // a different clip, and even inside the same one it usually lands in a
@@ -359,9 +387,42 @@ export class TimelinePlayer {
     for (const bitmap of this.bitmaps.values()) bitmap.close();
     this.bitmaps.clear();
     this.bitmapFiles.clear();
+    this.subjectSegmentation.dispose();
+    this.effectFrames.forEach(lane => lane.dispose());
+    if (this.context) disposeFrameEffects(this.context);
   }
 
   // ------------------------------------------------------------- the clock
+
+  /**
+   * The fastest a media element will actually play.
+   *
+   * Browsers cap `playbackRate`, and Chrome *throws* rather than clamping when
+   * the value is outside the range. The editor allows speeds up to 240 — a
+   * five-minute timelapse asked to last fifteen seconds is twenty times — and
+   * assigning that to the element threw inside the clip-mounting path, which is
+   * why a timelapse preview stopped playing altogether instead of playing at
+   * some wrong speed.
+   *
+   * Above this the picture is scrubbed instead: the clock stays the output
+   * clock, and each frame seeks to the source time it maps to. That is slower
+   * and rougher than decoded playback, and it is what the export will show.
+   */
+  private static readonly PLAYBACK_RATE_MAX = 16;
+
+  /**
+   * @returns true when the element carries the whole speed by itself.
+   */
+  private applyRate(media: HTMLMediaElement, speed: number): boolean {
+    const wanted = clampSpeed(speed);
+    const possible = Math.min(wanted, TimelinePlayer.PLAYBACK_RATE_MAX);
+    try { media.playbackRate = possible; }
+    catch { /* a browser that refuses even this keeps whatever it had */ }
+    return wanted <= TimelinePlayer.PLAYBACK_RATE_MAX;
+  }
+
+  /** Set while the mounted clip runs faster than the element can play. */
+  private scrubbing = false;
 
   private loop = (): void => {
     if (!this.running || !this.plan) return;
@@ -403,6 +464,18 @@ export class TimelinePlayer {
     const join = transitionAt(plan, this.time);
     const soundIndex = join && this.time >= join.soundSwitch ? join.toIndex : index;
     const soundEntry = plan.clips[soundIndex] ?? entry;
+
+    // Faster than the element can play: the clock still advances at the output
+    // rate, so the picture is moved to the source time that clock maps to.
+    if (this.scrubbing && index === this.mounted && !this.mounting && this.running) {
+      const video = this.elements.video;
+      if (video && video.readyState >= 1) {
+        const { sourceTime } = sourceTimeAt(entry, this.time);
+        if (Number.isFinite(sourceTime) && Math.abs(video.currentTime - sourceTime) > 0.02) {
+          video.currentTime = sourceTime;
+        }
+      }
+    }
 
     if (index !== this.mounted && !this.mounting) {
       this.mounting = true;
@@ -451,6 +524,7 @@ export class TimelinePlayer {
 
     this.applyGain(plan);
 
+    let effectStatus = '';
     if (join) {
       // Both sides taken from the join rather than from `index`: during an
       // overlap `clipIndexAt` answers with the outgoing shot, and relying on
@@ -466,16 +540,114 @@ export class TimelinePlayer {
       // reader has just taken off the timeline.
       const ready = this.incoming === join.toIndex;
 
-      composeFrame(context, plan, this.time, this.width, this.height, this.sourceFor(outgoing), {
+      const transitionFrame = (clip: ClipPlan | null, source: FrameSource | null, video: HTMLVideoElement | undefined, lane: number) => {
+        if (!clip || !source || !isMediaClip(clip.clip) ||
+            !effectNeedsSubject(videoEffectSectionAt(plan.videoEffects, this.time, clip.clip.id)?.effect ?? null)) return null;
+        const still = clip.clip.summary.kind === 'image';
+        if (!still && (!video || video.seeking || video.readyState < 2)) return null;
+        const pair = this.effectFrames[lane].frame(source,this.width,this.height,1,plan.fillFrame,
+          this.maskIdentity(clip),still ? 0 : video!.currentTime,() => { if(this.plan) this.draw(); });
+        effectStatus = this.effectFrameStatus(lane,!!pair) || effectStatus;
+        return pair;
+      };
+      const outSource = this.sourceFor(outgoing);
+      const inSource = arriving && ready ? this.sourceFor(arriving, this.elements.videoB ?? null) : null;
+      const outPair = transitionFrame(outgoing,outSource,this.elements.video,0);
+      const inPair = transitionFrame(arriving,inSource,this.elements.videoB,1);
+      composeFrame(context, plan, this.time, this.width, this.height, outPair?.source ?? outSource, {
         entry: join,
-        incoming: arriving && ready ? this.sourceFor(arriving, this.elements.videoB ?? null) : null,
-        painter: this.painter
+        incoming: inPair?.source ?? inSource,
+        painter: this.painter,
+        outgoingMask: outPair?.mask,
+        incomingMask: inPair?.mask
       });
     } else {
-      composeFrame(context, plan, this.time, this.width, this.height, this.sourceFor(entry));
+      const source = this.sourceFor(entry);
+      const caption = captionAt(plan.captions, this.time);
+      const behindSubject = caption && isBackgroundCaption(caption.caption);
+      const scale = zoomScaleAt(plan.zooms, this.time);
+      const media = isMediaClip(entry.clip) ? entry.clip : null;
+      const isStill = media?.summary.kind === 'image';
+      const pictureReady = this.mounted === index && media &&
+        (isStill || (!this.elements.video.seeking && this.elements.video.readyState >= 2 && !this.cutSyncing));
+      // Never cache the old decoder image under the destination of an unfinished
+      // seek. File identity also separates a relinked/replaced source with the same clip id.
+      const sourceTime = isStill ? 0 : this.elements.video.currentTime;
+      const maskClipId = this.maskIdentity(entry);
+      const aiEffect = effectNeedsSubject(media ? videoEffectSectionAt(plan.videoEffects, this.time, media.id)?.effect ?? null : null);
+      // One analysis answers both questions about this frame. A Background
+      // Caption used to take the live decoder image and whatever matte had
+      // arrived, which during playback is almost never the matte for the image
+      // being drawn — the person moved on and the text crossed in front of her.
+      // It now takes the same frozen picture/matte pair the AI effects take, so
+      // the silhouette always belongs to the picture it is cutting out of.
+      // A picture placed in the middle layer is the third thing that needs the
+      // person cut out, alongside an AI effect and a Background Caption. Left
+      // out here, no matte is ever asked for and the picture draws on top of
+      // the person — which is the one thing that style exists not to do.
+      const behindImage = imagesAt(plan.images ?? [], this.time).some(item => imageBehindSubject(item.image));
+      const needsSubject = aiEffect || !!behindSubject || behindImage;
+      const surface: SubjectSurface = aiEffect ? 'effect' : behindSubject ? 'caption' : 'image';
+      const pair = source && needsSubject && pictureReady ? this.effectFrames[0].frame(
+        source,this.width,this.height,scale,plan.fillFrame,maskClipId,sourceTime,() => { if(this.plan) this.draw(); }
+      ) : null;
+      composeFrame(context, plan, this.time, this.width, this.height, pair?.source ?? source, null, pair?.mask ?? null,pair ? 1 : null);
+      if (needsSubject) effectStatus = this.effectFrameStatus(0,!!pair,surface,sourceTime);
     }
+    this.callbacks.onEffectStatus?.(frameEffectWarning(context) || effectStatus);
 
     this.callbacks.onTick(this.time, index);
+  }
+
+  private maskIdentity(entry: ClipPlan): string {
+    const media = isMediaClip(entry.clip) ? entry.clip : null;
+    if (media && !this.subjectFileIds.has(media.file)) this.subjectFileIds.set(media.file,this.nextSubjectFileId++);
+    return `${entry.clip.id}@${media ? this.subjectFileIds.get(media.file) : 0}`;
+  }
+
+  private effectFrameStatus(lane: number, ready: boolean, surface: SubjectSurface = 'effect', time = -1): string {
+    const frames = this.effectFrames[lane];
+    const vision = frames.vision;
+    // A technical failure is reported as a technical failure. Only a model that
+    // ran and found nobody is allowed to read as an ordinary fallback.
+    if (vision.failure) return subjectFailureMessage(vision.failure, surface);
+    if (vision.state === 'unavailable') {
+      return surface === 'effect'
+        ? 'AI effect unavailable. Original video is shown.'
+        : surface === 'caption'
+          ? 'Background caption unavailable. Text is shown in front of the subject.'
+          : 'Subject segmentation unavailable. The image is shown in front of the person.';
+    }
+    const status = vision.status();
+    if (!ready) {
+      const preparing = surface === 'effect'
+        ? 'Preparing AI Effect…'
+        : surface === 'caption' ? 'Preparing background caption…' : 'Preparing the placed image…';
+      return status.reduced ? `${preparing} (reduced preview)` : preparing;
+    }
+    // The picture on screen belongs to the instant the matte was measured on.
+    // When that falls behind the clock, say so: a preview that quietly holds an
+    // old frame while the audio runs on is the thing this is meant to avoid.
+    const behind = time >= 0 && frames.completedTime >= 0 ? time - frames.completedTime : 0;
+    if (behind > 0.25) {
+      return `Preview is ${behind.toFixed(1)}s behind while the picture is analysed. The export is unaffected.`;
+    }
+    return status.reduced
+      ? `Reduced preview: analysing at ${status.analysisEdge}px to keep up. The export is unaffected.`
+      : '';
+  }
+
+  /** Clears a recoverable segmentation failure without reloading the editor. */
+  retrySubjectVision(): boolean {
+    let recovered = false;
+    for (const lane of this.effectFrames) recovered = lane.retry() || recovered;
+    if (recovered && this.plan) this.draw();
+    return recovered;
+  }
+
+  /** Whether the current preview failure can be retried without reopening it. */
+  get subjectVisionRetryable(): boolean {
+    return this.effectFrames.some(lane => lane.vision.failure?.retryable === true);
   }
 
   /**
@@ -698,7 +870,7 @@ export class TimelinePlayer {
 
       if (this.plan !== plan) return;
 
-      video.playbackRate = clampSpeed(entry.edits.speed);
+      this.scrubbing = !this.applyRate(video, entry.edits.speed);
       video.muted = true;
 
       const { rangeIndex, sourceTime } = sourceTimeAt(entry, this.time);
@@ -744,7 +916,7 @@ export class TimelinePlayer {
     }
     if (this.plan !== plan) return;
 
-    audio.playbackRate = target.rate;
+    this.applyRate(audio, target.rate);
     audio.currentTime = Math.max(0, target.time);
     await this.seekSettled(audio);
     if (this.plan !== plan) return;
@@ -762,7 +934,7 @@ export class TimelinePlayer {
       return;
     }
 
-    if (audio.playbackRate !== target.rate) audio.playbackRate = target.rate;
+    if (audio.playbackRate !== target.rate) this.applyRate(audio, target.rate);
     if (!audio.seeking && Number.isFinite(audio.duration) && Math.abs(audio.currentTime - target.time) > DRIFT_SECONDS) {
       audio.currentTime = Math.max(0, target.time);
     }
@@ -789,7 +961,7 @@ export class TimelinePlayer {
     }
 
     return {
-      file: clip.file,
+      file: activeNoiseAudio(clip) ?? clip.file,
       time: sourceTimeAt(entry, this.time).sourceTime,
       rate: clampSpeed(entry.edits.speed)
     };
@@ -822,7 +994,7 @@ export class TimelinePlayer {
 
       if (this.plan !== plan) return;
 
-      video.playbackRate = clampSpeed(entry.edits.speed);
+      this.applyRate(video, entry.edits.speed);
       video.currentTime = sourceTimeAt(entry, Math.max(this.time, entry.outputStart)).sourceTime;
       if (this.running) await video.play().catch(() => undefined);
     } else {

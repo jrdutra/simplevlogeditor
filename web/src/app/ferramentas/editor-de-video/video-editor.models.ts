@@ -915,6 +915,8 @@ export interface RenderResult {
   /** Null when the file was streamed straight to the location the reader chose. */
   blob: Blob | null;
   fileName: string;
+  /** The full destination when one was named; null for a browser save picker. */
+  filePath: string | null;
   savedToDisk: boolean;
   kind: 'video' | 'audio';
   plan: ProjectPlan;

@@ -1139,9 +1139,17 @@
 .render-modal {
   position: relative;
   isolation: isolate;
-  width: min(1080px, 100%);
-  max-height: calc(100vh - 48px);
-  max-height: calc(100dvh - 48px);
+  /* The same footprint as the agent's control modal. A render log is read the
+     same way and for the same reason, and reading it through a slot a third
+     the size was the only difference between them. */
+  display: flex;
+  flex-direction: column;
+  width: 90vw;
+  max-width: calc(100vw - 2rem);
+  height: 90vh;
+  max-height: calc(100vh - 2rem);
+  max-height: calc(100dvh - 2rem);
+  min-height: 0;
   padding: 18px;
   gap: 12px;
   background: linear-gradient(145deg, rgba(17, 25, 48, 0.97), rgba(5, 11, 26, 0.97));
@@ -1190,8 +1198,12 @@
   gap: 0.6rem;
 }
 
+/* Takes whatever the modal has left rather than a fixed slice of the viewport:
+   the log is the reason the panel is open. */
+.render-modal .registro { flex: 1 1 auto; display: flex; flex-direction: column; min-height: 0; }
 .render-modal .registro-console {
-  height: min(42vh, 25rem);
+  flex: 1 1 auto;
+  height: auto;
   min-height: 12rem;
 }
 
@@ -1212,10 +1224,16 @@
 
 @media (max-width: 640px) {
   .render-fundo { padding: 10px 6px; }
-  .render-modal { max-height: calc(100dvh - 20px); padding: 12px; }
+  .render-modal {
+    width: calc(100vw - 1rem);
+    height: calc(100dvh - 1rem);
+    max-width: none;
+    max-height: none;
+    padding: 12px;
+  }
   .render-modal .progresso-topo { align-items: flex-start; flex-direction: column; }
   .render-modal .progresso-acoes { align-self: flex-end; }
-  .render-modal .registro-console { height: 48vh; min-height: 9rem; }
+  .render-modal .registro-console { min-height: 9rem; }
 }
 
 /* --------------------------------------------------------------- messages */
@@ -2510,10 +2528,23 @@ ul.reconectar-nomes li {
   overflow-wrap: anywhere;
 }
 
+/* Wall clock first, then elapsed. The date is what lines this log up against
+   the MCP log and against whatever else the machine was doing. */
+.registro-data {
+  flex: 0 0 auto;
+  color: #46617f;
+  font-variant-numeric: tabular-nums;
+}
+
 .registro-hora {
   flex: 0 0 auto;
   color: #5b7aa0;
   font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 760px) {
+  /* Narrow: the elapsed offset survives, the date is the one that goes. */
+  .registro-data { display: none; }
 }
 
 .registro-marca {

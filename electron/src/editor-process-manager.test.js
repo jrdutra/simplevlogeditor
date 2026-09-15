@@ -168,3 +168,33 @@ test('a relative root from a client is dropped rather than resolved against this
   assert.deepEqual(sent.roots, ['/home/joao/Videos']);
   manager.close();
 });
+
+test('the client tells the editor it is alive on its own schedule, not only in reply', async () => {
+  // A model thinking for four minutes sends no tool calls. That silence used to
+  // be indistinguishable from a client that had been killed.
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  assert.ok(manager.healthcheck, 'a periodic healthcheck must be running');
+  socket.written.length = 0;
+
+  manager.socket.write(JSON.stringify({
+    type: 'client_health', protocolVersion: 2, pid: process.pid,
+    controller: 'claude-code', pendingCalls: 0, at: new Date().toISOString()
+  }) + '\n');
+  const sent = socket.written.find((envelope) => envelope.type === 'client_health');
+  assert.ok(sent, 'the envelope must carry its own type');
+  assert.equal(sent.protocolVersion, 2);
+  assert.equal(sent.controller, 'claude-code');
+  manager.close();
+});
+
+test('closing stops the healthcheck as well as the watchdog', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  manager.close();
+  socket.written.length = 0;
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.deepEqual(socket.written, [], 'a closed manager must write nothing');
+});

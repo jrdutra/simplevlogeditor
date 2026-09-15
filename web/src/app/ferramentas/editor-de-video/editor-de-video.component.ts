@@ -701,6 +701,14 @@ interface RenderLogLine {
   seq: number;
   /** Time since the export began, as the console shows it. */
   at: string;
+  /**
+   * Wall clock, to the millisecond.
+   *
+   * Elapsed time answers "how long did this step take"; it cannot be lined up
+   * against anything else. A render trace read beside the MCP log, or beside
+   * what the machine was doing at the time, needs the date.
+   */
+  clock: string;
   kind: RenderLogKind;
   text: string;
   /** Where the export had got to, as a whole number, or null before it could tell. */
@@ -1017,6 +1025,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   agentDiagnosticMessage = '';
   renderDiagnostic: RenderDiagnostic | null = null;
   renderDiagnosticMessage = '';
+  private readonly relinkFailures = new Set<string>();
+  private lastRevisionReason = 'the project was opened';
+  private lastRevisionAt = new Date().toISOString();
   agentCompletionOpen = false;
   agentCompletionSummary = '';
   private agentLogSeq = 0;
@@ -1668,7 +1679,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   /** Hands one file to whatever is waiting for it. Answers whether anything was. */
-  private attachRestoredFile(file: File): boolean {
+  private attachRestoredFile(file: File, listen = true): boolean {
     let used = false;
 
     for (const clip of this.clips) {
@@ -1677,7 +1688,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.awaitingFile = false;
         clip.info = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
-        this.queueAutomaticListening([clip]);
+        // Listening moves the revision when it finishes, minutes later and
+        // with nothing in the log. A reconnect must not start it: the analysis
+        // was saved with the project it is restoring.
+        if (listen) this.queueAutomaticListening([clip]);
         used = true;
       }
 
@@ -6078,7 +6092,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       clip.analysis = analysis;
       clip.detected = analysis.silenceRanges.map((range) => ({ ...range }));
       clip.analyzedWith = { ...settings, autoZoom: { ...settings.autoZoom } };
-      this.touch();
+      // Named for the conflict message: this finishes long after whatever
+      // started it, and moving the revision here is what surprises an agent
+      // that read the project a moment ago.
+      this.touch(`automatic listening finishing on ${clip.fileRef?.name ?? clip.file.name}`);
       return true;
     } catch (error) {
       if (error instanceof OperationCanceledError) {
@@ -8318,7 +8335,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.message = `Stopped. ${result.fileName} holds the edit up to that point.`;
       } else {
         this.resume = null;
-        this.message = result.savedToDisk ? `Saved as ${result.fileName}.` : `${result.fileName} is ready.`;
+        // The whole path when one is known. "Saved as edited.mp4" says nothing
+        // on a machine with four folders called Exports.
+        this.message = result.savedToDisk
+          ? `Saved as ${result.filePath || result.fileName}.`
+          : `${result.fileName} is ready.`;
       }
 
       if (!result.savedToDisk) this.download(result);
@@ -10049,8 +10070,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const seconds = (performance.now() - this.logStartedAt) / 1000;
     const minutes = Math.floor(seconds / 60);
     const at = `${String(minutes).padStart(2, '0')}:${(seconds - minutes * 60).toFixed(1).padStart(4, '0')}`;
+    const clock = this.formatAgentTimestamp(new Date().toISOString());
 
-    this.renderLog.push({ seq: this.logSeq++, at, kind: entry.kind, text: entry.text, percent: entry.percent ?? null });
+    this.renderLog.push({ seq: this.logSeq++, at, clock, kind: entry.kind, text: entry.text, percent: entry.percent ?? null });
     if (this.renderLog.length > LOG_LIMIT) this.renderLog.splice(0, this.renderLog.length - LOG_LIMIT);
     this.logDirty = true;
   }
@@ -10363,7 +10385,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         'Reproduce with the same output settings before changing anything.'
       ],
       renderLog: this.renderLog.map((line) =>
-        `[${this.formatAgentTimestamp(line.at)}] [${line.kind}] ${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
+        `[${line.clock}] [+${line.at}] [${line.kind}] ${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
     };
 
     return {
@@ -11061,15 +11083,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     let attached = 0;
     for (const at of wanted) {
+      // Once per session per path. This runs before every agent command, and a
+      // file that is genuinely gone would otherwise be asked for again on each
+      // one — including, once, a permission dialog each time.
+      if (this.relinkFailures.has(this.agentPathKey(at))) continue;
       let file: File | undefined;
       try {
         // One at a time on purpose: a single file that has been moved away must
         // not stop the other three from coming back.
         [file] = await this.desktop.readAgentFiles([at]);
       } catch {
+        this.relinkFailures.add(this.agentPathKey(at));
         continue;
       }
-      if (!file) continue;
+      if (!file) { this.relinkFailures.add(this.agentPathKey(at)); continue; }
 
       let used = false;
       for (const clip of this.clips) {
@@ -11082,7 +11109,6 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: at };
         clip.previewUrl = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
-        this.queueAutomaticListening([clip]);
         used = true;
       }
       // Music, matched by the path it was written down with. The reference
@@ -11106,7 +11132,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
       // Pictures and anything else still waiting are matched by reference,
       // which is what the manual reconnect has always done.
-      if (this.attachRestoredFile(file)) used = true;
+      if (this.attachRestoredFile(file, false)) used = true;
       if (used) {
         attached++;
         this.pushAgentLog('action', `Reconnected ${file.name} from ${at}`, 'Recovery', 'INFO');
@@ -11121,7 +11147,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.notice = 'Your last project came back, and its files were reconnected from disk.';
       }
       this.canReconnect = handlesSupported() && this.hasAwaitingFiles;
-      this.touch();
+      this.refreshWithoutEditing();
       this.cdr.markForCheck();
     }
     if (this.awaitingCount) {
@@ -11539,6 +11565,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         `Project revision ${batch.expectedRevision} is stale; the current revision is ${this.revision}.`,
         'revision_conflict', {
           expectedRevision: batch.expectedRevision, actualRevision: this.revision,
+          changedBy: this.lastRevisionReason, changedAt: this.lastRevisionAt,
           nextStep: 'Call get_project after every open/restart/recovery and retry with its current projectRevision.'
         }
       );
@@ -12459,7 +12486,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       throw new EditorAgentError(
         `Project revision ${expected} is stale; the current revision is ${this.revision}.`,
         'revision_conflict',
-        { expectedRevision: expected, actualRevision: this.revision, nextStep: 'Call get_project and retry with its current projectRevision.' }
+        {
+          expectedRevision: expected, actualRevision: this.revision,
+          changedBy: this.lastRevisionReason, changedAt: this.lastRevisionAt,
+          nextStep: 'Call get_project and retry with its current projectRevision.'
+        }
       );
     }
   }
@@ -13048,7 +13079,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         kind,
         format,
         envelopes: this.buildEnvelopes(),
-        destination: { handle: handle as never, fileName: path.split(/[\\/]/).pop() ?? `edited.${format.extension}` },
+        destination: {
+          handle: handle as never,
+          fileName: path.split(/[\\/]/).pop() ?? `edited.${format.extension}`,
+          filePath: path
+        },
         signal: renderSignal,
         onProgress: (progress) => {
           this.progress = progress;
@@ -13388,7 +13423,33 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private uncutRevision = -1;
   private uncutCache: ProjectPlan | null = null;
 
-  private touch(): void {
+  /**
+   * Everything `touch` does, except moving the revision.
+   *
+   * Reconnecting a file from disk restores what the document already said was
+   * there. Nothing about the edit changed, so nothing about the revision should
+   * — and bumping it here was doing real harm: the reconnect runs at the top of
+   * every agent command, so an agent that had just read revision 22 was told,
+   * by its very next call, that the project was at 23. Two of those in one
+   * session, with nothing in the log to explain either.
+   */
+  private refreshWithoutEditing(): void {
+    this.remember();
+    if (this.player) this.zone.runOutsideAngular(() => this.player?.setPlan(this.previewPlan));
+    this.scheduleSave();
+  }
+
+  /**
+   * @param reason what moved the project, in one phrase.
+   *
+   * Recorded because a revision conflict is otherwise unanswerable: the agent
+   * read revision 22, asked to change it, and was told the project is at 23
+   * with nothing in the log to say why. Background work — a listening pass
+   * finishing, a thumbnail settling — is invisible and moves it just the same.
+   */
+  private touch(reason = 'an edit in the editor'): void {
+    this.lastRevisionReason = reason;
+    this.lastRevisionAt = new Date().toISOString();
     this.revision++;
     this.result = null;
     // A half-written file can only be continued into while the plan behind it

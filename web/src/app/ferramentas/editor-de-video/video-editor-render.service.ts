@@ -86,6 +86,15 @@ export interface RenderDestination {
   /** Present when the reader picked a location and the file streams to disk. */
   handle: FileSystemWritableStreamLike | null;
   fileName: string;
+  /**
+   * Where it is being written, in full.
+   *
+   * Known when an agent named the destination; a browser save picker hands
+   * back a handle and no path, and there it stays absent. "Saved as
+   * edited.mp4" is not an answer to "where is it" on a machine with four
+   * folders called Exports.
+   */
+  filePath?: string;
 }
 
 export interface EditorRenderOptions {
@@ -494,12 +503,13 @@ export class VideoEditorRenderService {
         ? ` (${(plan.totalDuration / Math.max(0.001, (Date.now() - startedAt) / 1000)).toFixed(2)}x real time)`
         : '';
       log('done', destination.handle
-        ? `Finished in ${took}${speed} — saved as ${destination.fileName}`
+        ? `Finished in ${took}${speed} — saved as ${destination.filePath || destination.fileName}`
         : `Finished in ${took}${speed} — ${destination.fileName}, ${bytes(blob?.size ?? 0)}`);
 
       return {
         blob,
         fileName: destination.fileName,
+        filePath: destination.filePath ?? null,
         savedToDisk: Boolean(destination.handle),
         kind,
         plan,

@@ -1863,7 +1863,8 @@
               (scroll)="onLogScroll()" role="log" aria-live="polite" tabindex="0">
               @for (line of renderLog; track line.seq) {
                 <div class="registro-linha registro-{{ line.kind }}">
-                  <span class="registro-hora">{{ line.at }}</span>
+                  <span class="registro-data">{{ line.clock }}</span>
+                  <span class="registro-hora">+{{ line.at }}</span>
                   <span class="registro-marca" aria-hidden="true">{{ logMark(line.kind) }}</span>
                   <span class="registro-texto">{{ line.text }}</span>
                 </div>

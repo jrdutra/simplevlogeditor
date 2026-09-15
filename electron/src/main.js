@@ -214,6 +214,9 @@ const editorSessionId = randomUUID();
 let lastAgentController = 'mcp';
 let hadAgentConnection = false;
 let lastAgentConnectionAt = null;
+/** When the client last said it was alive, whatever the model was doing. */
+let lastClientHealthAt = null;
+let lastClientHealth = null;
 let recoveryRoot = null;
 let restoreAttemptedPath = null;
 const mutationLedger = new IdempotencyLedger({ limit: 500 });
@@ -311,6 +314,7 @@ function agentControlState() {
     controllers,
     sessionId: editorSessionId,
     lastConnectionAt: lastAgentConnectionAt,
+    lastClientHealthAt: lastClientHealthAt,
     recoveryPath: recoveryProjectPath()
   };
 }
@@ -663,6 +667,7 @@ async function executeAgentRequest(request) {
         windowCount: BrowserWindow.getAllWindows().length,
         rendererReady: Boolean(agentContents && !agentContents.isDestroyed()),
         ...rootStore().describe(),
+        clientHealth: lastClientHealth,
         imports: mediaImports.diagnostics(), operations: recentOperations,
         idempotency: { cachedMutations: mutationLedger.size, scope: 'editor-session-and-recovery-project' },
         connection: agentControlState(), memory: process.memoryUsage(),
@@ -827,6 +832,23 @@ function startEditorBridgeServer() {
         // The MCP client can answer roots/list after the handshake, and can
         // change its mind later through roots/list_changed. Both arrive here.
         if (envelope.type === 'heartbeat_ack') { acknowledged = true; continue; }
+        // The client saying it is still here, on its own schedule rather than
+        // in answer to ours. A model thinking for four minutes sends no tool
+        // calls, and that silence is not a disconnection.
+        if (envelope.type === 'client_health') {
+          acknowledged = true;
+          lastClientHealth = {
+            at: typeof envelope.at === 'string' ? envelope.at : new Date().toISOString(),
+            pid: envelope.pid ?? null,
+            controller: normalizedController(envelope.controller),
+            pendingCalls: Number.isFinite(envelope.pendingCalls) ? envelope.pendingCalls : null
+          };
+          lastClientHealthAt = lastClientHealth.at;
+          // Deliberately not published to the window: this arrives every few
+          // seconds and nothing on screen changes because of it. The badge
+          // already says "connected"; repainting it is noise.
+          continue;
+        }
         if (envelope.type === 'roots') {
           const declared = (envelope.roots || []).filter((root) => typeof root === 'string' && path.isAbsolute(root));
           if (rootStore().setLayer('mcp-client', declared)) {

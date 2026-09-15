@@ -9,6 +9,14 @@ const { splitRoots } = require('./mcp-roots');
 const { createLogger } = require('./structured-log');
 
 const RETRY_MS = 750;
+/**
+ * How often this process tells the editor it is still here.
+ *
+ * Independent of anything the model is doing. A client thinking for four
+ * minutes is not a client that has gone, and the editor must not be left to
+ * infer liveness from the absence of tool calls.
+ */
+const CLIENT_HEALTHCHECK_MS = 7_000;
 const START_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 30 * 60_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
@@ -42,6 +50,7 @@ class EditorProcessManager {
     this.buffer = '';
     this.sequence = 0;
     this.clientRoots = [];
+    this.healthcheck = null;
     this.pending = new Map();
     this.ensurePromise = null;
     this.state = 'starting';
@@ -59,6 +68,20 @@ class EditorProcessManager {
       this.socket.destroy();
     }, 5000);
     this.heartbeatWatchdog.unref?.();
+
+    // Two directions, on purpose. The editor's heartbeat proves the window is
+    // alive; this proves the client is, whether or not a tool call is in
+    // flight. Long silences here are normal — the model may think for minutes —
+    // and used to be indistinguishable from a client that had been killed.
+    this.healthcheck = setInterval(() => {
+      if (this.closed || !this.socket || this.socket.destroyed || this.state !== 'ready') return;
+      this.socket.write(JSON.stringify({
+        type: 'client_health', protocolVersion: 2, pid: process.pid,
+        controller: process.env.SVE_CONTROLLER || 'codex',
+        pendingCalls: this.pending.size, at: new Date().toISOString()
+      }) + '\n');
+    }, CLIENT_HEALTHCHECK_MS);
+    this.healthcheck.unref?.();
   }
 
   async ensureEditorRunning() {
@@ -273,6 +296,7 @@ class EditorProcessManager {
   close() {
     this.closed = true;
     clearInterval(this.heartbeatWatchdog);
+    clearInterval(this.healthcheck);
     this.socket?.destroy();
     this.socket = null;
   }
