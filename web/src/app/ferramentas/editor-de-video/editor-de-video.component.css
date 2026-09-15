@@ -2861,3 +2861,14 @@ ul.reconectar-nomes li {
   border-radius: 999px;
   overflow: hidden;
 }
+
+
+/* The export trace beside the MCP one: same shape, amber rather than rose, so
+   the two are told apart without reading either. */
+.agente-diagnostico-render {
+  border-color: rgba(251, 191, 36, 0.45);
+  background: rgba(32, 22, 6, 0.92);
+}
+
+.agente-diagnostico-render .agente-diagnostico-resumo { color: #fcd34d; }
+.agente-diagnostico-render pre { border-block-color: rgba(251, 191, 36, 0.24); }

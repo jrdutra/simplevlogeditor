@@ -176,3 +176,79 @@ test('cancels outstanding work and resumes only unfinished files', async () => {
   status = await finished(service, queued.jobId);
   assert.equal(status.state, 'completed');
 });
+
+/* --------------------------------------- a revision that moved is not a clash */
+
+test('a drifted revision is re-read and the file goes in, rather than failing the queue', async () => {
+  // The failure this pins: a queue of twelve carried the revision it read
+  // before the first file. Something else moved that number three files in,
+  // and the remaining nine all failed with "the project changed before this
+  // media file could be committed" — none of them a real conflict.
+  let revision = 21;
+  const attempts = [];
+  const reads = [];
+
+  const service = new MediaImportService({
+    admit: (candidate) => path.resolve(candidate),
+    fs: fakeFs(),
+    probe: async () => probeDocument,
+    registerMedia: (file) => ({ filePath: file, name: path.basename(file), url: 'http://media/x' }),
+    callEditor: async (request) => {
+      if (request.name === 'get_project') {
+        reads.push(revision);
+        return { apiVersion: 2, projectRevision: revision, result: { clipCount: 0 } };
+      }
+      if (request.name === '__import_media_path') {
+        attempts.push(request.arguments.expectedRevision);
+        if (request.arguments.expectedRevision !== revision) {
+          throw Object.assign(
+            new Error('The project changed before this media file could be committed.'),
+            { code: 'revision_conflict', details: { expectedRevision: request.arguments.expectedRevision, actualRevision: revision } }
+          );
+        }
+        // Something other than this queue also moves the project along.
+        revision += 2;
+        return { apiVersion: 2, projectRevision: revision - 1, result: { status: 'imported', clipId: 'clip-1', assetId: 'a1' } };
+      }
+      return { apiVersion: 2, projectRevision: revision, result: {} };
+    }
+  });
+
+  const job = await service.queue({
+    requestId: 'r1', paths: [path.join(ROOT, 'a.mp4'), path.join(ROOT, 'b.mp4'), path.join(ROOT, 'c.mp4')]
+  });
+  for (let tries = 0; tries < 200 && service.jobs.get(job.jobId)?.state === 'running'; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+
+  const done = service.jobs.get(job.jobId);
+  assert.equal(done.state, 'completed', 'every file must land');
+  assert.deepEqual(done.files.map((file) => file.status), ['imported', 'imported', 'imported']);
+  assert.ok(attempts.length > 3, 'a drifted file must be retried rather than abandoned');
+  assert.ok(reads.length >= 1, 'the queue must re-read the revision it lost track of');
+});
+
+test('a project that really was replaced still fails, rather than retrying forever', async () => {
+  let attempts = 0;
+  const service = new MediaImportService({
+    admit: (candidate) => path.resolve(candidate),
+    fs: fakeFs(),
+    probe: async () => probeDocument,
+    registerMedia: (file) => ({ filePath: file, name: path.basename(file), url: 'http://media/x' }),
+    callEditor: async (request) => {
+      if (request.name === 'get_project') return { apiVersion: 2, projectRevision: 99, result: { clipCount: 0 } };
+      if (request.name === '__import_media_path') {
+        attempts++;
+        throw Object.assign(new Error('The project changed before this media file could be committed.'), { code: 'revision_conflict' });
+      }
+      return { apiVersion: 2, projectRevision: 99, result: {} };
+    }
+  });
+
+  const job = await service.queue({ requestId: 'r2', paths: [path.join(ROOT, 'a.mp4')] });
+  for (let tries = 0; tries < 200 && service.jobs.get(job.jobId)?.state === 'running'; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  assert.equal(attempts, 2, 'one refresh, one retry, then the truth');
+  assert.equal(service.jobs.get(job.jobId).files[0].status, 'failed');
+});

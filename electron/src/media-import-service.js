@@ -319,7 +319,7 @@ class MediaImportService {
         }
         try {
           const descriptor = this.registerMedia(item.path, item.stat, item.mime);
-          const response = await this.callEditor({
+          const commit = () => this.callEditor({
             name: '__import_media_path',
             arguments: {
               descriptor, summary: item.summary,
@@ -327,6 +327,36 @@ class MediaImportService {
               expectedRevision: revision, skipDuplicates: job.skipDuplicates
             }
           });
+
+          /*
+           * The guard is against the project being replaced underneath this
+           * queue, not against the revision moving.
+           *
+           * A queue of twelve files carries a revision it read before the first
+           * one, and anything else legitimately moves that number in between —
+           * a caption, a checkpoint, the agent reading and editing while the
+           * import runs. Once it drifted, every remaining file failed with the
+           * same message: nine in a row, none of which was a real conflict.
+           *
+           * Appending a clip commutes with all of that, so a conflict is a
+           * reason to re-read the number and try this file again. A second
+           * conflict is a genuine one — the project really was replaced — and
+           * is reported.
+           */
+          let response;
+          try {
+            response = await commit();
+          } catch (error) {
+            if (error?.code !== 'revision_conflict') throw error;
+            const current = await this.callEditor({ name: 'get_project', arguments: {} });
+            const refreshed = current.projectRevision;
+            this.logger.info('import_revision_refreshed', {
+              requestId: job.requestId, jobId: job.jobId, path: item.path, from: revision, to: refreshed
+            });
+            revision = refreshed;
+            job.projectRevision = revision;
+            response = await commit();
+          }
           const result = response.result || {};
           file.status = result.status || 'imported';
           file.assetId = result.assetId || null;

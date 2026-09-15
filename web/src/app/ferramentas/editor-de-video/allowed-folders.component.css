@@ -1,7 +1,15 @@
+/*
+ * Above everything, the AI's control panel included.
+ *
+ * This asks a question nothing can proceed without: the read or write that
+ * raised it is waiting on the answer. At z-index 60 it opened *behind* the
+ * agent modal at 2600, so the editor sat there apparently frozen with the
+ * dialog it was waiting for hidden under the panel describing the wait.
+ */
 .pastas-fundo {
   position: fixed;
   inset: 0;
-  z-index: 60;
+  z-index: 4400;
   display: grid;
   place-items: center;
   padding: 1.5rem;

@@ -1793,6 +1793,26 @@
             </div>
           </details>
         }
+
+        <!-- The export trace, where the failure can actually be reached.
+             A render driven by the agent fails behind this panel, so the
+             banner carrying its trace was under the modal describing the
+             work. Shut, like the one above it: there when it is wanted and
+             taking one line when it is not. -->
+        @if (renderDiagnostic; as trace) {
+          <details class="agente-diagnostico agente-diagnostico-render">
+            <summary>
+              <span><strong>Export failed</strong> · incident {{ trace.incidentId }}</span>
+              <span class="agente-diagnostico-resumo">{{ trace.summary }}</span>
+            </summary>
+            <pre>{{ trace.fullText }}</pre>
+            <div class="agente-diagnostico-acoes">
+              <button mat-stroked-button type="button" (click)="copyRenderDiagnostic()">Copy the full trace</button>
+              <button mat-stroked-button type="button" (click)="saveRenderDiagnostic()">Save trace</button>
+              @if (renderDiagnosticMessage) { <span>{{ renderDiagnosticMessage }}</span> }
+            </div>
+          </details>
+        }
       </section>
     </div>
   }
