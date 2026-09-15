@@ -10,7 +10,7 @@
  * by the page instead of by Windows.
  */
 
-const { app, BrowserWindow, ipcMain, screen, shell, Menu } = require('electron');
+const { app, BrowserWindow, dialog, ipcMain, screen, shell, Menu } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
@@ -27,6 +27,7 @@ const { RecoveryCheckpointStore } = require('./recovery-checkpoint-store');
 const { preferredPort, rememberPort } = require('./stable-origin');
 const { editorLocationFile, rememberEditorLocation } = require('./editor-location');
 const { RootStore } = require('./mcp-roots');
+const { rootsFile, readRoots, writeRoots } = require('./roots-store-file');
 
 /**
  * Below this the console stops being one.
@@ -75,6 +76,109 @@ function rootStore() {
     log.info('mcp_roots', rootStoreInstance.describe());
   }
   return rootStoreInstance;
+}
+
+/**
+ * The native folder picker, which is the only thing that grants anything.
+ *
+ * On Windows and Linux there is no operating-system prompt beyond this dialog:
+ * the editor runs as the user and can already reach what the user can reach, so
+ * the picker is the consent and the Allowed folders list is the transparency.
+ * Under Flatpak or snap, Electron routes this same dialog through the desktop
+ * portal. On macOS the picker is what grants TCC access; `securityScopedBookmarks`
+ * additionally returns a token that a sandboxed (Mac App Store) build must store
+ * and re-open at launch, or the grant dies with the process.
+ *
+ * @returns {Promise<{folder: string, bookmark?: string}|null>} null when cancelled
+ */
+async function chooseFolder(options = {}) {
+  const properties = ['openDirectory', 'createDirectory'];
+  if (process.platform === 'darwin') properties.push('securityScopedBookmarks');
+  const result = await (options.window
+    ? dialog.showOpenDialog(options.window, { ...pickerOptions(options), properties })
+    : dialog.showOpenDialog({ ...pickerOptions(options), properties }));
+  if (result.canceled || !result.filePaths?.length) return null;
+  return { folder: path.resolve(result.filePaths[0]), bookmark: result.bookmarks?.[0] || undefined };
+}
+
+function pickerOptions(options) {
+  return {
+    title: options.title || 'Choose a folder the editor may use',
+    message: options.message || '',
+    buttonLabel: options.buttonLabel || 'Allow this folder',
+    ...(options.defaultPath ? { defaultPath: options.defaultPath } : {})
+  };
+}
+
+/** Where consent is remembered, beside editor-location.json. */
+function consentFile() {
+  return rootsFile(process.env.LOCALAPPDATA, app.getPath('userData'));
+}
+
+/**
+ * Grants carry more than a path on macOS, so they are held here rather than
+ * reconstructed from the store's plain string list.
+ */
+const consentGrants = new Map();
+let consentWrite = Promise.resolve();
+
+/** Serialized: two windows granting at once must not interleave writes. */
+function persistConsent() {
+  const snapshot = [...consentGrants.values()];
+  consentWrite = consentWrite
+    .then(() => writeRoots(consentFile(), snapshot))
+    .catch((error) => log.warn('roots_persist_failed', { error }));
+  return consentWrite;
+}
+
+/**
+ * Remember a folder the user chose. Returns the same shape the store does, so
+ * a refusal by policy reaches the caller with its reason instead of being
+ * silently dropped.
+ */
+function rememberConsent(folder, options = {}) {
+  const outcome = rootStore().add(folder, 'consent');
+  if (!outcome.added && outcome.reason) return outcome;
+  const key = process.platform === 'win32' ? outcome.root.toLowerCase() : outcome.root;
+  const existing = consentGrants.get(key);
+  consentGrants.set(key, {
+    path: outcome.root,
+    grantedAt: existing?.grantedAt || new Date().toISOString(),
+    ...(options.bookmark || existing?.bookmark ? { bookmark: options.bookmark || existing?.bookmark } : {})
+  });
+  persistConsent();
+  return outcome;
+}
+
+function forgetConsent(folder) {
+  const resolved = path.resolve(String(folder || ''));
+  const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  const removed = rootStore().remove(resolved);
+  if (consentGrants.delete(key)) persistConsent();
+  return removed;
+}
+
+/**
+ * Read at startup. A grant the denylist now refuses — a folder that has since
+ * become a system location, or a record written by an older build — is dropped
+ * rather than honoured.
+ */
+async function restoreConsent() {
+  const stored = await readRoots(consentFile());
+  let dropped = 0;
+  for (const entry of stored.roots) {
+    const outcome = rootStore().add(entry.path, 'consent');
+    if (!outcome.added && outcome.reason) { dropped++; continue; }
+    const key = process.platform === 'win32' ? entry.path.toLowerCase() : entry.path;
+    consentGrants.set(key, entry);
+    if (process.platform === 'darwin' && entry.bookmark && process.mas) {
+      // Without this the path is remembered but the sandbox still refuses it.
+      try { app.startAccessingSecurityScopedResource(entry.bookmark); }
+      catch (error) { log.warn('security_scoped_bookmark_failed', { path: entry.path, error }); }
+    }
+  }
+  log.info('roots_restored', { file: consentFile(), granted: consentGrants.size, dropped });
+  if (dropped) persistConsent();
 }
 
 function admittedPath(candidate) {
@@ -793,6 +897,118 @@ function wireAgentBridge() {
     if (typeof progress.clipName === 'string') operation.clipName = progress.clipName.slice(0, 500);
   });
 
+  /*
+   * A file the user put into this window with a picker or a drop. Their choice
+   * is the consent: the folder that holds it becomes reachable, and is
+   * remembered so the same project opens tomorrow without asking again.
+   */
+  ipcMain.handle('roots:remember', async (event, paths) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    const candidates = (Array.isArray(paths) ? paths : [paths])
+      .filter((entry) => typeof entry === 'string' && entry.trim() && path.isAbsolute(entry))
+      .slice(0, 200);
+    const granted = [];
+    const refused = [];
+    for (const candidate of candidates) {
+      let folder = path.dirname(path.resolve(candidate));
+      try { if ((await fs.stat(candidate)).isDirectory()) folder = path.resolve(candidate); }
+      catch { /* a path that is gone still names the folder it was in */ }
+      if (rootStore().admits(folder)) continue;
+      const outcome = rememberConsent(folder);
+      if (outcome.added) granted.push(outcome.root);
+      else if (outcome.reason) refused.push({ folder: outcome.root, reason: outcome.reason });
+    }
+    if (granted.length) {
+      log.info('roots_granted_by_choice', { granted });
+      publishAgentSystemLog('INFO', 'Allowed folders',
+        `Allowed ${granted.length} folder${granted.length === 1 ? '' : 's'} you chose: ${granted.join(', ')}`);
+    }
+    return { granted, refused, ...rootStore().describe() };
+  });
+
+  ipcMain.handle('roots:list', (event) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    return rootStore().describe();
+  });
+
+  /** "Add folder…" in the settings. The picker itself is the consent. */
+  ipcMain.handle('roots:add', async (event) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    const chosen = await chooseFolder({
+      window: BrowserWindow.fromWebContents(event.sender),
+      title: 'Choose a folder the editor may use',
+      message: 'The editor will be able to read media from this folder and write exports into it.',
+      buttonLabel: 'Allow this folder'
+    });
+    if (!chosen) return { granted: null, cancelled: true, ...rootStore().describe() };
+    const outcome = rememberConsent(chosen.folder, { bookmark: chosen.bookmark });
+    return {
+      granted: outcome.added ? outcome.root : null,
+      refused: outcome.reason ? { folder: outcome.root, reason: outcome.reason } : null,
+      cancelled: false,
+      ...rootStore().describe()
+    };
+  });
+
+  ipcMain.handle('roots:remove', (event, folder) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    const removed = forgetConsent(folder);
+    if (removed) log.info('roots_revoked', { folder: path.resolve(String(folder || '')) });
+    return { removed, ...rootStore().describe() };
+  });
+
+  /*
+   * An agent asked for a path the editor may not reach. Rather than failing,
+   * the window explains what was asked for and this opens the native folder
+   * picker positioned at that folder. What the user picks there is the grant —
+   * the request only positions the dialog, and a pick that does not contain the
+   * requested path is refused and explained rather than quietly widened.
+   */
+  ipcMain.handle('roots:request-consent', async (event, request) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    const wanted = typeof request?.path === 'string' && request.path.trim() ? path.resolve(request.path) : null;
+    if (!wanted) throw Object.assign(new Error('A path is required to ask for access.'), { code: 'path_required' });
+    const folder = typeof request?.folder === 'string' && request.folder.trim()
+      ? path.resolve(request.folder)
+      : path.dirname(wanted);
+
+    const chosen = await chooseFolder({
+      window: BrowserWindow.fromWebContents(event.sender),
+      defaultPath: folder,
+      title: 'Allow the editor to use this folder',
+      message: `Choose ${path.basename(folder) || folder}, or a folder above it, to allow access to ${path.basename(wanted)}.`,
+      buttonLabel: 'Allow this folder'
+    });
+
+    if (!chosen) {
+      log.info('path_consent_denied', { path: wanted, folder });
+      publishAgentSystemLog('WARN', 'Allowed folders', `Access to ${folder} was not granted.`);
+      return { granted: null, code: 'path_consent_denied', ...rootStore().describe() };
+    }
+
+    // defaultPath only positions the dialog. The folder actually chosen decides
+    // the scope, and it has to contain what was asked for.
+    const relative = path.relative(chosen.folder, wanted);
+    const covers = relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+    if (!covers) {
+      return {
+        granted: null,
+        code: 'path_consent_mismatch',
+        chosen: chosen.folder,
+        message: `${chosen.folder} does not contain ${wanted}. Choose that file's folder, or one above it.`,
+        ...rootStore().describe()
+      };
+    }
+
+    const outcome = rememberConsent(chosen.folder, { bookmark: chosen.bookmark });
+    if (!outcome.added && outcome.reason) {
+      return { granted: null, code: 'path_consent_refused', message: `That folder cannot be allowed: ${outcome.reason}.`, ...rootStore().describe() };
+    }
+    log.info('path_consent_granted', { path: wanted, folder: outcome.root });
+    publishAgentSystemLog('INFO', 'Allowed folders', `You allowed ${outcome.root}.`);
+    return { granted: outcome.root, code: null, ...rootStore().describe() };
+  });
+
   ipcMain.handle('agent:read-files', async (event, paths) => {
     if (!fromOurApp(event.sender)) throw new Error('File access was requested by an unknown page.');
     if (!Array.isArray(paths) || paths.length > 100) throw new Error('Choose between 1 and 100 media files.');
@@ -1151,6 +1367,7 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
     stateFile: path.join(app.getPath('userData'), 'mcp-import-jobs.json'),
     checkpoint: (reason) => checkpointProject(reason)
   });
+  await restoreConsent().catch((error) => log.warn('roots_restore_failed', { error }));
   await mediaImports.restore();
   startEditorBridgeServer();
 

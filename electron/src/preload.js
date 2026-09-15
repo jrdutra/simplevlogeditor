@@ -12,11 +12,13 @@
  * working ones.
  */
 
-const { contextBridge, ipcRenderer } = require('electron');
+const { contextBridge, ipcRenderer, webUtils } = require('electron');
 
 const CHANNEL = 'window:state';
 let agentHandler = null;
+let rootStateHandler = null;
 let agentCancelHandler = null;
+let beforeCloseHandler = null;
 
 ipcRenderer.on('agent:command', async (_event, envelope) => {
   if (!agentHandler) {
@@ -46,12 +48,19 @@ ipcRenderer.on('agent:cancel', (_event, envelope) => {
   agentCancelHandler?.(envelope?.operationId);
 });
 
+ipcRenderer.on('roots:state', (_event, state) => {
+  rootStateHandler?.(state);
+});
+
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
 
   minimize: () => ipcRenderer.send('window:minimize'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
-  close: () => ipcRenderer.send('window:close'),
+  close: async () => {
+    try { await beforeCloseHandler?.(); }
+    finally { ipcRenderer.send('window:close'); }
+  },
 
   /** The state right now, for the first paint. */
   getState: () => ipcRenderer.invoke('window:state'),
@@ -76,6 +85,15 @@ contextBridge.exposeInMainWorld('desktop', {
   },
 
   getAgentRuntimeInfo: () => ipcRenderer.invoke('agent:runtime-info'),
+
+  /** Autosave the renderer's complete edit to Electron's fixed recovery file. */
+  checkpointProject: (payload) => ipcRenderer.invoke('project:checkpoint', payload),
+  clearProjectCheckpoint: (payload) => ipcRenderer.invoke('project:checkpoint-clear', payload),
+  registerBeforeCloseHandler: (handler) => {
+    if (typeof handler !== 'function') throw new TypeError('The close handler must be a function.');
+    beforeCloseHandler = handler;
+    return () => { if (beforeCloseHandler === handler) beforeCloseHandler = null; };
+  },
 
   /**
    * Asks the application to reopen the project's files.
@@ -114,5 +132,30 @@ contextBridge.exposeInMainWorld('desktop', {
   openAgentOutput: (path) => ipcRenderer.invoke('agent:output-open', path),
   writeAgentOutput: (id, position, data) => ipcRenderer.invoke('agent:output-write', id, position, data),
   closeAgentOutput: (id) => ipcRenderer.invoke('agent:output-close', id),
-  abortAgentOutput: (id) => ipcRenderer.invoke('agent:output-abort', id)
+  abortAgentOutput: (id) => ipcRenderer.invoke('agent:output-abort', id),
+
+  /*
+   * Choosing a file in this window is the user saying which folder the editor
+   * may work in. The page sees a `File`, which in Electron carries no path, so
+   * the application is asked to name it — and it is named only for files the
+   * user themselves put into the window, through a picker or a drop.
+   *
+   * This is the narrowest widening of this bridge that lets a choice in the
+   * window mean the same thing as a choice in a permission dialog. It hands
+   * back a path; it grants nothing on its own. `rememberFolders` is what asks
+   * for the grant, and the application still applies the denylist to it.
+   */
+  pathForFile: (file) => {
+    try { return webUtils.getPathForFile(file) || null; }
+    catch { return null; }
+  },
+  rememberFolders: (paths) => ipcRenderer.invoke('roots:remember', paths),
+  listRoots: () => ipcRenderer.invoke('roots:list'),
+  addRoot: () => ipcRenderer.invoke('roots:add'),
+  removeRoot: (folder) => ipcRenderer.invoke('roots:remove', folder),
+  requestRootConsent: (request) => ipcRenderer.invoke('roots:request-consent', request),
+  onRootState: (handler) => {
+    rootStateHandler = typeof handler === 'function' ? handler : null;
+    return () => { if (rootStateHandler === handler) rootStateHandler = null; };
+  }
 });
