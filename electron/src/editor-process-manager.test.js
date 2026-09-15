@@ -80,3 +80,91 @@ test('restart closes the current editor and reconnects to a fresh visible instan
   assert.equal(manager.diagnostics().state, 'ready');
   manager.close();
 });
+
+/* ------------------------------------------------------- proof of liveness */
+
+class RecordingSocket extends FakeSocket {
+  constructor() { super(true); this.written = []; }
+  write(value, callback) {
+    callback?.();
+    for (const line of String(value).split('\n')) if (line.trim()) this.written.push(JSON.parse(line));
+    return true;
+  }
+}
+
+function connected(socket) {
+  const manager = new EditorProcessManager({
+    endpoint: 'fake',
+    connectSocket: () => socket,
+    spawnEditor: () => ({ unref() {}, once() {}, on() {} }),
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  return manager;
+}
+
+test('the client answers the editor heartbeat, because silence is how a dead session hides', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  socket.written.length = 0;
+
+  socket.emit('data', JSON.stringify({ type: 'heartbeat', pid: 42, windowCount: 1, state: 'ready' }) + '\n');
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const ack = socket.written.find((envelope) => envelope.type === 'heartbeat_ack');
+  assert.ok(ack, 'every heartbeat must be acknowledged');
+  assert.equal(ack.protocolVersion, 2);
+  assert.equal(ack.pid, process.pid);
+  manager.close();
+});
+
+test('a heartbeat still records the editor state it carries', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  socket.emit('data', JSON.stringify({ type: 'heartbeat', pid: 99, windowCount: 3, state: 'busy' }) + '\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  const diagnostics = manager.diagnostics();
+  assert.equal(diagnostics.electronPid, 99);
+  assert.equal(diagnostics.windowCount, 3);
+  assert.equal(diagnostics.state, 'busy');
+  manager.close();
+});
+
+test('an acknowledgement is never sent down a socket that has gone', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  socket.destroyed = true;
+  socket.written.length = 0;
+  socket.emit('data', JSON.stringify({ type: 'heartbeat' }) + '\n');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(socket.written, []);
+  manager.close();
+});
+
+test('client roots reach the editor as soon as they are known, and only when they change', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  socket.written.length = 0;
+
+  assert.equal(manager.setClientRoots(['/home/joao/Videos']), true);
+  const sent = socket.written.filter((envelope) => envelope.type === 'roots');
+  assert.equal(sent.length, 1);
+  assert.deepEqual(sent[0].roots, ['/home/joao/Videos']);
+
+  assert.equal(manager.setClientRoots(['/home/joao/Videos']), false, 'the same answer must not be resent');
+  assert.equal(socket.written.filter((envelope) => envelope.type === 'roots').length, 1);
+  manager.close();
+});
+
+test('a relative root from a client is dropped rather than resolved against this process', async () => {
+  const socket = new RecordingSocket();
+  const manager = connected(socket);
+  await manager.ensureEditorRunning();
+  manager.setClientRoots(['not/absolute', '/home/joao/Videos']);
+  const sent = socket.written.filter((envelope) => envelope.type === 'roots').at(-1);
+  assert.deepEqual(sent.roots, ['/home/joao/Videos']);
+  manager.close();
+});

@@ -10375,6 +10375,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
     const startedAt = Date.now();
     this.agentProgressReset(request.name);
+    // Before the command, not after it fails: a resumed project is intact on
+    // disk and the agent should never have to be told to reconnect it by hand.
+    if (this.hasAwaitingFiles) await this.agentRelinkFromDisk();
     if (request.name !== 'apply_edit_batch' && request.name !== '__has_media_path') this.pushAgentLog('command', this.agentCommandLabel(request.name, args), request.name, 'INFO');
     else this.pushAgentLog('command', `Applying edit batch: ${this.agentBatchLabel(args)}`, request.name, 'INFO');
     await this.paintAgentProgress();
@@ -10877,6 +10880,86 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return { status: 'imported', clipId: clip.id, assetId: this.agentAssetId(clip), name: clip.file.name };
   }
 
+  /**
+   * Reopen from disk whatever is still waiting for its file.
+   *
+   * A recovery checkpoint stores a reference, never bytes — which is right, and
+   * which is also why a restored project comes back with every clip waiting.
+   * Nothing used to reconnect them, so the first command an agent sent after a
+   * resume failed with `media_unavailable` on a project that was, on disk,
+   * entirely intact.
+   *
+   * The absolute path is already in the document for anything that arrived by
+   * path, so the file can simply be opened again. The path is the authority
+   * here, not the size and date: a clip whose source was re-encoded still
+   * points at that file, and refusing it because the bytes changed would be a
+   * worse answer than reconnecting it.
+   *
+   * @returns how many files were reconnected
+   */
+  private async agentRelinkFromDisk(): Promise<number> {
+    if (!this.desktop.isDesktop || !this.hasAwaitingFiles) return 0;
+
+    const wanted = new Set<string>();
+    for (const clip of this.clips) {
+      if (isMediaClip(clip) && clip.awaitingFile) {
+        const at = clip.sourcePath ?? clip.fileRef?.path;
+        if (at) wanted.add(at);
+      }
+      if (!isMediaClip(clip)) continue;
+      for (const image of clip.images ?? []) {
+        if (image.source.awaitingFile && image.source.fileRef?.path) wanted.add(image.source.fileRef.path);
+      }
+    }
+    if (!wanted.size) return 0;
+
+    let attached = 0;
+    for (const at of wanted) {
+      let file: File | undefined;
+      try {
+        // One at a time on purpose: a single file that has been moved away must
+        // not stop the other three from coming back.
+        [file] = await this.desktop.readAgentFiles([at]);
+      } catch {
+        continue;
+      }
+      if (!file) continue;
+
+      let used = false;
+      for (const clip of this.clips) {
+        if (!isMediaClip(clip) || !clip.awaitingFile) continue;
+        const its = clip.sourcePath ?? clip.fileRef?.path;
+        if (!its || this.agentPathKey(its) !== this.agentPathKey(at)) continue;
+        clip.file = file;
+        clip.awaitingFile = false;
+        clip.info = null;
+        clip.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: at };
+        clip.previewUrl = null;
+        if (!clip.thumbUrl) this.enqueueThumbnail(clip);
+        this.queueAutomaticListening([clip]);
+        used = true;
+      }
+      // Pictures, replacement audio and the soundtrack are matched by
+      // reference, which is what the manual reconnect has always done.
+      if (this.attachRestoredFile(file)) used = true;
+      if (used) {
+        attached++;
+        this.pushAgentLog('action', `Reconnected ${file.name} from ${at}`, 'Recovery', 'INFO');
+      }
+    }
+
+    if (attached) {
+      this.touch();
+      this.cdr.markForCheck();
+    }
+    if (this.awaitingCount) {
+      this.pushAgentLog('action',
+        `${this.awaitingCount} clip(s) are still waiting for files that are no longer where the project left them.`,
+        'Recovery', 'WARN');
+    }
+    return attached;
+  }
+
   private agentPathKey(sourcePath: string): string {
     return sourcePath.replace(/\\/g, '/').replace(/\/+$/, '').toLocaleLowerCase('en-US');
   }
@@ -11246,7 +11329,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const clipId = stringValue(id, 'clipId');
     const clip = this.clips.find((candidate): candidate is MediaClip => candidate.id === clipId && isMediaClip(candidate));
     if (!clip) throw new EditorAgentError(`Media clip "${clipId}" was not found.`, 'not_found');
-    if (clip.awaitingFile) throw new EditorAgentError(`Media clip "${clipId}" is waiting for its source file.`, 'media_unavailable');
+    if (clip.awaitingFile) {
+      // Reconnecting from disk was already attempted for this request, so this
+      // means the file is genuinely not where the project left it. Say where it
+      // was looked for; "waiting for its source file" alone is unactionable.
+      const at = clip.sourcePath ?? clip.fileRef?.path;
+      throw new EditorAgentError(
+        at
+          ? `Media clip "${clipId}" is waiting for its source file, which is no longer at ${at}.`
+          : `Media clip "${clipId}" is waiting for its source file, and the project does not record where it was.`,
+        'media_unavailable',
+        { clipId, expectedPath: at ?? null, fileName: clip.fileRef?.name ?? clip.file.name, recoverable: Boolean(at) }
+      );
+    }
     return clip;
   }
 

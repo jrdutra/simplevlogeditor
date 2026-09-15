@@ -212,7 +212,7 @@ const TOOLS = [
     operationId: { type: 'string' }
   }, ['operationId']),
   tool('get_diagnostics', 'Return protocol, process, connection, import queue and memory diagnostics.', {}),
-  tool('get_recovery_state', 'Inspect the automatic project checkpoint used to resume editing after a restart.', {}),
+  tool('get_recovery_state', 'Inspect the automatic project checkpoint used to resume editing after a restart. Reports the media it refers to (names, absolute paths, the folders they sit in) and which of those files are missing from disk, so you can tell whether it belongs to the edit you are starting. Call this before the first edit of a session.', {}),
   tool('checkpoint_project', 'Immediately save the complete project to its automatic recovery JSON file.', {}),
   tool('set_project_soundtrack', 'Explicitly set the project-wide soundtrack used by silent/timelapse clips. Prefer this over clip audio unless the user names a specific section.', {
     path: { type: 'string' }, skipLeadingSilence: { type: 'boolean' }, expectedRevision: { type: 'number' }, requestId: { type: 'string' }

@@ -40,6 +40,8 @@ const MINIMUM = { width: 960, height: 640 };
 
 const DEV = process.argv.includes('--dev');
 const MCP_OPEN = process.argv.includes('--mcp-open');
+/** Four missed acknowledgements. Long enough that a busy client is never cut off. */
+const AGENT_SILENCE_TIMEOUT_MS = 20_000;
 const DEV_URL = process.env.SVE_DEV_URL || 'http://localhost:4200';
 const log = createLogger('electron-main');
 
@@ -496,14 +498,59 @@ async function clearRendererCheckpoint(payload) {
   return result;
 }
 
+/**
+ * What is in the checkpoint, not merely that there is one.
+ *
+ * A caller resuming an edit has to decide whether this checkpoint belongs to
+ * the work in front of it, and a path, a size and a date cannot answer that.
+ * The media it refers to can: same folder, same files, same edit. Read from the
+ * document itself and deliberately shallow — names, paths and counts, never the
+ * timeline — so that deciding "is this mine" costs one call and no bytes.
+ */
 async function recoveryState() {
   const checkpointPath = recoveryProjectPath();
-  try {
-    const stat = await fs.stat(checkpointPath);
-    return { path: checkpointPath, exists: stat.isFile(), size: stat.size, modifiedAt: stat.mtime.toISOString() };
-  } catch (error) {
+  let stat;
+  try { stat = await fs.stat(checkpointPath); }
+  catch (error) {
     if (error.code === 'ENOENT') return { path: checkpointPath, exists: false, size: 0, modifiedAt: null };
     throw error;
+  }
+  const base = { path: checkpointPath, exists: stat.isFile(), size: stat.size, modifiedAt: stat.mtime.toISOString() };
+  if (!base.exists) return base;
+
+  try {
+    const document = JSON.parse(await fs.readFile(checkpointPath, 'utf8'));
+    const clips = Array.isArray(document?.clips) ? document.clips : [];
+    const media = [];
+    for (const clip of clips) {
+      if (clip?.kind !== 'media' || !clip.file) continue;
+      media.push({
+        clipId: typeof clip.id === 'string' ? clip.id : null,
+        name: typeof clip.file.name === 'string' ? clip.file.name : null,
+        path: typeof clip.file.path === 'string' ? clip.file.path : null
+      });
+    }
+    const folders = [...new Set(media.map((entry) => entry.path).filter(Boolean).map((entry) => path.dirname(entry)))];
+    return {
+      ...base,
+      projectRevision: Number.isFinite(document?.projectRevision) ? document.projectRevision : null,
+      clipCount: clips.length,
+      media,
+      // Every media file in the checkpoint carries its folder; one folder means
+      // one working directory, which is the usual shape of a resumed edit.
+      folders,
+      // Restoring reconnects these from disk automatically. Any that are no
+      // longer where the project left them stay waiting and are named.
+      missingMedia: await Promise.all(media.filter((entry) => entry.path).map(async (entry) => {
+        try { await fs.stat(entry.path); return null; }
+        catch { return entry.path; }
+      })).then((found) => found.filter(Boolean))
+    };
+  } catch (error) {
+    // A checkpoint too damaged to summarise is still a checkpoint worth
+    // reporting; the caller decides whether to open it.
+    log.warn('project_checkpoint_unreadable', { path: checkpointPath, error });
+    return { ...base, unreadable: true };
   }
 }
 
@@ -729,6 +776,10 @@ function startEditorBridgeServer() {
   bridgeServer = net.createServer((socket) => {
     let buffered = '';
     let authenticated = false;
+    // Declared with the socket, read by both the data handler and the
+    // heartbeat below. See the heartbeat for why silence is what disconnects.
+    let acknowledged = false;
+    let lastSeenAt = Date.now();
     socket.setEncoding('utf8');
     socket.on('data', (chunk) => {
       buffered += chunk;
@@ -737,6 +788,9 @@ function startEditorBridgeServer() {
         const line = buffered.slice(0, at);
         buffered = buffered.slice(at + 1);
         if (!line.trim()) continue;
+        // Anything at all arriving is proof the peer is alive, an ack most of
+        // all; a client in the middle of a long edit is not silent.
+        lastSeenAt = Date.now();
         let envelope;
         try { envelope = JSON.parse(line); }
         catch { socket.write(JSON.stringify({ error: { code: 'invalid_envelope', message: 'Invalid bridge JSON.' } }) + '\n'); continue; }
@@ -772,6 +826,7 @@ function startEditorBridgeServer() {
         }
         // The MCP client can answer roots/list after the handshake, and can
         // change its mind later through roots/list_changed. Both arrive here.
+        if (envelope.type === 'heartbeat_ack') { acknowledged = true; continue; }
         if (envelope.type === 'roots') {
           const declared = (envelope.roots || []).filter((root) => typeof root === 'string' && path.isAbsolute(root));
           if (rootStore().setLayer('mcp-client', declared)) {
@@ -801,8 +856,29 @@ function startEditorBridgeServer() {
           });
       }
     });
+    /*
+     * Liveness has to be proved, not assumed.
+     *
+     * A named pipe whose peer disappeared without closing — the client killed,
+     * the machine asleep — stays writable, and `close` never fires. The editor
+     * then goes on heartbeating into nothing and reporting itself connected,
+     * which is what made a dead session look like a live one.
+     *
+     * So the client answers, and silence is what disconnects it. The timeout is
+     * only armed once an answer has actually arrived: a client built before
+     * this never answers, and must not be hung up on for it.
+     */
     const heartbeat = setInterval(() => {
-      if (!socket.destroyed && authenticated) socket.write(JSON.stringify({
+      if (socket.destroyed || !authenticated) return;
+      if (acknowledged && Date.now() - lastSeenAt > AGENT_SILENCE_TIMEOUT_MS) {
+        log.warn('bridge_peer_silent', {
+          silentForMs: Date.now() - lastSeenAt,
+          controller: agentControllers.get(socket) || lastAgentController
+        });
+        socket.destroy();
+        return;
+      }
+      socket.write(JSON.stringify({
         type: 'heartbeat', pid: process.pid, windowCount: BrowserWindow.getAllWindows().length,
         state: agentContents && !agentContents.isDestroyed()
           ? (mediaImports?.activeJob || activeAgentOperations().length ? 'busy' : 'ready')

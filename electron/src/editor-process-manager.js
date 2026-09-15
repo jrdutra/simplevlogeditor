@@ -180,6 +180,12 @@ class EditorProcessManager {
         this.editorPid = envelope.pid ?? this.editorPid;
         this.windowCount = envelope.windowCount ?? this.windowCount;
         this.state = envelope.state ?? 'ready';
+        // Answering is what proves this process is still alive. A named pipe
+        // whose peer has gone without closing stays writable, so the editor
+        // cannot tell a quiet client from a dead one by silence alone.
+        if (this.socket && !this.socket.destroyed) {
+          this.socket.write(JSON.stringify({ type: 'heartbeat_ack', protocolVersion: 2, pid: process.pid }) + '\n');
+        }
         continue;
       }
       const pending = this.pending.get(envelope.id);
