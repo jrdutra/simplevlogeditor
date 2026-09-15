@@ -259,6 +259,62 @@
   outline: none;
 }
 
+/* A heading inside the menu, not an item: it names what the two rows below are
+   and takes no pointer of its own. */
+.download-menu__group {
+  margin: 0.55rem 0.35rem 0.25rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--line-soft);
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+/* Icon on the left, the two lines of text beside it. */
+.download-menu__item--plugin {
+  position: relative;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  grid-template-areas: "mark name" "mark detail";
+  gap: 0.15rem 0.6rem;
+  align-items: center;
+  padding-left: 0.8rem;
+}
+
+.download-menu__mark {
+  grid-area: mark;
+  width: 1.5rem;
+  height: 1.5rem;
+  align-self: center;
+}
+
+.download-menu__item--plugin .download-menu__name { grid-area: name; }
+.download-menu__item--plugin .download-menu__detail { grid-area: detail; }
+
+/* The one thing that tells them apart at a glance. Kept to a stripe and a
+   tinted hover: a whole row in the client's colour would compete with the
+   menu it sits in. */
+.download-menu__item--plugin::before {
+  content: "";
+  position: absolute;
+  top: 0.55rem;
+  bottom: 0.55rem;
+  left: 0;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--plugin-accent);
+}
+
+.download-menu__item--codex { --plugin-accent: #3b82f6; }
+.download-menu__item--claude { --plugin-accent: #f97316; }
+
+.download-menu__item--plugin:hover,
+.download-menu__item--plugin:focus-visible {
+  background: color-mix(in srgb, var(--plugin-accent) 16%, transparent);
+  border-color: color-mix(in srgb, var(--plugin-accent) 45%, transparent);
+}
+
 .download-menu__name,
 .chrome-menu__name {
   color: var(--text-main);

@@ -12,6 +12,8 @@ import {
   effect
 } from '@angular/core';
 
+import { DesktopService } from '../desktop/desktop.service';
+import { DownloadService } from '../desktop/download.service';
 import { HelpPanel, HelpService } from './help.service';
 
 /**
@@ -57,6 +59,65 @@ import { HelpPanel, HelpService } from './help.service';
       </header>
 
       <div class="help-modal__body">
+        <!--
+          How to get the thing, before how to use it.
+          A reader opening the instructions in a browser tab is often here to
+          find out what this is and how to install it, and that answer used to
+          be nowhere in the dialog. Inside the desktop application it is absent:
+          they already have it.
+        -->
+        @if (kind === 'instructions' && !desktop.isDesktop) {
+          <section class="instalar">
+            <h2>Get it on your machine</h2>
+            <p>Everything here also runs as a desktop application, which is the same editor with
+              access to your folders and to an AI client.</p>
+
+            <ul class="instalar-lista">
+              <li>
+                <a [href]="download.installerPath" download>
+                  <strong>Windows installer</strong>
+                  <em>Setup .exe<span>{{ installerSize() }}</span> — run it and follow the prompts.</em>
+                </a>
+              </li>
+              <li>
+                <a [href]="download.portablePath" download>
+                  <strong>Standalone</strong>
+                  <em>Portable .zip — unzip anywhere and run it; nothing is installed.</em>
+                </a>
+              </li>
+            </ul>
+
+            <h3>Let an AI drive it</h3>
+            <p>The desktop application exposes the whole editor through a local MCP server, so
+              Codex or Claude Code can cut, caption and export for you. Install the plugin for the
+              client you use — <strong>install the desktop application first</strong>, because the
+              plugin opens it.</p>
+
+            <ul class="instalar-lista">
+              <li class="instalar-codex">
+                <a [href]="download.codexPluginPath" download>
+                  <span class="instalar-marca"><img src="/assets/icons/codex-mark.svg" alt="" aria-hidden="true"></span>
+                  <strong>Codex plugin</strong>
+                  <em>Import the .zip, or unzip it and import the folder.</em>
+                </a>
+              </li>
+              <li class="instalar-claude">
+                <a [href]="download.claudePluginPath" download>
+                  <span class="instalar-marca"><img src="/assets/icons/claude-mark.svg" alt="" aria-hidden="true"></span>
+                  <strong>Claude Code plugin</strong>
+                  <em>Import the .zip, or unzip it and import the folder.</em>
+                </a>
+              </li>
+            </ul>
+
+            <p class="instalar-nota">Each archive carries an <code>INSTALL.txt</code> with both
+              routes written out, and a doctor script that checks the installation and says what to
+              run for anything missing. Which folders the editor may open is decided in the editor
+              itself — your own Videos, Pictures, Music, Downloads, Desktop and Documents to begin
+              with, and anything else you allow when it asks.</p>
+          </section>
+        }
+
         <ng-content></ng-content>
       </div>
     </div>
@@ -74,8 +135,16 @@ export class HelpPanelComponent implements OnInit, OnDestroy {
   /** Whether this particular panel is the one on screen. */
   readonly visible = computed(() => this.help.showing() === this.kind);
 
+  /** " · 119 MB" once the manifest says so, and nothing before then. */
+  readonly installerSize = computed(() => {
+    const size = this.download.info()?.installer.size;
+    return size ? ` · ${size}` : '';
+  });
+
   constructor(
     readonly help: HelpService,
+    readonly desktop: DesktopService,
+    readonly download: DownloadService,
     @Inject(DOCUMENT) private readonly document: Document,
     @Inject(PLATFORM_ID) private readonly platformId: object
   ) {

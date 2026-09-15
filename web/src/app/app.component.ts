@@ -7,6 +7,7 @@ import { filter } from 'rxjs/operators';
 import { DesktopService } from './shared/desktop/desktop.service';
 import { DownloadService } from './shared/desktop/download.service';
 import { HelpService } from './shared/ui/help.service';
+import { AboutPanelComponent } from './shared/ui/about-panel.component';
 import { PrivacyPanelComponent } from './shared/ui/privacy-panel.component';
 import { SeoService } from './seo.service';
 import { WindowControlsComponent } from './shared/desktop/window-controls.component';
@@ -22,7 +23,7 @@ import { TOOL_BY_ROUTE, TOOLS } from './tools.data';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, MatIconModule, RouterOutlet, RouterLink, RouterLinkActive, WindowControlsComponent, PrivacyPanelComponent],
+  imports: [CommonModule, MatIconModule, RouterOutlet, RouterLink, RouterLinkActive, WindowControlsComponent, PrivacyPanelComponent, AboutPanelComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush

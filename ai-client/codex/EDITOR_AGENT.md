@@ -30,6 +30,31 @@ Never enable or apply noise suppression merely because `analyze_noise` recommend
 
 For every project mutation (`add_media`, `queue_media_import`, `open_project`, `set_project_soundtrack`, `analyze_silence`, `analyze_noise`, `suppress_noise`, a committed `apply_edit_batch`, `undo`, or `redo`), generate one non-empty unique `requestId`. Keep that exact id and exact payload while the result is uncertain: after a recoverable transport error, reconnect and retry them unchanged so Electron returns the first outcome rather than editing twice. Never reuse an id for a different payload. After Electron restarts, read the restored project and use fresh ids and its new revision.
 
+## Always deliver the shot list and the description
+
+Two things are part of every finished edit, whether or not the user asks for
+them. Report both in chat when you finish, alongside what changed.
+
+**A shot list of the pictures.** Every image you placed, each with the container
+it sits in, its start and duration on that container's own source clock, the
+same times as output timecodes from `get_timeline`, and one line saying what the
+picture shows and why it is there. Say plainly which images in the working
+directory you left out and why. If you placed none, say so and say why — an
+empty shot list is an answer, an absent one is an omission.
+
+**A description of the video.** A title line and a short paragraph of what the
+finished video is about, drawn from the transcript and the frames rather than
+from the file names, followed by the moments worth marking as chapters with
+their output timecodes. It is for the user to paste where the video will be
+published.
+
+**The description is written in the language of the prompt.** The brief the user
+wrote is what decides it — a Portuguese brief gets a Portuguese description,
+whatever language the speech or the file names are in. If you cannot write well
+in that language, use English and say that is what you did. This applies to the
+description and the chapter titles only: interface strings, log lines and your
+own account of what you changed stay in English.
+
 The Electron window and its MCP activity panel are visible to the user and stay minimized after the user minimizes them. Keep tool operations meaningfully grouped. Both manual and MCP edits are automatically written to the Electron recovery checkpoint. Finish with `checkpoint_project`, then `finish_editing` so the editor offers Preview or Render, and report what changed, subjective decisions, the current revision, and saved/exported paths.
 Never report an edit as complete when the editor said it could not produce what
 was asked for. `export` failing with `subject_vision_failed` means the Video

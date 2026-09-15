@@ -1,6 +1,6 @@
 {
   "name": "simple-vlog-editor",
-  "version": "2.0.0+codex.20260912024243",
+  "version": "2.3.0",
   "description": "Understand and edit complete videos in the visible SimpleVlogEditor through its local MCP server.",
   "author": {
     "name": "SimpleVlogEditor"
@@ -8,9 +8,15 @@
   "keywords": [
     "video",
     "editing",
+    "noise-suppression",
     "transcription",
     "mcp",
-    "push-in"
+    "push-in",
+    "behind-subject",
+    "video-effects",
+    "placed-images",
+    "allowed-folders",
+    "background-caption"
   ],
   "skills": "./skills/",
   "interface": {
@@ -21,13 +27,18 @@
     "category": "Productivity",
     "capabilities": [
       "Video analysis",
+      "Per-clip audio cleanup",
       "Timeline editing",
-      "Local MCP"
+      "AI subject-aware captions",
+      "Local MCP",
+      "Timed video effects",
+      "Placed images"
     ],
     "defaultPrompt": [
       "Edit my vlog and remove repeated or failed takes.",
       "Inspect every clip and create a clean rough cut.",
-      "Add captions, QR tags and subtle push-ins."
+      "Add captions, Behind Subject titles, QR tags and subtle push-ins.",
+      "Place the screenshots from this folder where I mention them."
     ],
     "brandColor": "#00FFD1"
   },

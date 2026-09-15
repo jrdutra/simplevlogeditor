@@ -83,8 +83,21 @@ function directory(candidate, label) {
   return actual;
 }
 
-export function resolveSession(options) {
-  const roots = (options.roots.length ? options.roots : [PROJECT_ROOT])
+/**
+ * Roots come from --root, else from an SVE_MCP_ROOTS already set for the user,
+ * else from the editor project. Honouring the variable here means one
+ * user-scope setting drives Codex and Claude Code alike.
+ */
+export function inheritedRoots(env = process.env) {
+  return String(env.SVE_MCP_ROOTS || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+export function resolveSession(options, env = process.env) {
+  const declared = options.roots.length ? options.roots : inheritedRoots(env);
+  const roots = (declared.length ? declared : [PROJECT_ROOT])
     .map((candidate) => directory(candidate, 'Allowed root'));
   const workdir = directory(options.workdir ?? roots[0], 'Codex working directory');
   const key = (candidate) => process.platform === 'win32' ? candidate.toLowerCase() : candidate;

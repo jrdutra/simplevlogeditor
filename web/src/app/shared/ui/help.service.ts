@@ -1,7 +1,7 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-/** The two things the Help button can open. */
-export type HelpPanel = 'instructions' | 'privacy';
+/** What the Help button can open. */
+export type HelpPanel = 'instructions' | 'privacy' | 'about';
 
 /**
  * The link between the Help button and what it opens.
@@ -41,6 +41,9 @@ export class HelpService {
 
   /** True while the privacy dialog should be on screen. */
   readonly privacyOpen = computed(() => this.showing() === 'privacy');
+
+  /** True while the about dialog should be on screen. */
+  readonly aboutOpen = computed(() => this.showing() === 'about');
 
   /** True while the button's own little menu is open. */
   readonly menuOpen = this.menu.asReadonly();

@@ -126,3 +126,92 @@
 :host ::ng-deep .help-modal__body .seo-intro h1 {
   font-size: 1.25em;
 }
+
+/* ------------------------------------------- get it, before how to use it */
+
+.instalar {
+  margin-bottom: 1.6rem;
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--line-soft, rgba(255, 255, 255, 0.12));
+  border-radius: 0.6rem;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.instalar h2 { margin-top: 0; }
+.instalar h3 { margin-bottom: 0.35rem; }
+
+.instalar-lista {
+  display: grid;
+  gap: 0.4rem;
+  margin: 0.55rem 0 0.9rem;
+  padding: 0;
+  list-style: none;
+}
+
+.instalar-lista a {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.15rem;
+  padding: 0.6rem 0.75rem;
+  border: 1px solid var(--line-soft, rgba(255, 255, 255, 0.12));
+  border-radius: 0.45rem;
+  color: inherit;
+  text-decoration: none;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.instalar-lista a:hover,
+.instalar-lista a:focus-visible {
+  background: rgba(255, 255, 255, 0.05);
+  outline: none;
+}
+
+.instalar-lista strong { font-size: 0.95rem; }
+.instalar-lista em { font-style: normal; font-size: 0.82rem; opacity: 0.72; }
+
+/* Each plugin wears its client's colour, and nothing else does. */
+.instalar-codex a,
+.instalar-claude a {
+  grid-template-columns: 1.7rem minmax(0, 1fr);
+  grid-template-areas: "mark title" "mark note";
+  align-items: center;
+  gap: 0.1rem 0.65rem;
+  border-left-width: 3px;
+}
+
+.instalar-marca { grid-area: mark; display: inline-flex; }
+.instalar-marca img { width: 1.5rem; height: 1.5rem; }
+.instalar-codex a strong, .instalar-claude a strong { grid-area: title; }
+.instalar-codex a em, .instalar-claude a em { grid-area: note; }
+
+.instalar-codex a { border-left-color: #3b82f6; }
+.instalar-codex a:hover, .instalar-codex a:focus-visible { background: rgba(59, 130, 246, 0.14); }
+
+.instalar-claude a { border-left-color: #f97316; }
+.instalar-claude a:hover, .instalar-claude a:focus-visible { background: rgba(249, 115, 22, 0.14); }
+
+.instalar-nota { font-size: 0.82rem; opacity: 0.75; }
+
+/* ------------------------------------------------------------------ about */
+
+.sobre-link {
+  display: inline-grid;
+  grid-template-columns: 1.6rem minmax(0, 1fr);
+  gap: 0.1rem 0.65rem;
+  align-items: center;
+  padding: 0.55rem 0.8rem;
+  border: 1px solid var(--line-soft, rgba(255, 255, 255, 0.12));
+  border-left-width: 3px;
+  border-radius: 0.45rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.sobre-link__mark { grid-row: span 2; display: inline-flex; align-items: center; }
+.sobre-link strong { font-size: 0.92rem; overflow-wrap: anywhere; }
+.sobre-link em { font-style: normal; font-size: 0.8rem; opacity: 0.72; }
+
+.sobre-link--github { border-left-color: #a78bfa; }
+.sobre-link--github:hover { background: rgba(167, 139, 250, 0.14); }
+.sobre-link--linkedin { border-left-color: #0a66c2; }
+.sobre-link--linkedin:hover { background: rgba(10, 102, 194, 0.16); }

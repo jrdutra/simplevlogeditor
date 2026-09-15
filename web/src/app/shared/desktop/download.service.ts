@@ -25,6 +25,16 @@ export const INSTALLER_PATH = '/assets/download/SimpleVlogEditor-Setup.exe';
 export const PORTABLE_PATH = '/assets/download/SimpleVlogEditor-Portable.zip';
 
 /**
+ * The two AI plugins, offered from the same menu as the application.
+ *
+ * Each archive is the plugin itself at its root, so it can be handed to the
+ * client as a .zip or unzipped first and handed over as a folder — both routes
+ * are described in the INSTALL.txt inside it.
+ */
+export const CLAUDE_PLUGIN_PATH = '/assets/download/simple-vlog-editor-claude.zip';
+export const CODEX_PLUGIN_PATH = '/assets/download/simple-vlog-editor-codex.zip';
+
+/**
  * The desktop application, as something the site can offer.
  *
  * The button lives in the chrome, so what it knows has to live somewhere both
@@ -44,6 +54,8 @@ export const PORTABLE_PATH = '/assets/download/SimpleVlogEditor-Portable.zip';
 export class DownloadService {
   readonly installerPath = INSTALLER_PATH;
   readonly portablePath = PORTABLE_PATH;
+  readonly claudePluginPath = CLAUDE_PLUGIN_PATH;
+  readonly codexPluginPath = CODEX_PLUGIN_PATH;
 
   readonly info = signal<InstallerInfo | null>(null);
 

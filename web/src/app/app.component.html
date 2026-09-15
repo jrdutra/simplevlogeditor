@@ -100,6 +100,36 @@
               <span class="download-menu__detail">Portable .zip · no installation</span>
             </a>
           }
+
+          <!--
+            The editor can also be driven by an AI, and the thing that makes
+            that possible is a plugin for the client the reader already uses.
+            Offered here rather than buried in the repository, each marked in
+            its own client's colour so the two are told apart at a glance.
+          -->
+          <p class="download-menu__group">Drive it with an AI</p>
+
+          <a
+            class="download-menu__item download-menu__item--plugin download-menu__item--codex"
+            role="menuitem"
+            [href]="download.codexPluginPath"
+            download
+            (click)="closeDownloadMenu()">
+            <img class="download-menu__mark" src="/assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+            <span class="download-menu__name">Codex plugin</span>
+            <span class="download-menu__detail">.zip · import it, or unzip and import the folder</span>
+          </a>
+
+          <a
+            class="download-menu__item download-menu__item--plugin download-menu__item--claude"
+            role="menuitem"
+            [href]="download.claudePluginPath"
+            download
+            (click)="closeDownloadMenu()">
+            <img class="download-menu__mark" src="/assets/icons/claude-mark.svg" alt="" aria-hidden="true">
+            <span class="download-menu__name">Claude Code plugin</span>
+            <span class="download-menu__detail">.zip · import it, or unzip and import the folder</span>
+          </a>
         </div>
       </div>
     }
@@ -154,6 +184,17 @@
           <span class="chrome-menu__name">Privacy</span>
           <span class="chrome-menu__detail">Where your files go — and where they do not</span>
         </button>
+
+        @if (!desktop.isDesktop) {
+          <button
+            type="button"
+            class="chrome-menu__item"
+            role="menuitem"
+            (click)="help.show('about')">
+            <span class="chrome-menu__name">About</span>
+            <span class="chrome-menu__detail">The source, and who wrote it</span>
+          </button>
+        }
       </div>
     </div>
 
@@ -231,6 +272,12 @@
   </main>
 
   <app-privacy-panel />
+
+  <!-- The source and the author belong to the site, not to the application:
+       inside the desktop shell the reader already has both. -->
+  @if (!desktop.isDesktop) {
+    <app-about-panel />
+  }
 
   <footer class="rack">
     <!-- In a tab the promise is about the browser, because that is where the

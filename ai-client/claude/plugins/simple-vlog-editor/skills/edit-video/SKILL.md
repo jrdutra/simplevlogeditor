@@ -67,6 +67,31 @@ Do not claim to have watched or understood an asset that was not covered by tran
 - Every project mutation (`add_media`, `queue_media_import`, `open_project`, `set_project_soundtrack`, `analyze_silence`, `analyze_noise`, `suppress_noise`, a committed `apply_edit_batch`, `undo`, or `redo`) needs one non-empty unique `requestId`. Preserve that exact id and exact payload while its outcome is uncertain, including after a recoverable disconnect. The editor replays the first result instead of applying it twice. Never reuse an id for different content. After Electron restarts, read the restored project and generate fresh ids against its new revision.
 - The editor automatically writes `simplevlogeditor-recovery.sve.json` in the active project root after MCP mutations, media commits, and manual user edits. Use `checkpoint_project` before a risky handoff, `get_recovery_state` to verify it, `restart_editor` to recover a broken editor, and `close_editor` only when the task or user requires the app to close.
 
+## Always deliver the shot list and the description
+
+Two things are part of every finished edit, whether or not the user asks for
+them. Report both in chat when you finish, alongside what changed.
+
+**A shot list of the pictures.** Every image you placed, each with the container
+it sits in, its start and duration on that container's own source clock, the
+same times as output timecodes from `get_timeline`, and one line saying what the
+picture shows and why it is there. Say plainly which images in the working
+directory you left out and why. If you placed none, say so and say why — an
+empty shot list is an answer, an absent one is an omission.
+
+**A description of the video.** A title line and a short paragraph of what the
+finished video is about, drawn from the transcript and the frames rather than
+from the file names, followed by the moments worth marking as chapters with
+their output timecodes. It is for the user to paste where the video will be
+published.
+
+**The description is written in the language of the prompt.** The brief the user
+wrote is what decides it — a Portuguese brief gets a Portuguese description,
+whatever language the speech or the file names are in. If you cannot write well
+in that language, use English and say that is what you did. This applies to the
+description and the chapter titles only: interface strings, log lines and your
+own account of what you changed stay in English.
+
 The editor's MCP activity console is visible to the user and remains minimized if the user minimizes it. Keep tool calls meaningfully grouped. At the end, save a checkpoint, call `finish_editing` with a concise summary, and let the on-screen modal ask whether to watch the preview or render immediately. Also report subjective decisions, current project revision, and saved/exported paths in chat.
 
 For the complete command and operation catalogue, read [MCP operations](references/mcp-operations.md) when planning a concrete edit.

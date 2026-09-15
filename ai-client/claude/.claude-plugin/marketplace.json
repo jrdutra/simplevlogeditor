@@ -1,0 +1,22 @@
+{
+  "name": "simplevlogeditor",
+  "owner": {
+    "name": "SimpleVlogEditor"
+  },
+  "plugins": [
+    {
+      "name": "simple-vlog-editor",
+      "source": "./plugins/simple-vlog-editor",
+      "description": "Understand and edit complete videos in the visible SimpleVlogEditor through its local MCP server: cuts, captions, tags, transitions, audio, video effects and placed images.",
+      "version": "1.1.0",
+      "category": "Productivity",
+      "keywords": [
+        "video",
+        "editing",
+        "mcp",
+        "local",
+        "electron"
+      ]
+    }
+  ]
+}

@@ -3,8 +3,9 @@
     "simple-vlog-editor": {
       "command": "node",
       "args": [
-        "C:\\Users\\joaor\\ferramentas\\simplevlogeditor\\electron\\src\\mcp-host.js"
+        "./scripts/mcp-launcher.mjs"
       ],
+      "cwd": ".",
       "env": {
         "SVE_CONTROLLER": "codex"
       },
