@@ -21,7 +21,13 @@ startMcpServer(
     if (request.name === 'get_diagnostics') response.result = { ...response.result, host: manager.diagnostics() };
     return response;
   },
-  { onClose: () => manager.close() }
+  {
+    onClose: () => manager.close(),
+    // Folders the user connected in their client session. Forwarded as their
+    // own layer: they are neither the editor's defaults nor consent given in
+    // the editor window, and they last only as long as this session.
+    onClientRoots: (roots) => manager.setClientRoots(roots)
+  }
 );
 
 process.on('uncaughtException', (error) => logger.error('uncaught_exception', { error }));
