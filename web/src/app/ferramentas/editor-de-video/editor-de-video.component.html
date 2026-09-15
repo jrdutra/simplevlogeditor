@@ -1914,6 +1914,24 @@
             <pre id="erro-detalhe" class="erro-detalhe">{{ errorDetail }}</pre>
           }
         }
+
+        <!-- The whole failure, not just its last line: the render log, the
+             plan, the output settings and which clip stopped it. Meant to be
+             pasted straight into a conversation with an AI. -->
+        @if (renderDiagnostic; as trace) {
+          <div class="erro-trace">
+            <span class="erro-trace-id">Incident {{ trace.incidentId }}</span>
+            <button type="button" (click)="copyRenderDiagnostic()">
+              <mat-icon>content_copy</mat-icon><span>Copy the full trace</span>
+            </button>
+            <button type="button" (click)="saveRenderDiagnostic()">
+              <mat-icon>download</mat-icon><span>Save trace</span>
+            </button>
+            @if (renderDiagnosticMessage) {
+              <span class="erro-trace-aviso">{{ renderDiagnosticMessage }}</span>
+            }
+          </div>
+        }
       </span>
     </div>
   }

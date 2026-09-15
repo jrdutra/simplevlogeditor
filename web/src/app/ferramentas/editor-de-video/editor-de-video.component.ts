@@ -728,6 +728,21 @@ interface AgentLogLine {
   percent: number | null;
 }
 
+/**
+ * The same envelope the MCP side produces, for an export that failed.
+ *
+ * An export error used to end at a message and a stack. That is enough to know
+ * something broke and not enough to hand anyone — the render log, the plan it
+ * was rendering, the settings and which clip it stopped on are all needed, and
+ * all were on screen a moment earlier and then gone.
+ */
+interface RenderDiagnostic {
+  incidentId: string;
+  createdAt: string;
+  summary: string;
+  fullText: string;
+}
+
 interface AgentDiagnostic {
   incidentId: string;
   createdAt: string;
@@ -1000,6 +1015,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   agentWorking = false;
   agentDiagnostic: AgentDiagnostic | null = null;
   agentDiagnosticMessage = '';
+  renderDiagnostic: RenderDiagnostic | null = null;
+  renderDiagnosticMessage = '';
   agentCompletionOpen = false;
   agentCompletionSummary = '';
   private agentLogSeq = 0;
@@ -8340,6 +8357,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           kind: 'fail',
           text: this.errorClip ? `Failed on ${this.errorClip} — ${this.errorMessage}` : `Failed — ${this.errorMessage}`
         });
+        // Built after the failing line is in the log, so the log it captures
+        // ends with the failure rather than with the step before it.
+        this.renderDiagnostic = await this.captureRenderDiagnostic(error);
+        this.renderDiagnosticMessage = '';
       }
     } finally {
       this.exporting = null;
@@ -10264,6 +10285,120 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
+  /**
+   * Everything an export failure was: what was being written, from what, with
+   * which settings, and the whole render log up to the line that failed.
+   *
+   * Deliberately the same shape as the MCP diagnostic, so one habit covers
+   * both and either can be pasted into the same conversation.
+   */
+  private async captureRenderDiagnostic(error: unknown): Promise<RenderDiagnostic> {
+    const incidentId = crypto.randomUUID();
+    const createdAt = new Date().toISOString();
+    const runtime: AgentRuntimeInfo = await this.desktop.getAgentRuntimeInfo().catch(() => ({}));
+    const typed = error as Error & { code?: string; stage?: string; clipLabel?: string };
+
+    const diagnostic = {
+      incidentId,
+      timestamp: createdAt,
+      editor: runtime,
+      operation: 'export',
+      failedOn: this.errorClip || null,
+      message: this.errorMessage || null,
+      hint: this.errorHint || null,
+      output: {
+        videoFormat: this.project.videoFormatId,
+        audioFormat: this.project.audioFormatId,
+        resolution: this.project.resolution,
+        aspect: this.project.aspect,
+        reframe: this.project.reframe,
+        timelapseTargetSeconds: this.project.timelapseTargetSeconds
+      },
+      project: {
+        revision: this.revision,
+        clipCount: this.clips.length,
+        duration: this.plan.totalDuration,
+        removedDuration: this.plan.removedDuration,
+        cutCount: this.plan.cutCount,
+        hasSoundtrack: Boolean(this.project.defaultAudio),
+        awaitingClips: this.awaitingCount,
+        // Named, because a silent placeholder is the one input that looks
+        // present in the plan and is not present in the file.
+        silentSounds: this.awaitingSounds
+      },
+      // Enough of each clip to reproduce the timeline, and nothing of its
+      // contents: names and settings, never a frame and never a transcript.
+      clips: this.clips.map((clip, index) => ({
+        index,
+        id: clip.id,
+        kind: clip.kind,
+        ...(isMediaClip(clip)
+          ? {
+              name: clip.fileRef?.name ?? clip.file.name,
+              bytes: clip.file.size,
+              awaitingFile: Boolean(clip.awaitingFile),
+              durationSeconds: clip.summary.durationSeconds,
+              speed: clip.overrides?.speed ?? this.project.edits.speed,
+              videoEffect: clip.videoEffect?.id ?? null,
+              videoEffectSections: clip.videoEffects?.length ?? 0,
+              captions: clip.captions?.length ?? (clip.caption ? 1 : 0),
+              images: clip.images?.length ?? 0,
+              tag: clip.tag ? { shape: clip.tag.shape, startSeconds: clip.tag.startSeconds } : null,
+              manualZooms: clip.manualZooms?.length ?? 0,
+              manualCuts: clip.manualCuts.length,
+              detectedCuts: clip.detected.length,
+              replacementAudio: clip.replacementAudio
+                ? { name: clip.replacementAudio.summary.fileName, bytes: clip.replacementAudio.file.size }
+                : null
+            }
+          : {}),
+        ...(isTransitionClip(clip) ? { transition: clip.settings?.kind ?? null } : {})
+      })),
+      connection: this.desktop.agentControl(),
+      error: this.serializeAgentError(error),
+      stage: typed?.stage ?? null,
+      nextSteps: [
+        'Read the failing line at the end of renderLog below.',
+        'Check silentSounds and awaitingClips: a placeholder input is present in the plan and absent from the file.',
+        'Reproduce with the same output settings before changing anything.'
+      ],
+      renderLog: this.renderLog.map((line) =>
+        `[${this.formatAgentTimestamp(line.at)}] [${line.kind}] ${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
+    };
+
+    return {
+      incidentId,
+      createdAt,
+      summary: `${typed?.name || 'Error'}${this.errorClip ? ` on ${this.errorClip}` : ''}: ${this.errorMessage || String(error)}`,
+      fullText: `Simple Vlog Editor render diagnostic\n${JSON.stringify(diagnostic, null, 2)}`
+    };
+  }
+
+  async copyRenderDiagnostic(): Promise<void> {
+    if (!this.renderDiagnostic) return;
+    try {
+      await navigator.clipboard.writeText(this.renderDiagnostic.fullText);
+      this.renderDiagnosticMessage = 'Render trace copied.';
+    } catch {
+      this.renderDiagnosticMessage = 'Could not copy automatically — use Save trace.';
+    }
+    this.cdr.markForCheck();
+  }
+
+  saveRenderDiagnostic(): void {
+    const diagnostic = this.renderDiagnostic;
+    if (!diagnostic) return;
+    const blob = new Blob([diagnostic.fullText], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `simplevlogeditor-render-${diagnostic.incidentId}.txt`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    this.renderDiagnosticMessage = 'Render trace saved.';
+    this.cdr.markForCheck();
+  }
+
   saveAgentDiagnostic(): void {
     const diagnostic = this.agentDiagnostic;
     if (!diagnostic) return;
@@ -10898,7 +11033,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * @returns how many files were reconnected
    */
   private async agentRelinkFromDisk(): Promise<number> {
-    if (!this.desktop.isDesktop || !this.hasAwaitingFiles) return 0;
+    if (!this.desktop.isDesktop) return 0;
 
     const wanted = new Set<string>();
     for (const clip of this.clips) {
@@ -10906,11 +11041,22 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         const at = clip.sourcePath ?? clip.fileRef?.path;
         if (at) wanted.add(at);
       }
-      if (!isMediaClip(clip)) continue;
-      for (const image of clip.images ?? []) {
-        if (image.source.awaitingFile && image.source.fileRef?.path) wanted.add(image.source.fileRef.path);
+      if (isMediaClip(clip)) {
+        for (const image of clip.images ?? []) {
+          if (image.source.awaitingFile && image.source.fileRef?.path) wanted.add(image.source.fileRef.path);
+        }
+      }
+      // Music is the quiet one. A restored sound carries no `awaitingFile`
+      // flag — it is a zero-byte placeholder that still knows how long it is,
+      // so the plan is complete and nothing notices until the export hands an
+      // empty blob to the demuxer and reports an unrecognizable format.
+      if (!isTransitionClip(clip)) {
+        const replacement = clip.replacementAudio;
+        if (replacement && replacement.file.size === 0 && replacement.fileRef?.path) wanted.add(replacement.fileRef.path);
       }
     }
+    const soundtrack = this.project.defaultAudio;
+    if (soundtrack && soundtrack.file.size === 0 && soundtrack.fileRef?.path) wanted.add(soundtrack.fileRef.path);
     if (!wanted.size) return 0;
 
     let attached = 0;
@@ -10939,8 +11085,27 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.queueAutomaticListening([clip]);
         used = true;
       }
-      // Pictures, replacement audio and the soundtrack are matched by
-      // reference, which is what the manual reconnect has always done.
+      // Music, matched by the path it was written down with. The reference
+      // match below cannot do it: a placeholder is zero bytes, so its recorded
+      // length never equals the real file's.
+      const key = this.agentPathKey(at);
+      const soundtrack = this.project.defaultAudio;
+      if (soundtrack && soundtrack.file.size === 0 && soundtrack.fileRef?.path
+        && this.agentPathKey(soundtrack.fileRef.path) === key) {
+        this.project.defaultAudio = { ...soundtrack, file };
+        used = true;
+      }
+      for (const clip of this.clips) {
+        if (isTransitionClip(clip)) continue;
+        const replacement = clip.replacementAudio;
+        if (!replacement || replacement.file.size !== 0 || !replacement.fileRef?.path) continue;
+        if (this.agentPathKey(replacement.fileRef.path) !== key) continue;
+        clip.replacementAudio = { ...replacement, file };
+        used = true;
+      }
+
+      // Pictures and anything else still waiting are matched by reference,
+      // which is what the manual reconnect has always done.
       if (this.attachRestoredFile(file)) used = true;
       if (used) {
         attached++;
@@ -10949,12 +11114,24 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
 
     if (attached) {
+      // The banner is a string, written once when the project came back. It
+      // said four clips were waiting long after they had been reconnected,
+      // which is worse than saying nothing.
+      if (!this.hasAwaitingFiles && /waiting for their files/.test(this.notice)) {
+        this.notice = 'Your last project came back, and its files were reconnected from disk.';
+      }
+      this.canReconnect = handlesSupported() && this.hasAwaitingFiles;
       this.touch();
       this.cdr.markForCheck();
     }
     if (this.awaitingCount) {
       this.pushAgentLog('action',
         `${this.awaitingCount} clip(s) are still waiting for files that are no longer where the project left them.`,
+        'Recovery', 'WARN');
+    }
+    if (this.awaitingSounds.length) {
+      this.pushAgentLog('action',
+        `Still silent: ${this.awaitingSounds.join(', ')}. Exporting now would write silence where the music was.`,
         'Recovery', 'WARN');
     }
     return attached;
@@ -12642,12 +12819,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const url = video ? mediaObjectUrl(clip.file) : '';
     if (video) {
       video.muted = true;
-      video.preload = 'auto';
+      // Metadata, not the whole file. Frame grabbing needs the header and then
+      // seeks; 'auto' asks the browser to buffer the entire clip, which on a 4K
+      // source served over the local media server is gigabytes of reading
+      // before the first frame can be drawn.
+      video.preload = 'metadata';
       video.src = url;
     }
 
     try {
-      if (video) await this.waitAgentMedia(video, 'loadedmetadata', signal);
+      // Metadata can sit at the end of the file — most camera MP4s are not
+      // written for streaming — so a large source is read almost end to end
+      // before the first frame exists. Sixty seconds is generous for a local
+      // file and still finite.
+      if (video) await this.waitAgentMedia(video, 'loadedmetadata', signal, 60000);
       const frames: unknown[] = [];
 
       for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
@@ -12758,11 +12943,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     const video = document.createElement('video');
     video.muted = true;
-    video.preload = 'auto';
+    video.preload = 'metadata';
     const url = mediaObjectUrl(clip.file);
     video.src = url;
     try {
-      await this.waitAgentMedia(video, 'loadedmetadata', signal);
+      await this.waitAgentMedia(video, 'loadedmetadata', signal, 60000);
       const result: unknown[] = [];
       for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
         if (signal?.aborted) throw cancelled('extracting-frames');
@@ -12790,9 +12975,35 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
-  private waitAgentMedia(media: HTMLMediaElement, event: string, signal?: AbortSignal): Promise<void> {
+  /**
+   * Waiting for a media element, and saying something useful when it never
+   * arrives.
+   *
+   * "Timed out waiting for media loadedmetadata" named the symptom and nothing
+   * else — not whether the browser was still fetching, not whether it had
+   * decided the file was undecodable, not how much it had managed to read. All
+   * of that is on the element, and all of it is what tells a stalled transfer
+   * apart from a rejected codec.
+   */
+  private waitAgentMedia(media: HTMLMediaElement, event: string, signal?: AbortSignal, timeoutMs = 15000): Promise<void> {
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => finish(new EditorAgentError(`Timed out waiting for media ${event}.`, 'media_timeout')), 15000);
+      const timer = setTimeout(() => finish(new EditorAgentError(
+        `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for media ${event}.`,
+        'media_timeout',
+        {
+          event,
+          waitedMs: timeoutMs,
+          // 0 HAVE_NOTHING, 1 HAVE_METADATA, 2 HAVE_CURRENT_DATA, 3 HAVE_FUTURE_DATA, 4 HAVE_ENOUGH_DATA
+          readyState: media.readyState,
+          // 0 EMPTY, 1 IDLE, 2 LOADING, 3 NO_SOURCE. LOADING here means the
+          // transfer stalled rather than the file being unreadable.
+          networkState: media.networkState,
+          mediaError: media.error ? { code: media.error.code, message: media.error.message } : null,
+          bufferedSeconds: media.buffered.length ? media.buffered.end(media.buffered.length - 1) : 0,
+          durationSeconds: Number.isFinite(media.duration) ? media.duration : null,
+          source: (() => { try { return new URL(media.currentSrc || '').protocol; } catch { return null; } })()
+        }
+      )), timeoutMs);
       const finish = (error?: Error) => {
         clearTimeout(timer);
         media.removeEventListener(event, ready);

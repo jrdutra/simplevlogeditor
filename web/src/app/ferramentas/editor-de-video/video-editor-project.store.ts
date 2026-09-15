@@ -23,9 +23,14 @@
 import type { LoudnessSettings } from '../../shared/media/loudness';
 import type { MediaSummary, ResolutionPreset } from '../juntador-de-midias/media-merger.models';
 import type { EditableRange } from '../cortador-de-silencio/silence-cutter.models';
+import type { AnalysisSettings, NoiseReport } from '../supressao-de-ruido/noise-analysis';
+import { clampClipNoise } from './clip-noise';
+import { effectDefinition, normalizeVideoEffect } from './video-effects';
+import type { ClipNoiseSettings } from './clip-noise';
 import {
   DEFAULT_SOUND_FADE,
   SILENT_CUT_REPLACEMENT,
+  clampCaption,
   clampSilentCutReplacementThreshold,
   clampSoundFade,
   clampTimelapseTarget,
@@ -34,6 +39,8 @@ import {
 import type {
   ClipCaption,
   ClipEdits,
+  ClipImage,
+  ClipVideoEffect,
   EditorClip,
   FrameAspect,
   ManualZoom,
@@ -51,6 +58,7 @@ import { pathBackedPath } from '../../shared/desktop/path-backed-file';
 import { isMediaClip, isTransitionClip } from './video-editor.models';
 import { DEFAULT_TRANSITION } from './video-editor-defaults';
 import { clampTransition } from './video-editor-timeline';
+import { clampClipImage } from './video-editor-defaults';
 import { ClipTag, DEFAULT_TAG, clampTag } from './tag-overlay';
 
 /** Where the browser keeps the current edit. */
@@ -91,6 +99,34 @@ export interface StoredFileRef {
   path?: string;
 }
 
+/**
+ * A placed picture as it is written down.
+ *
+ * The bytes are never stored, exactly as they are never stored for media or for
+ * a soundtrack: what survives is enough to recognise the file again. A project
+ * moved to another machine reports the picture as missing in its recovery
+ * report instead of silently exporting a frame without it.
+ */
+export interface StoredClipImage {
+  id?: string;
+  source: {
+    ref: StoredFileRef;
+    name: string;
+    width: number;
+    height: number;
+    handleId?: string;
+  };
+  startSeconds?: number;
+  durationSeconds?: number;
+  style?: 'overlay' | 'behind-subject';
+  positionX?: number;
+  positionY?: number;
+  scale?: number;
+  rotationDegrees?: number;
+  opacity?: number;
+  fadeSeconds?: number;
+}
+
 export interface StoredMediaClip {
   kind: 'media';
   id: string;
@@ -102,7 +138,17 @@ export interface StoredMediaClip {
   caption: ClipCaption | null;
   /** Absent in documents written before captions could be timed independently. */
   captions?: ClipCaption[];
+  /** Absent in documents written before pictures could be placed on a clip. */
+  images?: StoredClipImage[];
   replacementAudio: StoredSound | null;
+  /** Per-clip noise removal settings. Absent in projects written before the feature. */
+  noiseSuppression?: ClipNoiseSettings;
+  videoEffect?: import('./video-effects').VideoEffect;
+  /** Timed effects. Absent for old projects and for one whole-clip effect. */
+  videoEffects?: ClipVideoEffect[];
+  /** Diagnostic evidence is small and saves another model pass after reopening a project. */
+  noiseReport?: NoiseReport | null;
+  noiseAnalyzedWith?: AnalysisSettings | null;
   /** Absent in documents written before a clip could be trimmed. Absent means the whole file. */
   inPoint?: number;
   outPoint?: number;
@@ -203,6 +249,10 @@ function soundOf(sound: SuppliedSound): StoredSound {
 function soundFrom(stored: StoredSound): SuppliedSound {
   return {
     file: placeholder(stored.ref),
+    // Kept so the placeholder can be replaced by the real file later. Without
+    // it a restored soundtrack is silent, and the export says only that the
+    // input has an unrecognizable format.
+    fileRef: stored.ref,
     summary: stored.summary,
     trimStart: stored.trimStart,
     skipLeadingSilence: stored.skipLeadingSilence,
@@ -270,7 +320,12 @@ export function serializeProject(
             manualCuts: clip.manualCuts.map((range) => ({ ...range })),
             caption: clip.caption ? { ...clip.caption } : null,
             ...(clip.captions?.length ? { captions: clip.captions.map((caption) => ({ ...caption })) } : {}),
+            ...(clip.images?.length ? { images: clip.images.map(storedClipImage) } : {}),
             replacementAudio: clip.replacementAudio ? soundOf(clip.replacementAudio) : null,
+            ...(clip.noiseSuppression ? { noiseSuppression: clampClipNoise(clip.noiseSuppression) } : {}),
+            ...storedVideoEffects(clip),
+            ...(clip.noiseReport ? { noiseReport: structuredClone(clip.noiseReport) } : {}),
+            ...(clip.noiseAnalyzedWith ? { noiseAnalyzedWith: structuredClone(clip.noiseAnalyzedWith) } : {}),
             // Written only when they are not the whole file, so an untouched
             // project's document is byte for byte what it always was.
             ...(clip.inPoint ? { inPoint: clip.inPoint } : {}),
@@ -372,8 +427,18 @@ export function restoreProject(stored: StoredProject): RestoredProject {
           analysis: null,
           analyzedWith: null,
           replacementAudio: clip.replacementAudio ? soundFrom(clip.replacementAudio) : null,
-          caption: clip.caption ? { ...clip.caption } : null,
-          captions: (clip.captions ?? []).map((caption) => ({ ...caption })),
+          ...(clip.noiseSuppression ? { noiseSuppression: clampClipNoise(clip.noiseSuppression) } : {}),
+          videoEffect: normalizeVideoEffect(clip.videoEffect),
+          videoEffects: restoredVideoEffects(clip),
+          noiseReport: clip.noiseReport ? structuredClone(clip.noiseReport) : null,
+          noiseAnalyzedWith: clip.noiseAnalyzedWith ? structuredClone(clip.noiseAnalyzedWith) : null,
+          noiseCleanedAudio: null,
+          noiseCleanedWith: null,
+          noiseCleanedUrl: null,
+          noiseReductionDb: null,
+          caption: clip.caption ? clampCaption({ ...clip.caption }) : null,
+          captions: (clip.captions ?? []).map((caption) => clampCaption({ ...caption })),
+          images: (clip.images ?? []).map(restoredClipImage),
           // Clamped on the way in rather than trusted: a document written by an
           // older build can name an animation this one no longer has, and the
           // painter would draw nothing at all rather than fall back.
@@ -398,6 +463,108 @@ export function restoreProject(stored: StoredProject): RestoredProject {
     clips, project, nextId: stored.nextId, savedAt: stored.savedAt,
     projectRevision: Number.isFinite(stored.projectRevision) ? Math.max(0, Number(stored.projectRevision)) : 0
   };
+}
+
+function sourceBounds(clip: Pick<MediaClip, 'inPoint' | 'outPoint' | 'summary'>): { start: number; end: number } {
+  const duration = Math.max(0, clip.summary.durationSeconds ?? 0);
+  const start = Math.max(0, Math.min(duration, clip.inPoint ?? 0));
+  const end = Math.max(start, Math.min(duration, clip.outPoint ?? duration));
+  return { start, end };
+}
+
+function normalizedStoredEffect(item: ClipVideoEffect): ClipVideoEffect | null {
+  if (!item || typeof item.effectId !== 'string' || !effectDefinition(item.effectId)) return null;
+  if (!Number.isFinite(item.intensity)) return null;
+  if (item.startSeconds !== undefined && !Number.isFinite(item.startSeconds)) return null;
+  if (item.durationSeconds !== undefined && (!Number.isFinite(item.durationSeconds) || item.durationSeconds <= 0)) return null;
+  const effect = normalizeVideoEffect({ id: item.effectId, intensity: item.intensity });
+  if (effect.id === 'none' || effect.intensity <= 0) return null;
+  return {
+    ...(item.id ? { id: String(item.id) } : {}),
+    effectId: effect.id,
+    intensity: effect.intensity,
+    ...(item.startSeconds === undefined ? {} : { startSeconds: Math.max(0, item.startSeconds) }),
+    ...(item.durationSeconds === undefined ? {} : { durationSeconds: item.durationSeconds })
+  };
+}
+
+/** Migration on read: the old whole-clip field becomes one editable segment. */
+function restoredVideoEffects(clip: StoredMediaClip): ClipVideoEffect[] {
+  const timed = (clip.videoEffects ?? []).map(normalizedStoredEffect).filter((item): item is ClipVideoEffect => !!item);
+  if (timed.length) return timed;
+  const legacy = normalizeVideoEffect(clip.videoEffect);
+  return legacy.id === 'none' || legacy.intensity <= 0
+    ? []
+    : [{ id: `effect-legacy-${clip.id}`, effectId: legacy.id, intensity: legacy.intensity }];
+}
+
+/**
+ * Compatibility on write: one full-clip segment keeps the legacy document
+ * shape. Partial/multiple segments write the new list and leave old builds on
+ * Original rather than misleadingly applying one look to the entire clip.
+ */
+function storedVideoEffects(clip: MediaClip): Pick<StoredMediaClip, 'videoEffect' | 'videoEffects'> {
+  const items = (clip.videoEffects ?? []).map(normalizedStoredEffect).filter((item): item is ClipVideoEffect => !!item);
+  if (!items.length) return { videoEffect: normalizeVideoEffect(clip.videoEffect) };
+  const bounds = sourceBounds(clip);
+  const only = items[0];
+  const start = only.startSeconds ?? bounds.start;
+  const end = start + (only.durationSeconds ?? bounds.end - start);
+  if (items.length === 1 && start <= bounds.start + 1e-6 && end >= bounds.end - 1e-6) {
+    return { videoEffect: normalizeVideoEffect({ id: only.effectId, intensity: only.intensity }) };
+  }
+  return { videoEffect: { id: 'none', intensity: 0 }, videoEffects: items.map(item => ({ ...item })) };
+}
+
+/** A placed picture on the way out. */
+function storedClipImage(image: ClipImage): StoredClipImage {
+  const source = image.source;
+  const ref = source.awaitingFile && source.fileRef ? source.fileRef : refOf(source.file);
+  return {
+    ...(image.id ? { id: image.id } : {}),
+    source: {
+      ref: source.sourcePath ? { ...ref, path: source.sourcePath } : ref,
+      name: source.name,
+      width: source.width,
+      height: source.height,
+      ...(source.handleId ? { handleId: source.handleId } : {})
+    },
+    ...(image.startSeconds === undefined ? {} : { startSeconds: image.startSeconds }),
+    ...(image.durationSeconds === undefined ? {} : { durationSeconds: image.durationSeconds }),
+    ...(image.style ? { style: image.style } : {}),
+    ...(image.positionX === undefined ? {} : { positionX: image.positionX }),
+    ...(image.positionY === undefined ? {} : { positionY: image.positionY }),
+    ...(image.scale === undefined ? {} : { scale: image.scale }),
+    ...(image.rotationDegrees === undefined ? {} : { rotationDegrees: image.rotationDegrees }),
+    ...(image.opacity === undefined ? {} : { opacity: image.opacity }),
+    ...(image.fadeSeconds === undefined ? {} : { fadeSeconds: image.fadeSeconds })
+  };
+}
+
+/** A placed picture on the way in, still waiting for its bytes. */
+function restoredClipImage(stored: StoredClipImage): ClipImage {
+  return clampClipImage({
+    ...(stored.id ? { id: stored.id } : {}),
+    source: {
+      file: placeholder(stored.source.ref),
+      fileRef: stored.source.ref,
+      ...(stored.source.ref.path ? { sourcePath: stored.source.ref.path } : {}),
+      ...(stored.source.handleId ? { handleId: stored.source.handleId } : {}),
+      name: stored.source.name || stored.source.ref.name,
+      width: stored.source.width,
+      height: stored.source.height,
+      awaitingFile: true
+    },
+    startSeconds: stored.startSeconds,
+    durationSeconds: stored.durationSeconds,
+    style: stored.style,
+    positionX: stored.positionX,
+    positionY: stored.positionY,
+    scale: stored.scale,
+    rotationDegrees: stored.rotationDegrees,
+    opacity: stored.opacity,
+    fadeSeconds: stored.fadeSeconds
+  });
 }
 
 /**

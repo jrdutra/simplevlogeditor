@@ -6,12 +6,12 @@
  * The first is that **the list is the timeline**: clips play in the order they
  * are shown, back to back, and nothing else decides when anything happens.
  *
- * The second is that **a setting has exactly one home**. Everything the reader
- * can tune lives in {@link ClipEdits}, and a clip either follows the project's
- * copy of it or owns a copy of its own — `overrides` is `null` or it is a whole
- * object, never a half of one. That is what makes "change it for everything,
- * then change it back for this one clip" a two-line operation rather than a
- * matrix of flags.
+ * The second is that **a setting has exactly one home**. Inheritable controls
+ * live in {@link ClipEdits}, and a clip either follows the project's copy or
+ * owns a complete copy of its own — `overrides` is never a matrix of partial
+ * flags. Features that are intentionally clip-only, such as noise suppression,
+ * live directly on the media clip and cannot accidentally become a project
+ * default.
  *
  * The third is that **time is in seconds**, always, and that there are two
  * clocks: *source* time, which is a position inside a file the reader added,
@@ -33,6 +33,9 @@ import type {
   SilenceSettings,
   TimeRange
 } from '../cortador-de-silencio/silence-cutter.models';
+import type { AnalysisSettings, NoiseReport } from '../supressao-de-ruido/noise-analysis';
+import type { ClipNoiseSettings } from './clip-noise';
+import type { VideoEffect } from './video-effects';
 
 export type { EditableRange, MediaInfo, SilenceAnalysis, SilenceSettings, TimeRange };
 export type { MediaSummary, ResolutionPreset };
@@ -63,15 +66,7 @@ export type ClipSoundPlan =
   | { kind: 'mute' }
   | { kind: 'file'; file: File; label: string; offset: number };
 
-/**
- * A line of text burned into the bottom of a clip.
- *
- * Deliberately not a general text layer: it is always white, always outlined in
- * black and always shadowed, because the one job it has is to stay readable
- * over footage nobody has seen yet. A caption that can be styled is a caption
- * that can be made illegible, and the reader who wants that already has the
- * text clip.
- */
+/** A timed text layer carried by an individual media clip. */
 export interface ClipCaption {
   /** Stable identity when a clip carries more than one caption. */
   id?: string;
@@ -87,8 +82,10 @@ export interface ClipCaption {
   bottomMargin: number;
   /** A named shortcut while its visual values still match a preset. */
   stylePreset?: string;
+  /** Classic text-over-picture, or text composited below a segmented subject. */
+  style?: 'classic' | 'behind-subject';
   /** Browser-local font family; the renderer maps it to a deterministic stack. */
-  fontFamily?: 'sans' | 'rounded' | 'serif' | 'mono';
+  fontFamily?: 'sans' | 'rounded' | 'serif' | 'mono' | 'impact' | 'display' | 'geometric' | 'slab' | 'handwritten';
   fontWeight?: number;
   italic?: boolean;
   textColor?: string;
@@ -97,10 +94,115 @@ export interface ClipCaption {
   outlinePercent?: number;
   shadowEnabled?: boolean;
   shadowColor?: string;
+  /** Behind-subject placement, expressed as shares of the finished frame. */
+  positionX?: number;
+  positionY?: number;
+  rotationDegrees?: number;
+  shadowBlurPercent?: number;
+  shadowOpacity?: number;
+  uppercase?: boolean;
+  /** Optional, deliberately subtle motion for background captions. */
+  animation?: 'none' | 'zoom-in' | 'zoom-out' | 'scroll-left' | 'scroll-right' | 'scroll-up' | 'scroll-down';
   fadeIn: boolean;
   fadeOut: boolean;
   /** Length of each of the caption's own fades, in seconds. */
   fadeSeconds: number;
+}
+
+/** A container-only Video Effect placed on the source clip's clock. */
+export interface ClipVideoEffect {
+  /** Stable identity when a clip carries more than one effect. */
+  id?: string;
+  effectId: string;
+  intensity: number;
+  /** Omitted together, these two fields mean the whole source clip. */
+  startSeconds?: number;
+  durationSeconds?: number;
+  /**
+   * How long the effect takes to arrive and to leave, in source seconds.
+   *
+   * Zero, the default, is a cut: the effect is fully on at the first frame of
+   * the section and fully off at the first frame after it. Anything above zero
+   * ramps it in and out over that many seconds at each end, which is what makes
+   * a filter enter a shot without a visible step. Clamped to half the section,
+   * so the two ramps can never meet and leave the effect never reaching full
+   * strength without saying so.
+   */
+  fadeSeconds?: number;
+}
+
+/**
+ * Where a placed picture's bytes come from.
+ *
+ * Shaped like {@link SuppliedSound} on purpose: a project never stores media
+ * bytes, only enough to recognise the file again, so a picture placed on a clip
+ * is found after a reload exactly the way a soundtrack is. `file` is a
+ * zero-length stand-in while `awaitingFile` is true, and the relink hands the
+ * real bytes back without the placement itself ever changing.
+ */
+export interface ClipImageSource {
+  file: File;
+  /** What to call it in the panel and in the render log. */
+  name: string;
+  /** Natural pixel size, measured once on attachment so the panel can shape a preview. */
+  width: number;
+  height: number;
+  /** Absolute local path for Electron path-backed pictures. Never contains bytes. */
+  sourcePath?: string;
+  /** The key this browser filed a durable reference to the file under. */
+  handleId?: string;
+  /** How the file is recognised again after a reload. */
+  fileRef?: { name: string; size: number; lastModified: number; path?: string };
+  /** True while `file` is an empty stand-in rather than the reader's picture. */
+  awaitingFile?: boolean;
+}
+
+/** How a placed picture sits against a segmented person. */
+export type ClipImageStyle = 'overlay' | 'behind-subject';
+
+/**
+ * A picture placed over a stretch of one container, on that container's own
+ * source clock.
+ *
+ * Deliberately the same shape as {@link ClipCaption}: a clip may carry any
+ * number of them, each with its own interval, its own fade and its own
+ * placement, and nothing here is ever inherited from the project or from
+ * another container.
+ */
+export interface ClipImage {
+  /** Stable identity when a clip carries more than one picture. */
+  id?: string;
+  source: ClipImageSource;
+  /** Position and lifetime on the source clip's clock. Omitted means the whole clip. */
+  startSeconds?: number;
+  durationSeconds?: number;
+  /**
+   * Over everything, or composited below the person.
+   *
+   * `behind-subject` puts the picture in the same middle layer a background
+   * caption uses: in front of the scenery, behind whoever is talking. When no
+   * person is found the picture simply stays visible, which is the same
+   * fallback the background captions take.
+   */
+  style?: ClipImageStyle;
+  /** Centre of the picture, as shares of the finished frame. */
+  positionX?: number;
+  positionY?: number;
+  /**
+   * Width as a share of the frame width. The aspect ratio is always kept, so
+   * one number is the whole size control.
+   */
+  scale?: number;
+  rotationDegrees?: number;
+  /** Steady opacity, separate from the fades at the two ends. */
+  opacity?: number;
+  /**
+   * How long the picture takes to arrive and to leave, in source seconds.
+   *
+   * Zero is a cut. Clamped to half the section, so the two ramps can never
+   * meet and leave the picture never reaching full strength without saying so.
+   */
+  fadeSeconds?: number;
 }
 
 /**
@@ -160,6 +262,16 @@ export interface SuppliedSound {
    * follows a file that has been renamed and a path does not.
    */
   handleId?: string;
+  /**
+   * The file as it was written down, absolute path included when it had one.
+   *
+   * A restored sound is a zero-byte placeholder, and without this it is a
+   * placeholder with no way home: the name and length survive the save, the
+   * path did not, and the export then handed an empty blob to the demuxer and
+   * reported an unrecognizable format. Keeping the reference is what lets the
+   * music be reopened from disk.
+   */
+  fileRef?: { name: string; size: number; lastModified: number; path?: string };
 }
 
 /** Where reading this file should begin, in seconds. */
@@ -372,6 +484,26 @@ export interface MediaClip {
   analyzedWith: SilenceSettings | null;
   /** Sound that replaces this clip's own, when the audio mode says so. */
   replacementAudio: SuppliedSound | null;
+  /** Per-clip only. Checking it schedules suppression for export; it never processes immediately. */
+  noiseSuppression?: ClipNoiseSettings;
+  /** Timed, independent container appearances; never inherited from project defaults. */
+  videoEffects?: ClipVideoEffect[];
+  /** Legacy whole-clip appearance, retained only to open older projects. */
+  videoEffect?: VideoEffect;
+  /** Last diagnostic result, retained so an AI can compare every clip without guessing. */
+  noiseReport?: NoiseReport | null;
+  /** The diagnostic settings used for {@link noiseReport}. */
+  noiseAnalyzedWith?: AnalysisSettings | null;
+  /** Derived session cache. Never serialized; export rebuilds it after a restart. */
+  noiseCleanedAudio?: File | null;
+  /** Settings that produced {@link noiseCleanedAudio}. */
+  noiseCleanedWith?: ClipNoiseSettings | null;
+  /** Object URL used only by the before/after dialog. */
+  noiseCleanedUrl?: string | null;
+  /** Measured quiet-region change from the most recent suppression pass. */
+  noiseReductionDb?: number | null;
+  /** Timed, independent placed pictures; never inherited from project defaults. */
+  images?: ClipImage[];
   /** Timed captions. `caption` below is retained only to open older projects. */
   captions?: ClipCaption[];
   caption: ClipCaption | null;
@@ -545,6 +677,28 @@ export interface CaptionSegment {
   caption: ClipCaption;
 }
 
+/** A placed picture translated onto the output timeline, ready to be drawn. */
+export interface ImageSegment {
+  start: number;
+  end: number;
+  image: ClipImage;
+  /** Needed only when two clips share an instant during a transition. */
+  clipId: string;
+  /** Already in output seconds, so the clip's speed is accounted for. */
+  fadeSeconds: number;
+}
+
+/** A Video Effect translated onto the output timeline, ready to be rendered. */
+export interface VideoEffectSegment {
+  start: number;
+  end: number;
+  effect: VideoEffect;
+  /** Needed only when two clips share an instant during a transition. */
+  clipId: string;
+  /** Already in output seconds, so a clip's speed is accounted for. */
+  fadeSeconds: number;
+}
+
 /**
  * A tag placed on the output timeline, ready to be drawn.
  *
@@ -667,6 +821,16 @@ export interface ProjectPlan {
   /** Every automatic zoom, already translated into output time. */
   zooms: ZoomSegment[];
   captions: CaptionSegment[];
+  /**
+   * Every placed picture, already translated into output time.
+   *
+   * Optional for the same reason `videoEffects` is read defensively: plans are
+   * also built by hand, by the specs and by integrations written before this
+   * existed, and every reader here treats an absent list as an empty one.
+   */
+  images?: ImageSegment[];
+  /** Every per-container effect, already translated into output time. */
+  videoEffects: VideoEffectSegment[];
   /** Every tag, already placed on the output timeline. */
   tags: TagSegment[];
   /**
@@ -723,7 +887,10 @@ export interface RenderProgress {
  * opens the container being written, a detail belongs to whatever line opened
  * above it, and the last three are outcomes.
  */
-export type RenderLogKind = 'step' | 'clip' | 'detail' | 'done' | 'warn' | 'fail';
+export type RenderLogKind =
+  | 'step' | 'clip' | 'detail' | 'done' | 'warn' | 'fail'
+  /** Timed things inside one container, each with a colour of its own. */
+  | 'effect' | 'caption' | 'image' | 'zoom' | 'tag';
 
 /**
  * One line, as the renderer says it.
@@ -735,6 +902,13 @@ export type RenderLogKind = 'step' | 'clip' | 'detail' | 'done' | 'warn' | 'fail
 export interface RenderLogEntry {
   kind: RenderLogKind;
   text: string;
+  /**
+   * How far the export had got when this line was written, 0..100.
+   *
+   * Absent before the encoder has reported anything measurable, which is every
+   * line of the opening summary.
+   */
+  percent?: number;
 }
 
 export interface RenderResult {

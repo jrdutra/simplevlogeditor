@@ -10,14 +10,26 @@ import { drawFrame } from '../criador-de-video-texto/text-scene-renderer';
 import { fontStack } from '../criador-de-video-texto/text-video-presets';
 import type { SceneBackground, TextScene } from '../criador-de-video-texto/text-video.models';
 import { FrameContext, FrameSource, canvasOfSize, composeFrame, needsCompositing } from './frame-compositor';
-import { clampSpeed, volumeGain } from './video-editor-defaults';
-import { fadeGainAt, sourceTimeAt, transitionAt } from './video-editor-timeline';
+import { clampSpeed, isBackgroundCaption, volumeGain } from './video-editor-defaults';
+import {
+  captionAt, clipIndexAt, effectiveClipVideoEffects, fadeGainAt, sourceTimeAt, transitionAt, videoEffectSectionAt
+} from './video-editor-timeline';
+import { zoomScaleAt } from '../../shared/media/auto-zoom';
+import {
+  SubjectFailureKind, SubjectSegmentationClient, SubjectSegmentationFailure, SubjectSurface, subjectFailureMessage
+} from './subject-segmentation';
+import { effectDefinition, effectNeedsSubject } from './video-effects';
+import { disposeFrameEffects, frameEffectWarning } from './frame-compositor';
 import { TransitionPainter } from './video-transitions';
+import { activeNoiseAudio } from './clip-noise';
+import { imageBehindSubject, imagesAt, loadPlanImages } from './clip-image';
 import { EMPTY_SIDE, FootageSide, SceneSide, StillSide, TransitionSide } from './transition-sides';
 import {
+  CaptionSegment,
   ClipPlan,
   EditorCanceledError,
   FadeSegment,
+  ImageSegment,
   EditorError,
   MediaClip,
   ProjectPlan,
@@ -25,9 +37,12 @@ import {
   RenderLogEntry,
   RenderProgress,
   RenderResult,
+  TagSegment,
   TextClip,
   TimeRange,
   TransitionPlan,
+  VideoEffectSegment,
+  ZoomSegment,
   isMediaClip,
   technicalDetail
 } from './video-editor.models';
@@ -112,6 +127,20 @@ function clock(seconds: number): string {
   return `${minutes}:${(total - minutes * 60).toFixed(1).padStart(4, '0')}`;
 }
 
+/**
+ * Wall-clock time a reader can read: how long something took, or has left.
+ *
+ * Deliberately not {@link clock}, which formats a position on the timeline. An
+ * export that has been running for three minutes and a clip that starts at 3:00
+ * are different quantities and reading one as the other is a real confusion.
+ */
+function elapsed(milliseconds: number): string {
+  const seconds = Math.max(0, milliseconds / 1000);
+  if (seconds < 60) return `${seconds.toFixed(1)}s`;
+  const minutes = Math.floor(seconds / 60);
+  return `${minutes}m ${String(Math.round(seconds - minutes * 60)).padStart(2, '0')}s`;
+}
+
 /** A file size a reader can read. */
 function bytes(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -144,6 +173,16 @@ const EPSILON = 1e-6;
  * fail loudly — it wraps to an enormous number, and everything after it looks
  * out of order in a file that still opens.
  */
+/** An export that is missing the look it was asked for stops, and says why. */
+export interface SubjectExportFailure extends SubjectSegmentationFailure { surface: SubjectSurface }
+
+function subjectExportError(client: SubjectSegmentationClient, surface: SubjectSurface): EditorError {
+  const failure: SubjectSegmentationFailure = client.failure ??
+    { kind: 'inference-failed' as SubjectFailureKind, message: client.lastError || 'Subject segmentation failed.', retryable: true };
+  const error = new EditorError(`${subjectFailureMessage(failure, surface)} Nothing has been written to the output file.`);
+  return Object.assign(error, { subjectFailure: { ...failure, surface } as SubjectExportFailure });
+}
+
 @Injectable({ providedIn: 'root' })
 export class VideoEditorRenderService {
   /**
@@ -182,12 +221,34 @@ export class VideoEditorRenderService {
 
     const library = await loadMediabunny();
 
-    const report = (stage: RenderProgress['stage'], ratio: number | null, index: number, name: string) =>
+    // Every line carries the export's own progress, so a reader scanning a long
+    // log can see where in the render each thing happened rather than only in
+    // what order it happened.
+    let reached: number | null = null;
+    const report = (stage: RenderProgress['stage'], ratio: number | null, index: number, name: string) => {
+      if (ratio !== null && Number.isFinite(ratio)) reached = Math.max(0, Math.min(100, Math.round(ratio * 100)));
       onProgress({ stage, ratio, clipIndex: index, clipCount: plan.clips.length, clipName: name });
+    };
+
+    const startedAt = Date.now();
+    /**
+     * What is left, from what has been done.
+     *
+     * Only offered once a tenth of the work is behind us: before that the rate
+     * is dominated by decoder start-up and the number swings wildly, which is
+     * worse than no number at all.
+     */
+    const remaining = (ratio: number | null): string => {
+      if (ratio === null || ratio <= 0.1) return '';
+      const spent = Date.now() - startedAt;
+      const left = spent / ratio - spent;
+      return left > 1500 ? `, about ${elapsed(left)} left` : '';
+    };
 
     report('preparing', 0, 0, '');
 
-    const log = (kind: RenderLogEntry['kind'], text: string) => options.onLog?.({ kind, text });
+    const log = (kind: RenderLogEntry['kind'], text: string) =>
+      options.onLog?.(reached === null ? { kind, text } : { kind, text, percent: reached });
 
     log('step', `Export started — ${kind === 'video' ? 'video and sound' : 'sound only'}`);
     log('detail', `container ${format.label} (.${format.extension})`);
@@ -201,6 +262,22 @@ export class VideoEditorRenderService {
     log('detail', destination.handle
       ? `writing straight to ${destination.fileName}`
       : `building ${destination.fileName} in memory`);
+
+    if (kind === 'video' && (plan.images?.length ?? 0) > 0) {
+      // Decoded before the first frame rather than during it: `composeFrame` is
+      // synchronous, and a picture that is still decoding when its section
+      // arrives is a frame exported without it. A picture that cannot be read
+      // stops the export instead of being left out quietly.
+      const missing = await loadPlanImages(plan);
+      if (missing.length) {
+        throw new EditorError(
+          `This project places ${missing.length === 1 ? 'a picture' : `${missing.length} pictures`} that cannot be read.`,
+          `${missing.join(' ')} Reopen the file in the container's Images panel, or remove the placement.`
+        );
+      }
+      const placed = plan.images?.length ?? 0;
+      log('detail', `${placed} placed picture${placed === 1 ? '' : 's'} decoded`);
+    }
 
     if (kind === 'video' && !plan.hasPicture) {
       throw new EditorError(
@@ -221,6 +298,12 @@ export class VideoEditorRenderService {
 
     /** Once true the file is committed, and failures after it must not cancel. */
     let finalized = false;
+    // Full analysis resolution, always: the preview may trade detail for a
+    // clock, the file the reader keeps may not.
+    const subjectSegmentation = new SubjectSegmentationClient({ adaptive: false });
+    const effectContexts = new Set<FrameContext>();
+    const cancelSegmentation = () => subjectSegmentation.dispose();
+    signal.addEventListener('abort', cancelSegmentation, { once: true });
 
     try {
       const videoSource =
@@ -242,7 +325,7 @@ export class VideoEditorRenderService {
                 // Normalising the rate as well is what lets a still picture be
                 // written as one frame per second: the gaps are padded for us.
                 frameRate: plan.frameRate,
-                process: this.videoProcessor(plan)
+                process: this.videoProcessor(plan, subjectSegmentation, signal, effectContexts, this.sectionAnnouncer(plan, log))
               }
             })
           : null;
@@ -320,7 +403,14 @@ export class VideoEditorRenderService {
           );
 
         tick(entry.outputStart);
+        const containerStartedAt = Date.now();
+        const share = plan.totalDuration > 0 ? (entry.outputDuration / plan.totalDuration) * 100 : 0;
         log('clip', `container ${index + 1}/${plan.clips.length} — ${name}`);
+        log(
+          'detail',
+          `${clock(entry.outputStart)} to ${clock(entry.outputStart + entry.outputDuration)} of the finished file` +
+          `, ${share.toFixed(1)}% of it${remaining(plan.totalDuration > 0 ? entry.outputStart / plan.totalDuration : null)}`
+        );
 
         // A clip whose every second was cut away contributes nothing, and
         // writing it anyway would put a frame and a packet at the instant the
@@ -367,10 +457,19 @@ export class VideoEditorRenderService {
                 painter,
                 cursor.video,
                 signal,
-                tick
+                tick,
+                subjectSegmentation
               );
             }
           }
+          // Timed per container rather than only for the whole export: a run
+          // that feels slow is almost always slow because of one clip, and this
+          // is the line that points at it.
+          log(
+            'detail',
+            `container ${index + 1} written in ${elapsed(Date.now() - containerStartedAt)}` +
+            remaining(plan.totalDuration > 0 ? (entry.outputStart + entry.outputDuration) / plan.totalDuration : null)
+          );
         } catch (error) {
           if (error instanceof EditorCanceledError) throw error;
           const described = this.describe(error);
@@ -379,7 +478,7 @@ export class VideoEditorRenderService {
       }
 
       report('muxing', 1, plan.clips.length, '');
-      log('step', 'Assembling the container');
+      log('step', `Assembling the container — ${elapsed(Date.now() - startedAt)} so far`);
 
       // Finalizing writes the index and, for a stream target, closes the
       // underlying writable itself. Once it resolves the file is complete and
@@ -390,9 +489,13 @@ export class VideoEditorRenderService {
       report('finishing', 1, plan.clips.length, '');
 
       const blob = destination.handle ? null : this.takeBuffer(output, format);
+      const took = elapsed(Date.now() - startedAt);
+      const speed = plan.totalDuration > 0
+        ? ` (${(plan.totalDuration / Math.max(0.001, (Date.now() - startedAt) / 1000)).toFixed(2)}x real time)`
+        : '';
       log('done', destination.handle
-        ? `Finished — saved as ${destination.fileName}`
-        : `Finished — ${destination.fileName}, ${bytes(blob?.size ?? 0)}`);
+        ? `Finished in ${took}${speed} — saved as ${destination.fileName}`
+        : `Finished in ${took}${speed} — ${destination.fileName}, ${bytes(blob?.size ?? 0)}`);
 
       return {
         blob,
@@ -406,6 +509,10 @@ export class VideoEditorRenderService {
     } catch (error) {
       if (!finalized) await output.cancel().catch(() => undefined);
       throw this.describe(error, Boolean(destination.handle) && !finalized);
+    } finally {
+      signal.removeEventListener('abort', cancelSegmentation);
+      subjectSegmentation.dispose();
+      effectContexts.forEach(disposeFrameEffects);
     }
   }
 
@@ -422,6 +529,19 @@ export class VideoEditorRenderService {
 
     if (isMediaClip(entry.clip)) {
       const clip = entry.clip;
+      const sections = effectiveClipVideoEffects(clip);
+      if (sections.length) {
+        for (const section of sections) {
+          const from = section.startSeconds ?? 0;
+          const span = section.durationSeconds;
+          const where = span === undefined ? 'whole clip' : `${from.toFixed(1)}s–${(from + span).toFixed(1)}s`;
+          const edge = section.fadeSeconds ? `, ${section.fadeSeconds.toFixed(1)}s fade` : '';
+          notes.push(`Video Effect: ${section.effectId} at ${Math.round(section.intensity * 100)}% (${where}${edge})`);
+        }
+        if (sections.some(section => effectNeedsSubject({ id: section.effectId, intensity: section.intensity }))) {
+          notes.push('AI runs locally; frames without a detected person retain their original appearance.');
+        }
+      }
       notes.push(
         clip.summary.kind === 'image'
           ? 'picture: a still, held'
@@ -487,7 +607,17 @@ export class VideoEditorRenderService {
       return;
     }
 
+    if (clip.file.size === 0) {
+      throw new EditorError(
+        `The video file "${clip.file.name}" is not loaded, so this clip cannot be exported. `
+        + 'It was restored from a saved project and is still waiting for its file.'
+      );
+    }
     const input = new library.Input({ source: new library.BlobSource(clip.file), formats: library.ALL_FORMATS });
+    const cleanedAudio = activeNoiseAudio(clip);
+    const audioInput = cleanedAudio
+      ? new library.Input({ source: new library.BlobSource(cleanedAudio), formats: library.ALL_FORMATS })
+      : input;
 
     try {
       if (videoSource) {
@@ -521,7 +651,7 @@ export class VideoEditorRenderService {
       } else if (clip.summary.audioUsable) {
         cursor.audio = await this.copyAudioRanges(
           library,
-          input,
+          audioInput,
           audioSource,
           entry,
           plan,
@@ -538,6 +668,7 @@ export class VideoEditorRenderService {
         cursor.audio = await this.writeSilence(library, audioSource, audible.start, audible.seconds, plan, cursor.audio, signal);
       }
     } finally {
+      if (audioInput !== input) audioInput.dispose();
       input.dispose();
     }
   }
@@ -1079,6 +1210,18 @@ export class VideoEditorRenderService {
     /** Output time this clip's sound hands over to the next, or Infinity. */
     audioEnd = Infinity
   ): Promise<number> {
+    // A restored project holds its music as a zero-byte placeholder until the
+    // file is reconnected. Handing that to the demuxer produced
+    // "Input has an unsupported or unrecognizable format" — true, and useless:
+    // the format is fine, the file simply is not here yet.
+    if (file.size === 0) {
+      throw new EditorError(
+        `The sound file "${file.name}" is not loaded, so this part cannot be exported. ` +
+        'It was restored from a saved project and its audio has not been reconnected — ' +
+        'add the file again, or remove the soundtrack from this clip.'
+      );
+    }
+
     const input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
 
     let last = lastTimestamp;
@@ -1172,7 +1315,8 @@ export class VideoEditorRenderService {
     painter: TransitionPainter,
     lastTimestamp: number,
     signal: AbortSignal,
-    tick: (seconds: number) => void
+    tick: (seconds: number) => void,
+    subjectSegmentation: SubjectSegmentationClient
   ): Promise<number> {
     const canvas = canvasOfSize(plan.width, plan.height);
     const context = canvas.getContext('2d', { alpha: false }) as FrameContext | null;
@@ -1194,11 +1338,22 @@ export class VideoEditorRenderService {
         const timestamp = join.start + frame * step;
         if (timestamp <= last) continue;
 
-        composeFrame(context, plan, timestamp, plan.width, plan.height, await outgoing.frameAt(timestamp), {
+        const outFrame = await outgoing.frameAt(timestamp), inFrame = await incoming.frameAt(timestamp);
+        const maskFor = async (entry: ClipPlan, source: FrameSource | null) => {
+          if (!source || !isMediaClip(entry.clip) ||
+              !effectNeedsSubject(videoEffectSectionAt(plan.videoEffects, timestamp, entry.clip.id)?.effect ?? null)) return null;
+          const mask = await subjectSegmentation.maskFor(source,plan.width,plan.height,1,plan.fillFrame,entry.clip.id,sourceTimeAt(entry,timestamp).sourceTime);
+          if (subjectSegmentation.state === 'unavailable') throw subjectExportError(subjectSegmentation, 'effect');
+          return mask;
+        };
+        composeFrame(context, plan, timestamp, plan.width, plan.height, outFrame, {
           entry: join,
-          incoming: await incoming.frameAt(timestamp),
-          painter
+          incoming: inFrame,
+          painter,
+          outgoingMask: await maskFor(from,outFrame),
+          incomingMask: await maskFor(to,inFrame)
         });
+        if (frameEffectWarning(context)) throw new EditorError(frameEffectWarning(context));
 
         // Built from the canvas, which copies its contents there and then —
         // which is what makes drawing every frame of the join onto one canvas
@@ -1218,6 +1373,7 @@ export class VideoEditorRenderService {
     } finally {
       outgoing.dispose();
       incoming.dispose();
+      disposeFrameEffects(context);
     }
   }
 
@@ -1261,7 +1417,13 @@ export class VideoEditorRenderService {
 
       if (!clip.summary.videoUsable) return EMPTY_SIDE;
 
-      const input = new library.Input({ source: new library.BlobSource(clip.file), formats: library.ALL_FORMATS });
+      if (clip.file.size === 0) {
+      throw new EditorError(
+        `The video file "${clip.file.name}" is not loaded, so this clip cannot be exported. `
+        + 'It was restored from a saved project and is still waiting for its file.'
+      );
+    }
+    const input = new library.Input({ source: new library.BlobSource(clip.file), formats: library.ALL_FORMATS });
 
       // Everything from here on can throw, and the outer `catch` cannot give the
       // decoder back because it cannot see it. A join that fails to open one side
@@ -1459,11 +1621,93 @@ export class VideoEditorRenderService {
    * placed on the output timeline before being added — which is the same clock
    * the preview draws against, and the reason both can use one function.
    */
-  private videoProcessor(plan: ProjectPlan): (sample: VideoSample) => VideoSample | CanvasImageSource {
+  /**
+   * Announces each timed section as the encoder reaches it.
+   *
+   * A long render used to say only which container it was on, so a reader
+   * watching the log had no way to tell a push-in being drawn from a filter
+   * being run — and no way to see that a section they had placed was never
+   * reached at all. Each kind remembers the section it last announced, so a
+   * line is written when one begins and not once per frame.
+   */
+  private sectionAnnouncer(
+    plan: ProjectPlan,
+    log: (kind: RenderLogEntry['kind'], text: string) => void
+  ): (time: number) => void {
+    let effect: VideoEffectSegment | null = null;
+    let caption: CaptionSegment | null = null;
+    let image: ImageSegment | null = null;
+    let zoom: ZoomSegment | null = null;
+    let tag: TagSegment | null = null;
+    const covering = <T extends { start: number; end: number }>(segments: readonly T[] | undefined, time: number) =>
+      segments?.find(segment => time >= segment.start && time < segment.end) ?? null;
+
+    return (time: number) => {
+      const nextEffect = covering(plan.videoEffects, time);
+      if (nextEffect !== effect) {
+        effect = nextEffect;
+        if (nextEffect) {
+          const name = effectDefinition(nextEffect.effect.id)?.name ?? nextEffect.effect.id;
+          const edge = nextEffect.fadeSeconds > 0 ? `${nextEffect.fadeSeconds.toFixed(1)}s fade` : 'hard cut';
+          log('effect', `Video Effect ${name} at ${Math.round(nextEffect.effect.intensity * 100)}% — ${clock(nextEffect.start)} to ${clock(nextEffect.end)}, ${edge}`);
+        }
+      }
+
+      const nextZoom = covering(plan.zooms, time);
+      if (nextZoom !== zoom) {
+        zoom = nextZoom;
+        if (nextZoom) {
+          log('zoom', `Dynamic zoom ${Math.round((nextZoom.scale - 1) * 100)}% — ${clock(nextZoom.start)} to ${clock(nextZoom.end)}`);
+        }
+      }
+
+      const nextCaption = covering(plan.captions, time);
+      if (nextCaption !== caption) {
+        caption = nextCaption;
+        if (nextCaption) {
+          const text = nextCaption.caption.text.trim().replace(/\s+/g, ' ');
+          const shown = text.length > 42 ? `${text.slice(0, 41)}…` : text;
+          const kind = isBackgroundCaption(nextCaption.caption) ? 'Background caption' : 'Caption';
+          log('caption', `${kind} "${shown}" — ${clock(nextCaption.start)} to ${clock(nextCaption.end)}`);
+        }
+      }
+
+      const nextImage = covering(plan.images, time);
+      if (nextImage !== image) {
+        image = nextImage;
+        if (nextImage) {
+          const where = nextImage.image.style === 'behind-subject' ? 'behind the person' : 'over everything';
+          const size = Math.round((nextImage.image.scale ?? 0.35) * 100);
+          log('image', `Image "${nextImage.image.source.name}" ${where} at ${size}% width — ${clock(nextImage.start)} to ${clock(nextImage.end)}`);
+        }
+      }
+
+      const nextTag = covering(plan.tags, time);
+      if (nextTag !== tag) {
+        tag = nextTag;
+        if (nextTag) {
+          const text = nextTag.tag.text.trim().replace(/\s+/g, ' ');
+          log('tag', `Tag "${text.length > 32 ? `${text.slice(0, 31)}…` : text}" — ${clock(nextTag.start)} to ${clock(nextTag.end)}`);
+        }
+      }
+    };
+  }
+
+  private videoProcessor(
+    plan: ProjectPlan,
+    subjectSegmentation: SubjectSegmentationClient,
+    signal: AbortSignal,
+    effectContexts: Set<FrameContext>,
+    announce: (time: number) => void
+  ): (sample: VideoSample) => Promise<VideoSample | CanvasImageSource> {
     let canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
     let context: FrameContext | null = null;
 
-    return (sample) => {
+    return async (sample) => {
+      if (signal.aborted) throw new EditorCanceledError();
+      // Before any early return, so a section is reported whether or not this
+      // particular frame ends up being composed.
+      announce(sample.timestamp);
       // A frame from inside a join arrives already finished: `writeTransition`
       // composed both shots, and the fade over them, onto its own canvas. Running
       // it through here again would apply the fade twice — visibly darker in the
@@ -1481,13 +1725,44 @@ export class VideoEditorRenderService {
         canvas = canvasOfSize(plan.width, plan.height);
         context = canvas.getContext('2d') as FrameContext | null;
         if (!context) throw new EditorError('This browser could not draw the effects.');
+        effectContexts.add(context);
       }
 
-      composeFrame(context, plan, sample.timestamp, plan.width, plan.height, {
+      const source: FrameSource = {
         draw: (target, x, y, width, height) => sample.draw(target, x, y, width, height),
         width: sample.displayWidth,
         height: sample.displayHeight
-      });
+      };
+      const caption = captionAt(plan.captions, sample.timestamp);
+      const entry = plan.clips[clipIndexAt(plan, sample.timestamp)] ?? null;
+      const behindSubject = caption && isBackgroundCaption(caption.caption);
+      // A picture placed in the middle layer needs the person cut out over it
+      // exactly as a Background Caption does. Left out of this condition, the
+      // matte is never asked for and the picture exports on top of the person —
+      // the one thing that style exists not to do.
+      const behindImage = imagesAt(plan.images ?? [], sample.timestamp)
+        .some(item => imageBehindSubject(item.image));
+      const scale = zoomScaleAt(plan.zooms, sample.timestamp);
+      const aiEffect = entry && isMediaClip(entry.clip) &&
+        effectNeedsSubject(videoEffectSectionAt(plan.videoEffects, sample.timestamp, entry.clip.id)?.effect ?? null);
+      const mask = (behindSubject || behindImage || aiEffect) && entry
+        ? await subjectSegmentation.maskFor(
+            source, plan.width, plan.height, scale, plan.fillFrame, entry.clip.id,
+            sourceTimeAt(entry, sample.timestamp).sourceTime
+          )
+        : null;
+
+      if (signal.aborted) throw new EditorCanceledError();
+      // 'no-subject' means the model ran and found nobody: that is the designed
+      // visual fallback and exports as ordinary text. 'unavailable' means the
+      // model could not load or inference failed, which is a technical failure
+      // and must not leave the file silently missing the requested look — for a
+      // Background Caption exactly as much as for an AI effect.
+      if ((aiEffect || behindSubject || behindImage) && subjectSegmentation.state === 'unavailable') {
+        throw subjectExportError(subjectSegmentation, aiEffect ? 'effect' : behindSubject ? 'caption' : 'image');
+      }
+      composeFrame(context, plan, sample.timestamp, plan.width, plan.height, source, null, mask);
+      if (frameEffectWarning(context)) throw new EditorError(frameEffectWarning(context));
 
       return canvas;
     };
