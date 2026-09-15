@@ -158,4 +158,9 @@ vscode.bat
 # ------------------------------------------------------------
 web/src/assets/download/*
 !web/src/assets/download/README.md
+# The application installers are build output and stay out; the two plugin
+# archives are source the site links to, a few kilobytes each, and a clone that
+# did not carry them would serve a menu whose last two entries 404.
+!web/src/assets/download/simple-vlog-editor-claude.zip
+!web/src/assets/download/simple-vlog-editor-codex.zip
 web/dist/browser/assets/download/
