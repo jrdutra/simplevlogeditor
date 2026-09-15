@@ -662,6 +662,15 @@ interface EditorSnapshot {
   clips: EditorClip[];
   project: ProjectSettings;
   /**
+   * The counter every new id is drawn from.
+   *
+   * Part of the snapshot because a dry run has to assign the same ids as the
+   * commit that follows it — otherwise the ids it reports are a lie — and
+   * because a batch that rolled back should not leave the numbers it burned
+   * behind it.
+   */
+  nextId: number;
+  /**
    * The board's arrangement at this moment.
    *
    * On the same stack as the edit rather than one of its own, and that is the
@@ -6933,7 +6942,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const previousEnd = existing.reduce(
       (end, item) => Math.max(end, (item.startSeconds ?? bounds.start) + (item.durationSeconds ?? 0)), bounds.start
     );
-    if (previousEnd >= bounds.end - 0.1) return;
+    // Captions are laid end to end, so a clip whose last one already runs to
+    // the end has nowhere to put another. Returning quietly here was the worst
+    // possible answer: the caller was told the caption had been added, and only
+    // found out otherwise when it tried to style the caption that did not
+    // exist. It is a refusal, and it says so.
+    if (previousEnd >= bounds.end - 0.1) {
+      throw new EditorAgentError(
+        `There is no room for another caption on "${clip.fileRef?.name ?? clip.file.name}": `
+        + `the captions already on it run to ${this.formatTime(previousEnd)} of ${this.formatTime(bounds.end)}. `
+        + 'Shorten or remove one, or update the caption that is already there.',
+        'no_room',
+        { clipId: clip.id, usedUntil: previousEnd, clipEnd: bounds.end, captionCount: existing.length }
+      );
+    }
     const start = Math.max(bounds.start, Math.min(Math.max(at, previousEnd), bounds.end));
     const caption: ClipCaption = {
       ...DEFAULT_CAPTION,
@@ -11604,6 +11626,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const before = this.snapshot();
     const beforeDuration = this.plan.totalDuration;
     const startRevision = this.revision;
+    const madeByOperation: Record<string, unknown>[] = [];
     this.applyingHistory = true;
 
     try {
@@ -11624,7 +11647,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           'apply_edit_batch', 'INFO', new Date().toISOString(), percent
         );
         await this.paintAgentProgress();
-        await this.agentApplyOperation(operation);
+        const created = await this.agentApplyOperation(operation);
+        // What each operation made, in the order they ran. A caption added and
+        // then styled in the same batch is the ordinary case, and it only works
+        // if the second operation can be told what the first one called it.
+        madeByOperation.push({ index: operationIndex, type: operation.type, ...(created ?? {}) });
         if (!batch.dryRun) await this.paintAgentProgress();
       }
       // Planning is the strongest inexpensive invariant check: malformed cuts,
@@ -11640,6 +11667,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           dryRun: true,
           terminalState: 'validated',
           operationCount: batch.operations.length,
+          // Valid for the commit too, because the id counter is part of the
+          // snapshot a dry run rolls back: the run that commits assigns the
+          // same ids this one reported.
+          created: madeByOperation,
           durationBefore: beforeDuration,
           durationAfter: afterDuration,
           removedSeconds: Math.max(0, beforeDuration - afterDuration)
@@ -11660,6 +11691,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         terminalState: 'applied',
         label: batch.label ?? 'Agent edit',
         operationCount: batch.operations.length,
+        created: madeByOperation,
         durationBefore: beforeDuration,
         durationAfter: afterDuration,
         removedSeconds: Math.max(0, beforeDuration - afterDuration)
@@ -11750,7 +11782,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
-  private async agentApplyOperation(operation: EditorAgentOperation): Promise<void> {
+  /**
+   * @returns the ids of anything it created, or nothing when it created
+   *   nothing. An operation that makes a thing and does not name it forces the
+   *   caller to guess — which is exactly how a batch came to update
+   *   "caption-16", a caption that was never created.
+   */
+  private async agentApplyOperation(operation: EditorAgentOperation): Promise<Record<string, string | null> | void> {
     switch (operation.type) {
       case 'remove_clip': {
         const clip = this.agentClip(operation.clipId);
@@ -11782,7 +11820,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         };
         this.clips.splice(at, 0, clip);
         this.touch();
-        return;
+        return { clipId: clip.id };
       }
       case 'update_text_clip': {
         const clip = this.agentClip(operation.clipId);
@@ -11957,7 +11995,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
         clip.videoEffect = { id: 'none', intensity: 0 };
         this.touch();
-        return;
+        return { videoEffectId: section.id ?? null, clipId: clip.id };
       }
       case 'update_video_effect': {
         const clip = this.agentVisualClip(operation.clipId);
@@ -12027,7 +12065,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         });
         await loadImage(source);
         this.pushAgentLog('action', `Placed ${source.name} on ${clip.file.name}`);
-        return;
+        const placed = (clip.images ?? []).at(-1);
+        return placed ? { imageId: placed.id ?? null, clipId: clip.id } : undefined;
       }
       case 'update_image': {
         const clip = this.agentVisualClip(operation.clipId);
@@ -12129,13 +12168,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         const previous = new Set((clip.captions ?? []).map((caption) => caption.id));
         this.addCaption(clip, finiteNumber(operation.start, 'start'), stringValue(operation.text, 'text'));
         const caption = clip.captions?.find((candidate) => !previous.has(candidate.id));
-        if (caption && operation.caption) {
+        // addCaption throws rather than declining quietly, so this is a real
+        // invariant now and not a tolerated absence.
+        if (!caption) throw new EditorAgentError('The caption was not created.', 'editor_error', { clipId: clip.id });
+        if (operation.caption) {
           this.updateCaption(clip, caption, this.agentCaptionPatch(operation.caption, caption));
         }
-        if (caption && operation.duration !== undefined) {
+        if (operation.duration !== undefined) {
           this.updateCaption(clip, caption, { durationSeconds: finiteNumber(operation.duration, 'duration'), durationAutomatic: false });
         }
-        return;
+        return { captionId: caption.id ?? null, clipId: clip.id };
       }
       case 'update_caption': {
         const clip = this.agentMediaClip(operation.clipId);
@@ -12190,7 +12232,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         if (zoom.end - zoom.start < 0.05) throw new EditorAgentError('A zoom must have a visible duration.', 'invalid_range');
         clip.manualZooms = [...(clip.manualZooms ?? []), zoom].sort((a, b) => a.start - b.start);
         this.touch();
-        return;
+        // add_push_in delegates here, so a push-in is named by the same line.
+        return { zoomId: zoom.id, pushInId: zoom.id, clipId: clip.id };
       }
       case 'add_push_in': {
         return this.agentApplyOperation({
@@ -13169,6 +13212,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private snapshot(): EditorSnapshot {
     return {
       board: this.snapshotBoard(),
+      nextId: this.nextId,
       clips: this.clips.map((clip) => this.snapshotClip(clip)),
       project: {
         ...this.project,
@@ -13357,6 +13401,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     try {
       this.closeAllDialogs();
       this.aplicarLayoutBoard(snapshot.board);
+      // Restored before the clips, so anything created while re-applying draws
+      // from the counter this snapshot was taken with.
+      if (Number.isFinite(snapshot.nextId)) this.nextId = snapshot.nextId;
       this.clips = snapshot.clips.map((clip) => this.snapshotClip(clip));
       this.project = { ...snapshot.project, edits: cloneEdits(snapshot.project.edits) };
 

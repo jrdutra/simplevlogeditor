@@ -99,7 +99,7 @@ const EDIT_OPERATIONS = [
     clipId: { type: 'string' }, start: { type: 'number' }, text: { type: 'string' }, duration: { type: 'number' },
     caption: {
       type: 'object',
-      description: 'Optional caption style. Read get_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the legacy "behind-subject" ID remains upper-center. positionX/positionY are normalized frame coordinates.',
+      description: 'The caption style, applied to the new caption in the same operation — never add a caption and then update it, because the id is only known afterwards and the batch result is what names it. Captions sit end to end on a container, so this fails with `no_room` when the ones already there reach its end: update the caption that is there instead of adding another. Read get_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the legacy "behind-subject" ID remains upper-center. positionX/positionY are normalized frame coordinates.',
       additionalProperties: true
     }
   }, ['clipId', 'start', 'text']),
@@ -274,7 +274,7 @@ const TOOLS = [
     clipId: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, interval: { type: 'number', minimum: 0.25 }, width: { type: 'number' },
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while extraction runs.' }
   }, ['clipId']),
-  tool('apply_edit_batch', 'Atomically simulate or apply up to 500 edits, including timed dynamic push-ins for emphasis.', {
+  tool('apply_edit_batch', 'Atomically simulate or apply up to 500 edits, including timed dynamic push-ins for emphasis. The result carries a `created` array, one entry per operation in order, naming whatever that operation made — captionId, imageId, videoEffectId, zoomId/pushInId, clipId. Read it instead of guessing an id: a dry run assigns the same ids the commit will, so they can be planned against.', {
     expectedRevision: { type: 'number' }, label: { type: 'string' }, dryRun: { type: 'boolean' }, requestId: { type: 'string' },
     operations: { type: 'array', minItems: 1, maxItems: 500, items: { oneOf: EDIT_OPERATIONS } }
   }, ['operations', 'requestId']),
