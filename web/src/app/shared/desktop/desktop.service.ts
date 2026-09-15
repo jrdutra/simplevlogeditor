@@ -42,12 +42,15 @@ interface DesktopBridge {
   platform: string;
   minimize(): void;
   toggleMaximize(): void;
-  close(): void;
+  close(): void | Promise<void>;
   getState(): Promise<DesktopWindowState>;
   onState(listener: (state: DesktopWindowState) => void): () => void;
   onAgentControlState?(listener: (state: AgentControlState) => void): () => void;
   onAgentSystemEvent?(listener: (entry: AgentSystemEvent) => void): () => void;
   getAgentRuntimeInfo?(): Promise<AgentRuntimeInfo>;
+  checkpointProject?(payload: { document: unknown; projectRevision: number; reason: string }): Promise<unknown>;
+  clearProjectCheckpoint?(payload: { projectRevision: number; reason: string }): Promise<unknown>;
+  registerBeforeCloseHandler?(handler: () => Promise<void>): () => void;
   /** Added after the first release; absent in a window built before it. */
   reconnectFiles?(): Promise<boolean>;
   /** Registers the one narrow command surface the local MCP host may call. */
@@ -62,7 +65,44 @@ interface DesktopBridge {
   writeAgentOutput?(id: string, position: number, data: ArrayBuffer): Promise<number>;
   closeAgentOutput?(id: string): Promise<void>;
   abortAgentOutput?(id: string): Promise<void>;
+  /** Allowed folders. Absent in a window built before consent existed. */
+  pathForFile?(file: File): string | null;
+  rememberFolders?(paths: string[]): Promise<RootState & { granted: string[] }>;
+  ensureRoots?(paths: string[]): Promise<RootState & { missing: MissingRoot[] }>;
+  listRoots?(): Promise<RootState>;
+  addRoot?(): Promise<RootState & { granted: string | null; cancelled: boolean }>;
+  removeRoot?(folder: string): Promise<RootState & { removed: boolean }>;
+  requestRootConsent?(request: { path: string; folder?: string }): Promise<RootConsentResult>;
+  onRootState?(listener: (state: RootState) => void): () => void;
 }
+
+/** A path the editor may not reach yet, and the folder that would allow it. */
+export interface MissingRoot { path: string; folder: string; }
+
+/** Where each allowed folder came from. */
+export type RootSource = 'env' | 'mcp-client' | 'consent' | 'defaults';
+
+export interface RootState {
+  roots: string[];
+  entries: { path: string; source: RootSource }[];
+  rootSource: RootSource | 'none';
+  overridden: boolean;
+  refusedByPolicy: string[];
+  rootNotice: string;
+}
+
+export interface RootConsentResult extends RootState {
+  granted: string | null;
+  /** null when granted; otherwise path_consent_denied/mismatch/refused. */
+  code: string | null;
+  chosen?: string;
+  message?: string;
+}
+
+export const EMPTY_ROOT_STATE: RootState = {
+  roots: [], entries: [], rootSource: 'none', overridden: false,
+  refusedByPolicy: [], rootNotice: ''
+};
 
 declare global {
   interface Window {
@@ -95,6 +135,16 @@ export class DesktopService {
   readonly focused = signal(true);
   readonly agentControl = signal<AgentControlState>({ active: false, controller: 'mcp', controllers: [] });
 
+  /**
+   * The folders the editor may use, kept live. The application pushes a new
+   * state whenever one is added or removed, so the settings list and the
+   * consent dialog never show a stale answer.
+   */
+  readonly roots = signal<RootState>(EMPTY_ROOT_STATE);
+
+  /** False in a browser tab, and in a desktop window built before consent. */
+  readonly supportsRootConsent = typeof window !== 'undefined' && !!window.desktop?.requestRootConsent;
+
   constructor() {
     if (!this.bridge) return;
 
@@ -114,6 +164,122 @@ export class DesktopService {
       this.zone.run(() => this.agentControl.set(state));
     });
     if (stopAgentControl) inject(DestroyRef).onDestroy(stopAgentControl);
+
+    this.bridge.listRoots?.().then((state) => this.zone.run(() => this.roots.set(state))).catch(() => {});
+    const stopRoots = this.bridge.onRootState?.((state) => this.zone.run(() => this.roots.set(state)));
+    if (stopRoots) inject(DestroyRef).onDestroy(stopRoots);
+
+    this.watchUserChosenFiles(inject(DestroyRef));
+  }
+
+  /**
+   * Every file the user puts into this window, in one place.
+   *
+   * Listening at the document in the capture phase rather than calling from
+   * each picker: there are seven `<input type="file">` elements and a drop
+   * target in the editor alone, and the one that gets forgotten is the one that
+   * refuses the user's folder a month from now. `DataTransfer.files` is read
+   * synchronously here, before any handler yields and empties it.
+   *
+   * `showOpenFilePicker` fires no change event, so that path calls
+   * `rememberFolders` itself.
+   */
+  private watchUserChosenFiles(destroyRef: DestroyRef): void {
+    if (!this.bridge?.rememberFolders) return;
+
+    const onDrop = (event: Event) => {
+      const files = Array.from((event as DragEvent).dataTransfer?.files ?? []);
+      if (files.length) void this.rememberFolders(files);
+    };
+    const onChange = (event: Event) => {
+      const target = event.target as HTMLInputElement | null;
+      if (!target || target.tagName !== 'INPUT' || target.type !== 'file') return;
+      const files = Array.from(target.files ?? []);
+      if (files.length) void this.rememberFolders(files);
+    };
+
+    document.addEventListener('drop', onDrop, true);
+    document.addEventListener('change', onChange, true);
+    destroyRef.onDestroy(() => {
+      document.removeEventListener('drop', onDrop, true);
+      document.removeEventListener('change', onChange, true);
+    });
+  }
+
+  /**
+   * Tell the application which folders the user just chose in this window.
+   *
+   * Called wherever a file arrives by the user's own hand — a picker, a drop,
+   * opening or saving a project. Silent by design: the folder is already
+   * reachable to the user, and the Allowed folders list is where they see what
+   * accumulated. Files the user did not choose never reach this.
+   */
+  async rememberFolders(files: readonly File[]): Promise<void> {
+    if (!this.bridge?.rememberFolders || !this.bridge.pathForFile) return;
+    const paths: string[] = [];
+    for (const file of files) {
+      const found = this.bridge.pathForFile(file);
+      if (found) paths.push(found);
+    }
+    if (!paths.length) return;
+    try {
+      const state = await this.bridge.rememberFolders(paths);
+      this.zone.run(() => this.roots.set(state));
+    } catch {
+      // A folder that could not be remembered is not a reason to refuse the
+      // file the user just chose: the window already holds its bytes.
+    }
+  }
+
+  /** Ask the user, through the native picker, to allow the folder of one path. */
+  async requestRootConsent(request: { path: string; folder?: string }): Promise<RootConsentResult | null> {
+    if (!this.bridge?.requestRootConsent) return null;
+    const result = await this.bridge.requestRootConsent(request);
+    this.zone.run(() => this.roots.set(result));
+    return result;
+  }
+
+  async addRoot(): Promise<{ granted: string | null; cancelled: boolean } | null> {
+    if (!this.bridge?.addRoot) return null;
+    const result = await this.bridge.addRoot();
+    this.zone.run(() => this.roots.set(result));
+    return result;
+  }
+
+  async removeRoot(folder: string): Promise<boolean> {
+    if (!this.bridge?.removeRoot) return false;
+    const result = await this.bridge.removeRoot(folder);
+    this.zone.run(() => this.roots.set(result));
+    return result.removed;
+  }
+
+  /**
+   * Which of these paths the editor may not reach yet.
+   *
+   * Asked before the paths are used. An IPC rejection carries a message but
+   * none of the error's own fields, so a refusal caught afterwards cannot be
+   * told apart from any other failure — and "ask rather than fail" needs the
+   * answer while there is still something to ask about.
+   */
+  async missingRoots(paths: readonly string[]): Promise<MissingRoot[]> {
+    if (!this.bridge?.ensureRoots || !paths.length) return [];
+    try {
+      const result = await this.bridge.ensureRoots([...paths]);
+      this.zone.run(() => this.roots.set(result));
+      return result.missing ?? [];
+    } catch {
+      // A window built before consent existed. The path check still happens in
+      // the application; it simply cannot be asked about in advance.
+      return [];
+    }
+  }
+
+  async refreshRoots(): Promise<void> {
+    if (!this.bridge?.listRoots) return;
+    try {
+      const state = await this.bridge.listRoots();
+      this.zone.run(() => this.roots.set(state));
+    } catch { /* the list is a view; a failed refresh is not an error to raise */ }
   }
 
   private apply(state: DesktopWindowState): void {
@@ -187,10 +353,72 @@ export class DesktopService {
     };
   }
 
+  /** Persist the complete edit to Electron without exposing a writable path. */
+  async checkpointProject(document: unknown, projectRevision: number, reason = 'Editor autosave'): Promise<boolean> {
+    if (!this.bridge?.checkpointProject) return false;
+    await this.bridge.checkpointProject({ document, projectRevision, reason });
+    return true;
+  }
+
+  /** Clearing a project also clears the disk recovery, so stale work cannot return. */
+  async clearProjectCheckpoint(projectRevision: number, reason = 'Project cleared'): Promise<boolean> {
+    if (!this.bridge?.clearProjectCheckpoint) return false;
+    await this.bridge.clearProjectCheckpoint({ projectRevision, reason });
+    return true;
+  }
+
+  registerBeforeCloseHandler(handler: () => Promise<void>): () => void {
+    return this.bridge?.registerBeforeCloseHandler?.(handler) ?? (() => undefined);
+  }
+
   async readAgentFiles(paths: string[]): Promise<File[]> {
     if (!this.bridge?.readAgentFiles) throw new Error('Automated file access is only available in the desktop app.');
+    await this.ensureAllowed(paths, 'read this media');
     const files = await this.bridge.readAgentFiles(paths);
     return files.map((entry) => new PathBackedFile(entry));
+  }
+
+  /**
+   * Registered by the editor window: shows the consent dialog and resolves with
+   * the folder the user allowed, or null if they declined. Left null in a
+   * browser tab, where there is nothing to ask and nothing to grant.
+   */
+  private consentAsker: ((missing: MissingRoot, reason: string) => Promise<string | null>) | null = null;
+
+  registerRootConsentAsker(asker: ((missing: MissingRoot, reason: string) => Promise<string | null>) | null): void {
+    this.consentAsker = asker;
+  }
+
+  /**
+   * Ask before failing.
+   *
+   * Every automated read and write passes through here, so a path outside the
+   * allowed folders raises a dialog once rather than an error the user cannot
+   * act on. Declining throws `path_consent_denied`, which is a decision and is
+   * reported as one — not as a missing file or a broken editor.
+   */
+  private async ensureAllowed(paths: readonly string[], reason: string): Promise<void> {
+    if (!this.consentAsker) return;
+    let missing = await this.missingRoots(paths);
+    while (missing.length) {
+      const granted = await this.consentAsker(missing[0], reason);
+      if (!granted) {
+        throw Object.assign(
+          new Error(`The editor was not allowed to use ${missing[0].folder}.`),
+          { code: 'path_consent_denied', details: { path: missing[0].path, folder: missing[0].folder } }
+        );
+      }
+      const remaining = await this.missingRoots(paths);
+      // A grant that leaves the same folder missing would loop forever; stop
+      // and report rather than asking again for something already answered.
+      if (remaining.length === missing.length && remaining[0]?.folder === missing[0].folder) {
+        throw Object.assign(
+          new Error(`${granted} does not make ${missing[0].path} reachable.`),
+          { code: 'path_consent_denied', details: { path: missing[0].path, folder: missing[0].folder } }
+        );
+      }
+      missing = remaining;
+    }
   }
 
   async openAgentOutput(path: string): Promise<{
@@ -201,6 +429,7 @@ export class DesktopService {
     if (!this.bridge?.openAgentOutput || !this.bridge.writeAgentOutput || !this.bridge.closeAgentOutput) {
       throw new Error('Automated export is only available in the desktop app.');
     }
+    await this.ensureAllowed([path], 'write this file');
     const id = await this.bridge.openAgentOutput(path);
     let cursor = 0;
     return {
@@ -229,7 +458,7 @@ export class DesktopService {
   }
 
   close(): void {
-    this.bridge?.close();
+    void this.bridge?.close();
   }
 
   /**

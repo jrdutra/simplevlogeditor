@@ -926,6 +926,25 @@ function wireAgentBridge() {
     return { granted, refused, ...rootStore().describe() };
   });
 
+  /*
+   * Asked before a path is used, not after it fails. "Ask rather than fail"
+   * only works if the window knows what is missing while it can still put a
+   * dialog in front of the user, and an IPC rejection carries a message but
+   * none of the error's own fields — so the check is a question, not a catch.
+   */
+  ipcMain.handle('roots:ensure', (event, paths) => {
+    if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
+    const missing = [];
+    for (const candidate of (Array.isArray(paths) ? paths : [paths]).slice(0, 500)) {
+      if (typeof candidate !== 'string' || !candidate.trim() || !path.isAbsolute(candidate)) continue;
+      const resolved = path.resolve(candidate);
+      if (rootStore().admits(resolved)) continue;
+      const folder = path.dirname(resolved);
+      if (!missing.some((entry) => entry.folder === folder)) missing.push({ path: resolved, folder });
+    }
+    return { missing, ...rootStore().describe() };
+  });
+
   ipcMain.handle('roots:list', (event) => {
     if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
     return rootStore().describe();

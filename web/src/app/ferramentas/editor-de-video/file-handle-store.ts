@@ -124,7 +124,20 @@ export async function pickFilesWithHandles(
     }
   }
 
+  // `showOpenFilePicker` fires no change event, so the one document-level
+  // listener that notices chosen files cannot see these. Told here instead, so
+  // that picking a file through this dialog allows its folder like any other.
+  if (files.length) notifyChosen?.(files);
+
   return { files, handles };
+}
+
+type ChosenListener = (files: readonly File[]) => void;
+let notifyChosen: ChosenListener | null = null;
+
+/** Set once by the desktop shell; a browser tab leaves it null. */
+export function onFilesChosenThroughPicker(listener: ChosenListener | null): void {
+  notifyChosen = listener;
 }
 
 function open(): Promise<IDBDatabase | null> {

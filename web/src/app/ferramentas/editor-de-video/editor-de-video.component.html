@@ -219,6 +219,45 @@
              frame can follow its exact dimensions. -->
         <div class="previa-quadro">
           <canvas #previewCanvas class="previa-tela"></canvas>
+
+          <!-- Handles for the placement the reader has open, over the frame the
+               picture is actually drawn on. Rendered only for that one row, so
+               they never cover the picture being judged. -->
+          @for (clip of clips; track clip.id) {
+            @if (isMediaClip(clip)) {
+              @for (image of clip.images ?? []; track image.id) {
+                @if (imageHandlesVisible(clip, image)) {
+                  <div class="imagem-alcas" [class.imagem-alcas-ativa]="draggingImage(image)"
+                    [style]="imageHandleStyle(image)" tabindex="0"
+                    [attr.aria-label]="'Position ' + image.source.name + ' with the arrow keys'"
+                    (keydown)="nudgeImage(clip, image, $event)"
+                    (pointerdown)="beginImageDrag(clip, image, 'move', $event)"
+                    (pointermove)="moveImageDrag($event)"
+                    (pointerup)="endImageDrag($event)"
+                    (pointercancel)="endImageDrag($event)">
+                    <span class="imagem-alca imagem-alca-tamanho" title="Drag to resize"
+                      (pointerdown)="beginImageDrag(clip, image, 'scale', $event)"
+                      (pointermove)="moveImageDrag($event)"
+                      (pointerup)="endImageDrag($event)"
+                      (pointercancel)="endImageDrag($event)"></span>
+                    <span class="imagem-alca imagem-alca-giro" title="Drag to rotate; hold Shift to skip the upright snap"
+                      (pointerdown)="beginImageDrag(clip, image, 'rotate', $event)"
+                      (pointermove)="moveImageDrag($event)"
+                      (pointerup)="endImageDrag($event)"
+                      (pointercancel)="endImageDrag($event)"></span>
+                  </div>
+                }
+              }
+            }
+          }
+          @if (previewEffectStatus) {
+            <div class="previa-efeito-status" role="status">
+              <span>{{ previewEffectStatus }}</span>
+              @if (previewEffectRetryable) {
+                <button type="button" (click)="retryPreviewSubjectVision()">Retry</button>
+              }
+            </div>
+          }
         </div>
 
         <!-- Closing belongs to the preview stage, including the black area
@@ -381,7 +420,15 @@
                 [speedLocked]="isTimelapseTimed(clip)"
                 [speedLockedLabel]="timelapseSpeedNote(clip)"
                 [zoomNote]="zoomNoteFor(clip)"
+                [noiseSettings]="isMediaClip(clip) ? noiseSettingsFor(clip) : null"
+                [noiseReport]="isMediaClip(clip) ? (clip.noiseReport ?? null) : null"
+                [noiseWorking]="isMediaClip(clip) && noiseWorking(clip)"
+                [noiseProgress]="isMediaClip(clip) ? noiseProgressOf(clip) : null"
+                [noiseReady]="isMediaClip(clip) && noiseReady(clip)"
                 (speedRelease)="releaseTimelapseSpeed(clip)"
+                (noiseEnabledChange)="setNoiseEnabledFor(clip, $event)"
+                (noiseConfigure)="openNoiseSettingsFor(clip)"
+                (noiseProcess)="processNoiseNowFor(clip)"
                 (editsChange)="onClipEdits(clip, $event)"></app-clip-edits-panel>
             </div>
           }
@@ -728,6 +775,16 @@
 
           <p class="ajuda">{{ aspectNote }}</p>
         </fieldset>
+
+        <!-- Which folders this editor may touch. Here rather than in a
+             preferences window of its own, because it is read at the same
+             moment as the export destination it constrains. -->
+        @if (desktop.supportsRootConsent) {
+          <fieldset class="projeto-pastas">
+            <legend>Allowed folders</legend>
+            <app-allowed-folders [showList]="true" [request]="null" />
+          </fieldset>
+        }
       </div>
     }
   </section>
@@ -1641,8 +1698,9 @@
   }
 
   @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentLogOpen) {
-    <button type="button" class="agente-controle-indicador" appBodyPortal (click)="openAgentLog()">
-      <img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+    <button type="button" class="agente-controle-indicador" [class]="agentControllerTheme"
+      appBodyPortal (click)="openAgentLog()">
+      <img [src]="agentControllerIcon" alt="" aria-hidden="true">
       <span><strong>{{ agentControllerLabel }}</strong> {{ desktop.agentControl().active ? 'is controlling the editor' : 'connection was lost' }}</span>
       <span class="agente-pulso" aria-hidden="true"></span>
     </button>
@@ -1650,10 +1708,11 @@
 
   @if ((desktop.agentControl().visible || desktop.agentControl().active) && agentLogOpen) {
     <div class="agente-modal-fundo" appBodyPortal>
-      <section class="agente-modal" role="dialog" aria-modal="true" aria-labelledby="agente-modal-titulo">
+      <section class="agente-modal" [class]="agentControllerTheme"
+        role="dialog" aria-modal="true" aria-labelledby="agente-modal-titulo">
         <header class="agente-modal-cabeca">
           <span class="agente-marca">
-            <img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+            <img [src]="agentControllerIcon" alt="" aria-hidden="true">
           </span>
           <span class="agente-modal-identidade">
             <strong id="agente-modal-titulo">{{ desktop.agentControl().active ? agentControllerLabel + ' is controlling the editor' : agentControllerLabel + ' lost connection' }}</strong>
@@ -1687,6 +1746,7 @@
               <span class="registro-hora">[waiting]</span>
               <span class="registro-nivel">[INFO]</span>
               <span class="registro-modulo">[MCP bridge]</span>
+              <span class="registro-pct"></span>
               <span class="registro-marca" aria-hidden="true">&gt;</span>
               <span class="registro-texto">Waiting for the next editor command…</span>
             </div>
@@ -1696,6 +1756,7 @@
               <span class="registro-hora">[{{ line.timestamp }}]</span>
               <span class="registro-nivel">[{{ line.level }}]</span>
               <span class="registro-modulo">[{{ line.module }}]</span>
+              <span class="registro-pct">{{ line.percent === null ? '' : line.percent + '%' }}</span>
               <span class="registro-marca" aria-hidden="true">{{ agentLogMark(line.kind) }}</span>
               <span class="registro-texto">{{ line.text }}</span>
             </div>
@@ -1724,8 +1785,9 @@
 
   @if (agentCompletionOpen) {
     <div class="agente-conclusao-fundo" appBodyPortal>
-      <section class="agente-conclusao-modal" role="dialog" aria-modal="true" aria-labelledby="agente-conclusao-titulo">
-        <span class="agente-marca"><img src="assets/icons/codex-mark.svg" alt="" aria-hidden="true"></span>
+      <section class="agente-conclusao-modal" [class]="agentControllerTheme"
+        role="dialog" aria-modal="true" aria-labelledby="agente-conclusao-titulo">
+        <span class="agente-marca"><img [src]="agentControllerIcon" alt="" aria-hidden="true"></span>
         <div>
           <h2 id="agente-conclusao-titulo">AI editing is complete</h2>
           <p>{{ agentCompletionSummary }}</p>
@@ -1912,12 +1974,9 @@
 
         @if (clip.previewUrl && clip.summary.kind !== 'audio') {
           <div class="dialogo-preview">
-            @if (clip.summary.kind === 'image') {
-              <img [src]="clip.previewUrl" [alt]="'Preview of ' + clip.summary.fileName">
-            } @else {
-              <video [src]="clip.previewUrl" controls playsinline
-                (timeupdate)="onSeek($any($event.target).currentTime)"></video>
-            }
+            <app-video-effect-preview [src]="clip.previewUrl" [image]="clip.summary.kind === 'image'"
+              [clipId]="clip.id" [effect]="videoEffectForPreview(clip)" [durationSeconds]="clip.summary.durationSeconds"
+              (timeChange)="onSeek($event)"></app-video-effect-preview>
           </div>
         }
 
@@ -2009,7 +2068,15 @@
             [speedLocked]="isTimelapseTimed(clip)"
             [speedLockedLabel]="timelapseSpeedNote(clip)"
             [zoomNote]="zoomNoteFor(clip)"
+            [noiseSettings]="noiseSettingsFor(clip)"
+            [noiseReport]="clip.noiseReport ?? null"
+            [noiseWorking]="noiseWorking(clip)"
+            [noiseProgress]="noiseProgressOf(clip)"
+            [noiseReady]="noiseReady(clip)"
             (speedRelease)="releaseTimelapseSpeed(clip)"
+            (noiseEnabledChange)="setNoiseEnabled(clip, $event)"
+            (noiseConfigure)="openNoiseSettings(clip)"
+            (noiseProcess)="processNoiseNow(clip)"
             (editsChange)="onClipEdits(clip, $event)">
 
             <!--
@@ -2152,6 +2219,25 @@
           <h3>Captions</h3>
           <p class="ajuda">Add as many captions as you need. They cannot overlap. The suggested display time uses the sentence length with 50% extra reading time.</p>
 
+          <!-- One switch for every timed thing on this container: captions,
+               effect sections and placed images all read the same clock. -->
+          <div class="relogio-troca">
+            <span class="ajuda">Times shown in: <strong>{{ timeClockLabel }}</strong></span>
+            <button mat-stroked-button type="button" (click)="toggleTimeClock()" [disabled]="exporting !== null">
+              <mat-icon>schedule</mat-icon>
+              Switch to {{ timeClock === 'source' ? 'edited clip time' : 'original file time' }}
+            </button>
+          </div>
+          @if (clocksDiffer(clip)) {
+            <p class="ajuda">
+              @if (timeClock === 'source') {
+                The cuts and speed on this clip move everything earlier, so these numbers are not what the preview shows. Switch to edited clip time to type what you are watching.
+              } @else {
+                These are the times you see in the preview. They are stored as original file times, so changing the cuts later keeps every caption, effect and image on the same words.
+              }
+            </p>
+          }
+
           <div class="caption-lista">
             @for (caption of captionsOf(clip); track caption.id) {
               <div class="caption-item" [class.caption-truncado]="captionOverflows(clip, caption)"
@@ -2161,6 +2247,17 @@
                   <strong>Caption {{ $index + 1 }}</strong>
                   <button mat-icon-button (click)="removeCaption(clip, caption)" [disabled]="exporting !== null" title="Remove this caption"><mat-icon>close</mat-icon></button>
                 </div>
+                <div class="campo campo-largo caption-style-first"><label [attr.for]="'caption-preset-' + caption.id">Caption Style</label>
+                  <select [id]="'caption-preset-' + caption.id" [value]="captionPresetOf(caption)" [disabled]="exporting !== null" (change)="applyCaptionPreset(clip, caption, $any($event.target).value)">
+                    @for (group of captionPresetGroups; track group.id) {
+                      <optgroup [label]="group.label">
+                        @for (preset of group.presets; track preset.id) { <option [value]="preset.id">{{ preset.label }}</option> }
+                        @if (group.id === 'classic') { <option value="custom">Custom classic style</option> }
+                        @if (group.id === 'background') { <option value="custom-background">Custom background style</option> }
+                      </optgroup>
+                    }
+                  </select>
+                </div>
                 <div class="campo campo-largo">
                   <label [attr.for]="'caption-' + caption.id">Text</label>
                   <textarea [id]="'caption-' + caption.id" rows="2" [value]="caption.text" [disabled]="exporting !== null"
@@ -2168,36 +2265,64 @@
                 </div>
                 <div class="linha-campos caption-tempos">
                   <div class="campo"><label [attr.for]="'caption-start-' + caption.id">Starts at</label><div class="com-unidade">
-                    <input [id]="'caption-start-' + caption.id" type="number" [min]="captionMinimumStart(clip, caption)" [max]="clip.summary.durationSeconds" step="0.1" [value]="caption.startSeconds" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'startSeconds', $any($event.target).value)"><span class="unidade">s</span>
+                    <input [id]="'caption-start-' + caption.id" type="number" [min]="captionMinimumStart(clip, caption)" [max]="clip.summary.durationSeconds" step="0.1" [value]="displaySeconds(clip, caption.startSeconds)" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'startSeconds', $any($event.target).value)"><span class="unidade">s</span>
                   </div></div>
                   <div class="campo"><label [attr.for]="'caption-duration-' + caption.id">Display time</label><div class="com-unidade">
-                    <input [id]="'caption-duration-' + caption.id" type="number" min="0.1" [max]="captionMaximumDuration(clip, caption)" step="0.1" [value]="caption.durationSeconds" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'durationSeconds', $any($event.target).value)"><span class="unidade">s</span>
+                    <input [id]="'caption-duration-' + caption.id" type="number" min="0.1" [max]="captionMaximumDuration(clip, caption)" step="0.1" [value]="displayDuration(clip, caption.startSeconds, caption.durationSeconds)" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'durationSeconds', $any($event.target).value)"><span class="unidade">s</span>
                   </div></div>
                 </div>
                 @if (captionOverflows(clip, caption)) { <p class="caption-aviso"><mat-icon>info</mat-icon> This caption will be truncated at the end of the video.</p> }
 
-                <div class="campo campo-largo"><label [attr.for]="'caption-preset-' + caption.id">Style preset</label>
-                  <select [id]="'caption-preset-' + caption.id" [value]="captionPresetOf(caption)" [disabled]="exporting !== null" (change)="applyCaptionPreset(clip, caption, $any($event.target).value)">
-                    @for (preset of captionPresets; track preset.id) { <option [value]="preset.id">{{ preset.label }}</option> }
-                    <option value="custom">Custom</option>
-                  </select>
-                </div>
+                @if (isBehindSubjectCaption(caption)) {
+                  <div class="caption-behind-note">
+                    <mat-icon>layers</mat-icon>
+                    <span>The text stays anchored and may move subtly while a locally generated subject mask passes in front. If no person is found, the caption remains visible without occlusion.</span>
+                  </div>
+                  <div class="campo campo-largo">
+                    <label [attr.for]="'caption-position-' + caption.id">Position</label>
+                    <select [id]="'caption-position-' + caption.id" [value]="behindSubjectPositionOf(caption)" [disabled]="exporting !== null" (change)="applyBehindSubjectPosition(clip, caption, $any($event.target).value)">
+                      @for (position of behindSubjectPositions; track position.id) { <option [value]="position.id">{{ position.label }}</option> }
+                      <option value="custom">Custom position</option>
+                    </select>
+                  </div>
+                  <div class="campo campo-largo">
+                    <label [attr.for]="'caption-animation-' + caption.id">Motion</label>
+                    <select [id]="'caption-animation-' + caption.id" [value]="caption.animation ?? 'none'" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { animation: $any($event.target).value })">
+                      @for (animation of captionAnimations; track animation.value) { <option [value]="animation.value">{{ animation.label }}</option> }
+                    </select>
+                  </div>
+                }
                 <div class="linha-campos">
                   <div class="campo"><label [attr.for]="'caption-font-' + caption.id">Font</label><select [id]="'caption-font-' + caption.id" [value]="caption.fontFamily ?? 'sans'" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontFamily: $any($event.target).value })">@for (font of captionFonts; track font.value) { <option [value]="font.value">{{ font.label }}</option> }</select></div>
-                  <div class="campo"><label [attr.for]="'caption-weight-' + caption.id">Weight</label><select [id]="'caption-weight-' + caption.id" [value]="caption.fontWeight ?? 700" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontWeight: +$any($event.target).value })">@for (weight of captionWeights; track weight) { <option [value]="weight">{{ weight }}</option> }</select></div>
-                  <div class="campo"><label [attr.for]="'caption-size-' + caption.id">Size</label><div class="com-unidade"><input [id]="'caption-size-' + caption.id" type="range" [min]="captionLimits.fontScale.min" [max]="captionLimits.fontScale.max" [step]="captionLimits.fontScale.step" [value]="caption.fontScale" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'fontScale', $any($event.target).value)"><span class="unidade">{{ (caption.fontScale * 100).toFixed(1) }}%</span></div></div>
-                  <div class="campo"><label [attr.for]="'caption-margin-' + caption.id">Distance from bottom</label><div class="com-unidade"><input [id]="'caption-margin-' + caption.id" type="range" [min]="captionLimits.bottomMargin.min" [max]="captionLimits.bottomMargin.max" [step]="captionLimits.bottomMargin.step" [value]="caption.bottomMargin" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'bottomMargin', $any($event.target).value)"><span class="unidade">{{ (caption.bottomMargin * 100).toFixed(1) }}%</span></div></div>
+                  <div class="campo"><label [attr.for]="'caption-weight-' + caption.id">Weight</label><select [id]="'caption-weight-' + caption.id" [value]="caption.fontWeight ?? (isBehindSubjectCaption(caption) ? 600 : 700)" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontWeight: +$any($event.target).value })">@for (weight of captionWeights; track weight) { <option [value]="weight">{{ weight }}</option> }</select></div>
+                  <div class="campo"><label [attr.for]="'caption-size-' + caption.id">Size</label><div class="com-unidade"><input [id]="'caption-size-' + caption.id" type="range" [min]="isBehindSubjectCaption(caption) ? 0.2 : captionLimits.fontScale.min" [max]="isBehindSubjectCaption(caption) ? 0.4 : 0.12" [step]="captionLimits.fontScale.step" [value]="caption.fontScale" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'fontScale', $any($event.target).value)"><span class="unidade">{{ (caption.fontScale * 100).toFixed(1) }}%</span></div></div>
+                  @if (!isBehindSubjectCaption(caption)) { <div class="campo"><label [attr.for]="'caption-margin-' + caption.id">Distance from bottom</label><div class="com-unidade"><input [id]="'caption-margin-' + caption.id" type="range" [min]="captionLimits.bottomMargin.min" [max]="captionLimits.bottomMargin.max" [step]="captionLimits.bottomMargin.step" [value]="caption.bottomMargin" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'bottomMargin', $any($event.target).value)"><span class="unidade">{{ (caption.bottomMargin * 100).toFixed(1) }}%</span></div></div> }
                   <div class="campo"><label [attr.for]="'caption-fade-' + caption.id">Fade length</label><div class="com-unidade"><input [id]="'caption-fade-' + caption.id" type="number" [min]="captionLimits.fadeSeconds.min" [max]="captionLimits.fadeSeconds.max" [step]="captionLimits.fadeSeconds.step" [value]="caption.fadeSeconds" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'fadeSeconds', $any($event.target).value)"><span class="unidade">s</span></div></div>
                 </div>
                 <div class="linha-campos caption-cores">
                   <div class="campo"><label>Text colour</label><div class="caption-cor"><input type="color" [value]="caption.textColor ?? '#ffffff'" [disabled]="exporting !== null" (input)="updateCaptionStyle(clip, caption, { textColor: $any($event.target).value })"><code>{{ caption.textColor ?? '#ffffff' }}</code></div></div>
-                  <div class="campo"><label>Outline colour</label><div class="caption-cor"><input type="color" [value]="caption.outlineColor ?? '#000000'" [disabled]="exporting !== null" (input)="updateCaptionStyle(clip, caption, { outlineColor: $any($event.target).value })"><code>{{ caption.outlineColor ?? '#000000' }}</code></div></div>
-                  <div class="campo"><label>Outline thickness</label><div class="com-unidade"><input type="range" [min]="captionLimits.outlinePercent.min" [max]="captionLimits.outlinePercent.max" [step]="captionLimits.outlinePercent.step" [value]="caption.outlinePercent ?? 16" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'outlinePercent', $any($event.target).value)"><span class="unidade">{{ caption.outlinePercent ?? 16 }}%</span></div></div>
+                  @if (!isBehindSubjectCaption(caption)) {
+                    <div class="campo"><label>Outline colour</label><div class="caption-cor"><input type="color" [value]="caption.outlineColor ?? '#000000'" [disabled]="exporting !== null" (input)="updateCaptionStyle(clip, caption, { outlineColor: $any($event.target).value })"><code>{{ caption.outlineColor ?? '#000000' }}</code></div></div>
+                    <div class="campo"><label>Outline thickness</label><div class="com-unidade"><input type="range" [min]="captionLimits.outlinePercent.min" [max]="captionLimits.outlinePercent.max" [step]="captionLimits.outlinePercent.step" [value]="caption.outlinePercent ?? 16" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'outlinePercent', $any($event.target).value)"><span class="unidade">{{ caption.outlinePercent ?? 16 }}%</span></div></div>
+                  }
                   <div class="campo"><label>Shadow colour</label><div class="caption-cor"><input type="color" [value]="caption.shadowColor ?? '#000000'" [disabled]="exporting !== null || caption.shadowEnabled === false" (input)="updateCaptionStyle(clip, caption, { shadowColor: $any($event.target).value })"><code>{{ caption.shadowColor ?? '#000000' }}</code></div></div>
                 </div>
+                @if (isBehindSubjectCaption(caption)) {
+                  <details class="caption-advanced">
+                    <summary>Advanced</summary>
+                    <div class="linha-campos">
+                      <div class="campo"><label>Position X</label><div class="com-unidade"><input type="range" [min]="captionLimits.positionX.min" [max]="captionLimits.positionX.max" [step]="captionLimits.positionX.step" [value]="caption.positionX ?? 0.5" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'positionX', $any($event.target).value)"><span class="unidade">{{ ((caption.positionX ?? 0.5) * 100).toFixed(0) }}%</span></div></div>
+                      <div class="campo"><label>Position Y</label><div class="com-unidade"><input type="range" [min]="captionLimits.positionY.min" [max]="captionLimits.positionY.max" [step]="captionLimits.positionY.step" [value]="caption.positionY ?? 0.25" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'positionY', $any($event.target).value)"><span class="unidade">{{ ((caption.positionY ?? 0.25) * 100).toFixed(0) }}%</span></div></div>
+                      <div class="campo"><label>Rotation</label><div class="com-unidade"><input type="range" [min]="captionLimits.rotationDegrees.min" [max]="captionLimits.rotationDegrees.max" [step]="captionLimits.rotationDegrees.step" [value]="caption.rotationDegrees ?? 0" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'rotationDegrees', $any($event.target).value)"><span class="unidade">{{ caption.rotationDegrees ?? 0 }}°</span></div></div>
+                      <div class="campo"><label>Shadow intensity</label><div class="com-unidade"><input type="range" [min]="captionLimits.shadowOpacity.min" [max]="captionLimits.shadowOpacity.max" [step]="captionLimits.shadowOpacity.step" [value]="caption.shadowOpacity ?? 0.9" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'shadowOpacity', $any($event.target).value)"><span class="unidade">{{ ((caption.shadowOpacity ?? 0.9) * 100).toFixed(0) }}%</span></div></div>
+                      <div class="campo"><label>Shadow blur</label><div class="com-unidade"><input type="range" [min]="captionLimits.shadowBlurPercent.min" [max]="captionLimits.shadowBlurPercent.max" [step]="captionLimits.shadowBlurPercent.step" [value]="caption.shadowBlurPercent ?? 70" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'shadowBlurPercent', $any($event.target).value)"><span class="unidade">{{ caption.shadowBlurPercent ?? 70 }}%</span></div></div>
+                    </div>
+                  </details>
+                }
                 <div class="linha-checks">
                   <label class="check"><input type="checkbox" [checked]="caption.italic === true" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { italic: $any($event.target).checked })"><span>Italic</span></label>
                   <label class="check"><input type="checkbox" [checked]="caption.shadowEnabled !== false" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { shadowEnabled: $any($event.target).checked })"><span>Shadow</span></label>
+                  @if (isBehindSubjectCaption(caption)) { <label class="check"><input type="checkbox" [checked]="caption.uppercase !== false" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { uppercase: $any($event.target).checked })"><span>Uppercase</span></label> }
                   <label class="check"><input type="checkbox" [checked]="caption.fadeIn" [disabled]="exporting !== null" (change)="updateCaption(clip, caption, { fadeIn: $any($event.target).checked })"><span>Fade in</span></label>
                   <label class="check"><input type="checkbox" [checked]="caption.fadeOut" [disabled]="exporting !== null" (change)="updateCaption(clip, caption, { fadeOut: $any($event.target).checked })"><span>Fade out</span></label>
                 </div>
@@ -2208,18 +2333,29 @@
                   </button>
                 </div>
                 } @else {
-                  <button type="button" class="caption-resumo" (click)="openCaption(caption)"
-                    [disabled]="exporting !== null" [attr.aria-label]="'Edit caption ' + ($index + 1)">
-                    <span class="caption-resumo-tempo">
-                      <strong>{{ formatTime(caption.startSeconds ?? 0) }}</strong>
-                      <span>{{ (caption.durationSeconds ?? 0).toFixed(1) }}s</span>
-                    </span>
-                    <span class="caption-resumo-texto">{{ caption.text || 'Untitled caption' }}</span>
-                    @if (captionOverflows(clip, caption)) {
-                      <mat-icon class="caption-resumo-aviso" title="This caption will be truncated">warning_amber</mat-icon>
-                    }
-                    <mat-icon class="caption-resumo-abrir">expand_more</mat-icon>
-                  </button>
+                  <!-- The summary is one wide button, so removing cannot live
+                       inside it: a nested button is invalid and its click would
+                       also open the editor. The row carries the two side by
+                       side instead, each with its own hit area. -->
+                  <div class="caption-resumo-linha">
+                    <button type="button" class="caption-resumo" (click)="openCaption(caption)"
+                      [disabled]="exporting !== null" [attr.aria-label]="'Edit caption ' + ($index + 1)">
+                      <span class="caption-resumo-tempo">
+                        <strong>{{ formatTime(caption.startSeconds ?? 0) }}</strong>
+                        <span>{{ (caption.durationSeconds ?? 0).toFixed(1) }}s</span>
+                      </span>
+                      <span class="caption-resumo-texto">{{ caption.text || 'Untitled caption' }}</span>
+                      @if (captionOverflows(clip, caption)) {
+                        <mat-icon class="caption-resumo-aviso" title="This caption will be truncated">warning_amber</mat-icon>
+                      }
+                      <mat-icon class="caption-resumo-abrir">expand_more</mat-icon>
+                    </button>
+                    <button mat-icon-button type="button" class="caption-resumo-remover"
+                      (click)="removeCaption(clip, caption)" [disabled]="exporting !== null"
+                      [attr.aria-label]="'Remove caption ' + ($index + 1)" title="Remove this caption">
+                      <mat-icon>close</mat-icon>
+                    </button>
+                  </div>
                 }
               </div>
             } @empty { <p class="ajuda">No caption has been placed on this clip yet.</p> }
@@ -2289,6 +2425,239 @@
             </div>
           }
         </section>
+        @if (clip.summary.kind !== 'audio') {
+          <section class="secao">
+            <h3>Images</h3>
+            <p class="ajuda">Place pictures on specific parts of this container. Placements use the source file clock and may overlap each other.</p>
+            <input hidden #imagemInput type="file" [accept]="acceptedImage" (change)="onClipImagePicked($event)">
+            <div class="effect-lista">
+              @for (image of clip.images ?? []; track image.id) {
+                <div class="effect-item imagem-item" [class.effect-truncado]="clipImageOverflows(clip, image)"
+                  [class.effect-recolhido]="expandedImageId !== image.id">
+                  @if (expandedImageId === image.id) {
+                    <div class="caption-topo">
+                      <strong>Image {{ $index + 1 }} · {{ image.source.name }}</strong>
+                      <button mat-icon-button type="button" (click)="removeClipImage(clip, image)"
+                        [disabled]="exporting !== null" title="Remove this image" [attr.aria-label]="'Remove image ' + ($index + 1)">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    </div>
+
+                    <div class="imagem-arquivo">
+                      <div class="imagem-previa" [class.imagem-previa-ausente]="clipImageMissing(image)">
+                        @if (clipImagePreview(image)) {
+                          <img [src]="clipImagePreview(image)" [alt]="image.source.name">
+                        } @else {
+                          <mat-icon>image_not_supported</mat-icon>
+                        }
+                      </div>
+                      <div class="imagem-arquivo-texto">
+                        <strong>{{ image.source.name }}</strong>
+                        <span class="ajuda">{{ image.source.width }} × {{ image.source.height }} px</span>
+                        <button mat-stroked-button type="button" (click)="replaceClipImage(clip, image, imagemInput)"
+                          [disabled]="exporting !== null"><mat-icon>swap_horiz</mat-icon> Choose another picture</button>
+                      </div>
+                    </div>
+                    @if (clipImageMissing(image)) {
+                      <p class="caption-aviso"><mat-icon>info</mat-icon> This picture is not open in this session. Choose the file again to render it; the export refuses to run without it.</p>
+                    }
+
+                    <div class="campo">
+                      <label [attr.for]="'image-style-' + image.id">Layer</label>
+                      <select [id]="'image-style-' + image.id" [value]="image.style ?? 'overlay'"
+                        [disabled]="exporting !== null" (change)="onClipImageStyle(clip, image, $any($event.target).value)">
+                        @for (style of imageStyles; track style.id) { <option [value]="style.id">{{ style.label }}</option> }
+                      </select>
+                    </div>
+                    <p class="ajuda">
+                      @if ((image.style ?? 'overlay') === 'behind-subject') {
+                        In front of the scenery and behind whoever is talking. With no person on screen the picture simply stays visible.
+                      } @else {
+                        On top of the finished frame, in front of the person and of the tag.
+                      }
+                    </p>
+
+                    <div class="linha-campos effect-tempos">
+                      <div class="campo"><label [attr.for]="'image-start-' + image.id">Starts at</label><div class="com-unidade">
+                        <input [id]="'image-start-' + image.id" type="number" min="0"
+                          [max]="clip.summary.durationSeconds" step="0.1" [value]="displaySeconds(clip, image.startSeconds)"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'startSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                      <div class="campo"><label [attr.for]="'image-duration-' + image.id">Duration</label><div class="com-unidade">
+                        <input [id]="'image-duration-' + image.id" type="number" min="0.2"
+                          [max]="clipImageMaximumDuration(clip, image)" step="0.1"
+                          [value]="displayDuration(clip, image.startSeconds, image.durationSeconds)"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'durationSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                      <div class="campo"><label [attr.for]="'image-fade-' + image.id">Fade in and out</label><div class="com-unidade">
+                        <input [id]="'image-fade-' + image.id" type="number" min="0"
+                          [max]="clipImageMaximumFade(image)" step="0.1" [value]="image.fadeSeconds ?? 0"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'fadeSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                    </div>
+                    <p class="ajuda">Edge: {{ clipImageEdgeLabel(image) }}.</p>
+                    @if (clipImageClocksDiffer(clip, image)) {
+                      <p class="ajuda">The cuts and speed put this at {{ clipImageEditedStart(clip, image).toFixed(2) }}s of the edited clip.</p>
+                    }
+
+                    <div class="linha-campos effect-tempos">
+                      <div class="campo"><label [attr.for]="'image-x-' + image.id">Horizontal centre</label>
+                        <input [id]="'image-x-' + image.id" type="number" [min]="imagePlacementLimits.position.min"
+                          [max]="imagePlacementLimits.position.max" [step]="imagePlacementLimits.position.step" [value]="image.positionX"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'positionX', $any($event.target))">
+                      </div>
+                      <div class="campo"><label [attr.for]="'image-y-' + image.id">Vertical centre</label>
+                        <input [id]="'image-y-' + image.id" type="number" [min]="imagePlacementLimits.position.min"
+                          [max]="imagePlacementLimits.position.max" [step]="imagePlacementLimits.position.step" [value]="image.positionY"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'positionY', $any($event.target))">
+                      </div>
+                    </div>
+                    <p class="ajuda">0 is the left or the top of the frame, 1 the right or the bottom, 0.5 the middle.</p>
+
+                    <div class="linha-campos effect-tempos">
+                      <div class="campo"><label [attr.for]="'image-scale-' + image.id">Size</label>
+                        <input [id]="'image-scale-' + image.id" type="number" [min]="imagePlacementLimits.scale.min"
+                          [max]="imagePlacementLimits.scale.max" [step]="imagePlacementLimits.scale.step" [value]="image.scale"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'scale', $any($event.target))">
+                      </div>
+                      <div class="campo"><label [attr.for]="'image-rotation-' + image.id">Rotation</label><div class="com-unidade">
+                        <input [id]="'image-rotation-' + image.id" type="number" [min]="imagePlacementLimits.rotationDegrees.min"
+                          [max]="imagePlacementLimits.rotationDegrees.max" step="1" [value]="image.rotationDegrees"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'rotationDegrees', $any($event.target))"><span class="unidade">°</span>
+                      </div></div>
+                      <div class="campo"><label [attr.for]="'image-opacity-' + image.id">Opacity</label>
+                        <input [id]="'image-opacity-' + image.id" type="number" [min]="imagePlacementLimits.opacity.min"
+                          [max]="imagePlacementLimits.opacity.max" [step]="imagePlacementLimits.opacity.step" [value]="image.opacity"
+                          [disabled]="exporting !== null" (change)="onClipImageNumber(clip, image, 'opacity', $any($event.target))">
+                      </div>
+                    </div>
+                    <p class="ajuda">Size is the width as a share of the frame; the aspect ratio is kept.</p>
+                    @if (!clipImageFits(image)) {
+                      <p class="caption-aviso"><mat-icon>info</mat-icon> Part of this picture falls outside the frame. Reduce the size or move the centre.</p>
+                    }
+                    @if (clipImageStronglyRotated(image)) {
+                      <p class="ajuda">Rotated past {{ restrainedRotation }}°, which reads as deliberate rather than as part of the shot.</p>
+                    }
+                    @if (clipImageCoversLabel(clip, image); as covers) {
+                      <p class="caption-aviso"><mat-icon>info</mat-icon> {{ covers }} Move it, or shrink it, if that was not deliberate.</p>
+                    }
+                    @if (clipImageOverflows(clip, image)) {
+                      <p class="caption-aviso"><mat-icon>info</mat-icon> This image will be truncated at the end of the clip.</p>
+                    }
+                    @if (imageNotice) { <p class="caption-aviso"><mat-icon>info</mat-icon> {{ imageNotice }}</p> }
+
+                    <div class="caption-confirmar">
+                      <button mat-stroked-button type="button" (click)="previewClipImage(clip, image)" [disabled]="exporting !== null">
+                        <mat-icon>visibility</mat-icon> Show it in the preview
+                      </button>
+                      <button mat-stroked-button type="button" (click)="confirmClipImage(image)" [disabled]="exporting !== null">
+                        <mat-icon>check</mat-icon> Confirm image
+                      </button>
+                    </div>
+                  } @else {
+                    <div class="caption-resumo-linha">
+                      <button type="button" class="caption-resumo" (click)="openClipImage(image)"
+                        [disabled]="exporting !== null" [attr.aria-label]="'Edit image ' + ($index + 1)">
+                        <span class="caption-resumo-tempo">
+                          <strong>{{ formatTime(image.startSeconds ?? 0) }}</strong>
+                          <span>{{ (image.durationSeconds ?? 0).toFixed(1) }}s</span>
+                        </span>
+                        @if (clipImagePreview(image)) {
+                          <img class="imagem-resumo-miniatura" [src]="clipImagePreview(image)" [alt]="image.source.name">
+                        }
+                        <span class="caption-resumo-texto">{{ image.source.name }} · {{ ((image.scale ?? 0.35) * 100).toFixed(0) }}%</span>
+                        @if (clipImageOverflows(clip, image) || clipImageMissing(image) || !clipImageFits(image)) {
+                          <mat-icon class="caption-resumo-aviso">warning_amber</mat-icon>
+                        }
+                        <mat-icon class="caption-resumo-abrir">expand_more</mat-icon>
+                      </button>
+                      <button mat-icon-button type="button" class="caption-resumo-remover"
+                        (click)="removeClipImage(clip, image)" [disabled]="exporting !== null"
+                        [attr.aria-label]="'Remove image ' + ($index + 1)" title="Remove this image"><mat-icon>close</mat-icon></button>
+                    </div>
+                  }
+                </div>
+              } @empty { <p class="ajuda">No picture has been placed on this clip yet.</p> }
+            </div>
+            <button mat-stroked-button class="caption-adicionar" type="button" (click)="requestClipImage(clip, imagemInput)"
+              [disabled]="exporting !== null || !canAddClipImage(clip)"><mat-icon>add_photo_alternate</mat-icon> Add image at {{ formatTime(playhead) }}</button>
+          </section>
+        }
+        @if (clip.summary.kind !== 'audio') {
+          <section class="secao">
+            <h3>Video Effects</h3>
+            <p class="ajuda">Place different looks on specific parts of this container. Sections use the source file clock and cannot overlap.</p>
+            <div class="effect-lista">
+              @for (effect of videoEffectsOf(clip); track effect.id) {
+                <div class="effect-item" [class.effect-truncado]="videoEffectOverflows(clip, effect)"
+                  [class.effect-recolhido]="expandedVideoEffectId !== effect.id">
+                  @if (expandedVideoEffectId === effect.id) {
+                    <div class="caption-topo">
+                      <strong>Effect {{ $index + 1 }} · {{ videoEffectName(effect) }}</strong>
+                      <button mat-icon-button type="button" (click)="removeVideoEffect(clip, effect)"
+                        [disabled]="exporting !== null" title="Remove this effect" [attr.aria-label]="'Remove effect ' + ($index + 1)">
+                        <mat-icon>close</mat-icon>
+                      </button>
+                    </div>
+                    <div class="linha-campos effect-tempos">
+                      <div class="campo"><label [attr.for]="'effect-start-' + effect.id">Starts at</label><div class="com-unidade">
+                        <input [id]="'effect-start-' + effect.id" type="number" min="0"
+                          [max]="clip.summary.durationSeconds" step="0.1" [value]="displaySeconds(clip, effect.startSeconds)"
+                          [disabled]="exporting !== null" (change)="onVideoEffectNumber(clip, effect, 'startSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                      <div class="campo"><label [attr.for]="'effect-duration-' + effect.id">Duration</label><div class="com-unidade">
+                        <input [id]="'effect-duration-' + effect.id" type="number" min="0.1"
+                          [max]="videoEffectMaximumDuration(clip, effect)" step="0.1"
+                          [value]="displayDuration(clip, effect.startSeconds, effect.durationSeconds)"
+                          [disabled]="exporting !== null" (change)="onVideoEffectNumber(clip, effect, 'durationSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                      <div class="campo"><label [attr.for]="'effect-fade-' + effect.id">Fade in and out</label><div class="com-unidade">
+                        <input [id]="'effect-fade-' + effect.id" type="number" min="0"
+                          [max]="videoEffectMaximumFade(effect)" step="0.1" [value]="effect.fadeSeconds ?? 0"
+                          [disabled]="exporting !== null" (change)="onVideoEffectNumber(clip, effect, 'fadeSeconds', $any($event.target))"><span class="unidade">s</span>
+                      </div></div>
+                    </div>
+                    @if (videoEffectNotice) { <p class="caption-aviso"><mat-icon>info</mat-icon> {{ videoEffectNotice }}</p> }
+                    <p class="ajuda">Edge: {{ videoEffectEdgeLabel(effect) }}. Zero cuts straight to the effect; above zero eases it in at the start and out at the end, up to half the section.</p>
+                    @if (videoEffectOverflows(clip, effect)) {
+                      <p class="caption-aviso"><mat-icon>info</mat-icon> This effect will be truncated at the end of the video.</p>
+                    }
+                    <app-video-effects-gallery [clipId]="clip.id" [thumbnail]="clip.thumbUrl"
+                      [effect]="{ id: effect.effectId, intensity: effect.intensity }"
+                      [sourceUrl]="clip.previewUrl" [image]="clip.summary.kind === 'image'"
+                      [disabled]="exporting !== null" (effectChange)="chooseVideoEffect(clip, effect, $event)"></app-video-effects-gallery>
+                    <div class="caption-confirmar">
+                      <button mat-stroked-button type="button" (click)="confirmVideoEffect(effect)" [disabled]="exporting !== null">
+                        <mat-icon>check</mat-icon> Confirm effect
+                      </button>
+                    </div>
+                  } @else {
+                    <div class="caption-resumo-linha">
+                      <button type="button" class="caption-resumo" (click)="openVideoEffect(effect)"
+                        [disabled]="exporting !== null" [attr.aria-label]="'Edit effect ' + ($index + 1)">
+                        <span class="caption-resumo-tempo">
+                          <strong>{{ formatTime(effect.startSeconds ?? 0) }}</strong>
+                          <span>{{ (effect.durationSeconds ?? 0).toFixed(1) }}s</span>
+                        </span>
+                        <span class="caption-resumo-texto">{{ videoEffectName(effect) }} · {{ (effect.intensity * 100).toFixed(0) }}%</span>
+                        @if (videoEffectOverflows(clip, effect)) { <mat-icon class="caption-resumo-aviso">warning_amber</mat-icon> }
+                        <mat-icon class="caption-resumo-abrir">expand_more</mat-icon>
+                      </button>
+                      <button mat-icon-button type="button" class="caption-resumo-remover"
+                        (click)="removeVideoEffect(clip, effect)" [disabled]="exporting !== null"
+                        [attr.aria-label]="'Remove effect ' + ($index + 1)" title="Remove this effect"><mat-icon>close</mat-icon></button>
+                    </div>
+                  }
+                </div>
+              } @empty { <p class="ajuda">No Video Effect has been placed on this clip yet.</p> }
+            </div>
+            <button mat-stroked-button class="caption-adicionar" type="button" (click)="addVideoEffect(clip)"
+              [disabled]="exporting !== null || !canAddVideoEffect(clip)"><mat-icon>auto_awesome</mat-icon> Add effect at {{ formatTime(playhead) }}</button>
+            @if (!canAddVideoEffect(clip) && videoEffectsOf(clip).length) {
+              <p class="ajuda">Move the preview playhead to an empty part of the clip to add another effect.</p>
+            }
+          </section>
+        }
       </div>
 
       <footer class="dialogo-rodape dialogo-rodape-clipe">
@@ -2303,6 +2672,131 @@
           </span>
         </button>
         <button mat-raised-button color="primary" (click)="closeClip()">Done</button>
+      </footer>
+    </div>
+  </div>
+}
+
+<!-- Noise suppression is a per-container decision. There is intentionally no
+     corresponding project-level modal or default setting. -->
+@if (noiseEditor; as clip) {
+  <div class="dialogo-fundo dialogo-fundo-ruido" appBodyPortal (click)="closeNoiseSettings()">
+    <div class="dialogo dialogo-ruido" role="dialog" aria-modal="true" aria-labelledby="ruido-titulo"
+      (click)="$event.stopPropagation()">
+      <header class="dialogo-topo">
+        <div class="dialogo-titulo">
+          <mat-icon aria-hidden="true">hearing</mat-icon>
+          <div>
+            <h2 id="ruido-titulo">Noise suppression</h2>
+            <p class="dialogo-subtitulo" [title]="clip.summary.fileName">{{ clip.summary.fileName }}</p>
+          </div>
+        </div>
+        <button mat-icon-button (click)="closeNoiseSettings()" [disabled]="noiseWorking(clip)" aria-label="Close">
+          <mat-icon>close</mat-icon>
+        </button>
+      </header>
+
+      <div class="dialogo-corpo ruido-corpo">
+        <p class="ajuda">
+          These settings affect this container only. Enabling suppression schedules it for export; use
+          <strong>Remove now</strong> only when you want to build and hear a preview immediately.
+        </p>
+
+        <label class="check">
+          <input type="checkbox" [checked]="noiseSettingsFor(clip).enabled" [disabled]="noiseWorking(clip)"
+            (change)="setNoiseEnabled(clip, $any($event.target).checked)">
+          <span>Remove background noise from this clip</span>
+        </label>
+
+        <div class="linha-campos">
+          <div class="campo">
+            <label for="ruido-motor">Engine</label>
+            <select id="ruido-motor" [ngModel]="noiseSettingsFor(clip).engine" [disabled]="noiseWorking(clip)"
+              (ngModelChange)="updateNoiseSettings(clip, { engine: $event })">
+              @for (engine of noiseEngines; track engine.id) { <option [value]="engine.id">{{ engine.label }}</option> }
+            </select>
+            <small>{{ noiseEngines[noiseSettingsFor(clip).engine === 'gtcrn' ? 0 : 1].note }}</small>
+          </div>
+          <div class="campo">
+            <label for="ruido-forca">Strength</label>
+            <select id="ruido-forca" [ngModel]="noiseSettingsFor(clip).strength" [disabled]="noiseWorking(clip)"
+              (ngModelChange)="onNoiseStrength(clip, $event)">
+              @for (strength of noiseStrengths; track strength.label; let i = $index) {
+                <option [value]="noiseStrengthIds[i]">{{ strength.label }}</option>
+              }
+            </select>
+            <small>{{ noiseStrengths[noiseStrengthIds.indexOf(noiseSettingsFor(clip).strength)].note }}</small>
+          </div>
+        </div>
+
+        <label class="check">
+          <input type="checkbox" [checked]="noiseSettingsFor(clip).preserveHighs" [disabled]="noiseWorking(clip)"
+            (change)="updateNoiseSettings(clip, { preserveHighs: $any($event.target).checked })">
+          <span>Preserve high frequencies the speech model does not cover</span>
+        </label>
+
+        <section class="secao ruido-analise">
+          <h3>Noise diagnosis</h3>
+          <p class="ajuda">Analysis measures the recording and does not enable or remove anything.</p>
+          <div class="linha-campos">
+            <div class="campo">
+              <label for="ruido-conteudo">Content</label>
+              <select id="ruido-conteudo" [(ngModel)]="noiseAnalysisContent" [disabled]="noiseWorking(clip)">
+                <option value="speech">Speech</option>
+                <option value="speech-music">Speech with intentional music</option>
+              </select>
+            </div>
+            <div class="campo">
+              <label for="ruido-sensibilidade">Sensitivity</label>
+              <select id="ruido-sensibilidade" [(ngModel)]="noiseAnalysisSensitivity" [disabled]="noiseWorking(clip)">
+                <option value="low">Low</option>
+                <option value="balanced">Balanced</option>
+                <option value="high">High</option>
+              </select>
+            </div>
+          </div>
+          <button mat-stroked-button (click)="analyzeNoiseClip(clip)" [disabled]="noiseWorking(clip)">
+            <mat-icon>analytics</mat-icon>{{ clip.noiseReport ? 'Analyze again' : 'Analyze noise' }}
+          </button>
+
+          @if (clip.noiseReport; as report) {
+            <div class="ruido-relatorio" [class.ruido-relatorio-alto]="report.status === 'Relevant noise'">
+              <strong>{{ report.status }}</strong>
+              <span>{{ report.speechSeconds | number:'1.1-1' }}s speech · {{ report.pauseSeconds | number:'1.1-1' }}s background</span>
+              @if (report.backgroundDb !== null) { <span>Background {{ report.backgroundDb | number:'1.1-1' }} dBFS</span> }
+              @if (report.quality; as quality) { <span>Background quality {{ quality.background | number:'1.1-1' }}/5</span> }
+              @for (evidence of report.evidence; track evidence) { <small>{{ evidence }}</small> }
+              @for (warning of report.warnings; track warning) { <small class="aviso">{{ warning }}</small> }
+            </div>
+          }
+        </section>
+
+        @if (noiseProgressOf(clip); as progress) {
+          <div class="ruido-trabalho" role="status">
+            <span>{{ progress.detail || progress.stage }}</span>
+            <mat-progress-bar [mode]="progress.ratio === null ? 'indeterminate' : 'determinate'"
+              [value]="(progress.ratio ?? 0) * 100"></mat-progress-bar>
+          </div>
+        }
+
+        @if (noiseReady(clip) && clip.noiseCleanedUrl) {
+          <section class="secao ruido-comparacao">
+            <h3>Compare</h3>
+            <div><span>Original</span><audio [src]="clip.previewUrl" controls preload="metadata"></audio></div>
+            <div><span>Noise suppressed</span><audio [src]="clip.noiseCleanedUrl" controls preload="metadata"></audio></div>
+            @if (clip.noiseReductionDb !== null && clip.noiseReductionDb !== undefined) {
+              <p class="ajuda">Quiet-region change: {{ clip.noiseReductionDb | number:'1.1-1' }} dB before any volume levelling.</p>
+            }
+          </section>
+        }
+      </div>
+
+      <footer class="dialogo-rodape">
+        <button mat-stroked-button (click)="processNoiseNow(clip)"
+          [disabled]="noiseWorking(clip) || !noiseSettingsFor(clip).enabled">
+          <mat-icon>hearing</mat-icon>{{ noiseReady(clip) ? 'Remove again' : 'Remove now' }}
+        </button>
+        <button mat-raised-button color="primary" (click)="closeNoiseSettings()" [disabled]="noiseWorking(clip)">Done</button>
       </footer>
     </div>
   </div>
@@ -3469,4 +3963,15 @@
       </footer>
     </div>
   </div>
+}
+
+<!-- ------------------------------------------------------- allowed folders -->
+<!-- Above everything, because nothing else can proceed until it is answered:
+     the read or write that raised it is waiting on this reply. -->
+@if (folderRequest) {
+  <app-allowed-folders
+    [request]="folderRequest"
+    [asking]="agentControllerLabel"
+    [showList]="false"
+    (resolved)="onFolderRequestResolved($event)" />
 }

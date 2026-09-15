@@ -777,7 +777,7 @@
   max-width: 100vw;
   max-height: 100vh;
   overflow: hidden;
-  background: radial-gradient(circle at 50% 45%, rgba(37, 99, 235, 0.12), rgba(2, 8, 23, 0.58) 72%);
+  background: radial-gradient(circle at 50% 45%, rgb(var(--agente-rgb-forte) / 0.12), rgba(2, 8, 23, 0.58) 72%);
   perspective: 1400px;
 }
 
@@ -794,7 +794,7 @@
   min-height: 0;
   box-sizing: border-box;
   overflow: hidden;
-  border: 2px solid #3b82f6;
+  border: 2px solid var(--agente-borda);
   border-radius: 18px;
   /* Twenty percent transparent, as requested; the timeline stays perceptible
      without competing with terminal text. */
@@ -803,7 +803,7 @@
     0 34px 90px rgba(0, 0, 0, 0.72),
     0 14px 32px rgba(0, 0, 0, 0.5),
     inset 0 1px 0 rgba(191, 219, 254, 0.18),
-    0 0 34px rgba(37, 99, 235, 0.44);
+    0 0 34px rgb(var(--agente-rgb-forte) / 0.44);
   transform: rotateX(0.45deg) translateZ(24px);
 }
 
@@ -813,7 +813,7 @@
   inset: -22px;
   z-index: -1;
   border-radius: 30px;
-  background: radial-gradient(closest-side, rgba(59, 130, 246, 0.52), rgba(37, 99, 235, 0) 76%);
+  background: radial-gradient(closest-side, rgb(var(--agente-rgb-medio) / 0.52), rgb(var(--agente-rgb-forte) / 0) 76%);
   filter: blur(10px);
   animation: agente-respira 2.4s ease-in-out infinite;
   pointer-events: none;
@@ -829,10 +829,10 @@
   background: conic-gradient(
     from var(--glow-angle, 0deg),
     transparent 0deg,
-    rgba(125, 211, 252, 0.98) 28deg,
+    rgb(var(--agente-rgb-claro) / 0.98) 28deg,
     transparent 72deg,
     transparent 170deg,
-    rgba(37, 99, 235, 0.94) 208deg,
+    rgb(var(--agente-rgb-forte) / 0.94) 208deg,
     transparent 252deg,
     transparent 360deg
   );
@@ -851,8 +851,8 @@
   align-items: center;
   gap: 1rem;
   padding: 1.15rem 1.25rem;
-  border-bottom: 1px solid rgba(96, 165, 250, 0.34);
-  background: linear-gradient(110deg, rgba(37, 99, 235, 0.23), rgba(8, 15, 31, 0.38));
+  border-bottom: 1px solid rgb(var(--agente-rgb-brilho) / 0.34);
+  background: linear-gradient(110deg, rgb(var(--agente-rgb-forte) / 0.23), rgba(8, 15, 31, 0.38));
   border-radius: 16px 16px 0 0;
   min-height: 0;
   overflow: hidden;
@@ -864,10 +864,10 @@
   width: 3.5rem;
   height: 3.5rem;
   flex: 0 0 auto;
-  border: 1px solid rgba(125, 211, 252, 0.56);
+  border: 1px solid rgb(var(--agente-rgb-claro) / 0.56);
   border-radius: 14px;
   background: rgba(2, 8, 23, 0.68);
-  box-shadow: 0 8px 24px rgba(37, 99, 235, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  box-shadow: 0 8px 24px rgb(var(--agente-rgb-forte) / 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.12);
 }
 
 .agente-marca img { width: 2.45rem; height: 2.45rem; }
@@ -884,7 +884,7 @@
 .agente-modal-identidade strong,
 .agente-modal-identidade span { overflow-wrap: anywhere; }
 .agente-modal-identidade span { color: #a9c3e6; font-size: 0.82rem; line-height: 1.45; }
-.agente-modal-fechar { flex: 0 0 auto; color: #bfdbfe; }
+.agente-modal-fechar { flex: 0 0 auto; color: var(--agente-texto-suave); }
 .agente-ativo.agente-desconectado { color: #fbbf24; }
 .agente-ativo.agente-desconectado .agente-pulso {
   background: #f59e0b;
@@ -897,7 +897,7 @@
   align-items: center;
   gap: 1rem;
   padding: 0.55rem 0.85rem;
-  border-bottom: 1px solid rgba(96, 165, 250, 0.22);
+  border-bottom: 1px solid rgb(var(--agente-rgb-brilho) / 0.22);
   background: rgba(2, 8, 23, 0.42);
   min-width: 0;
   overflow: hidden;
@@ -909,7 +909,7 @@
   gap: 0.4rem;
   flex: 1 1 auto;
   min-width: 0;
-  color: #93c5fd;
+  color: var(--agente-texto-medio);
   font: 0.72rem/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -930,7 +930,7 @@
   scrollbar-gutter: stable both-edges;
   margin: 0.9rem;
   padding: 0.85rem 0.75rem;
-  border: 1px solid rgba(59, 130, 246, 0.38);
+  border: 1px solid rgb(var(--agente-rgb-medio) / 0.38);
   border-radius: 10px;
   background: rgba(2, 8, 23, 0.88);
   box-shadow: inset 0 12px 28px rgba(0, 0, 0, 0.42);
@@ -940,7 +940,10 @@
 
 .agente-modal-console .registro-linha {
   display: grid;
-  grid-template-columns: max-content max-content max-content 0.8rem minmax(0, 1fr);
+  /* time, level, module, percent, mark, text. The percent column keeps its
+     width whether or not a line carries one, so the marks and the text stay in
+     their columns all the way down the console. */
+  grid-template-columns: max-content max-content max-content 2.6rem 0.8rem minmax(0, 1fr);
   align-items: start;
   gap: 0.48rem;
   min-width: 0;
@@ -960,7 +963,7 @@
   overflow-wrap: anywhere;
   word-break: break-word;
 }
-.agente-modal-console .nivel-debug .registro-nivel { color: #7dd3fc; }
+.agente-modal-console .nivel-debug .registro-nivel { color: var(--agente-destaque); }
 .agente-modal-console .nivel-info .registro-nivel { color: #86efac; }
 .agente-modal-console .nivel-warn .registro-nivel { color: #fbbf24; }
 .agente-modal-console .nivel-error .registro-nivel { color: #fb7185; }
@@ -972,7 +975,7 @@
   margin: 0 0.9rem 0.9rem;
   border: 1px solid rgba(251, 113, 133, 0.48);
   border-radius: 10px;
-  color: #dbeafe;
+  color: var(--agente-texto);
   background: rgba(30, 8, 21, 0.92);
   overflow: auto;
 }
@@ -1004,7 +1007,49 @@
   gap: 0.45rem;
   padding: 0.55rem 0.7rem;
 }
-.agente-diagnostico-acoes span { color: #93c5fd; font-size: 0.75rem; }
+.agente-diagnostico-acoes span { color: var(--agente-texto-medio); font-size: 0.75rem; }
+
+/* ------------------------------------------------ who is driving the editor --
+
+   The activity window, the minimized pill and the completion dialog are each
+   portalled to `body`, so they have no shared ancestor to inherit from: every
+   one of them carries the palette itself, and the controller's class overrides
+   it on the same element.
+
+   Blue is the default because it is what the window has always been, so a
+   session driven by Codex — or by a client the editor does not recognise —
+   looks exactly as it did before. The triples are bare so each rule can keep
+   the alpha it was written with. */
+
+.agente-controle-indicador,
+.agente-modal,
+.agente-conclusao-modal {
+  --agente-borda: #3b82f6;
+  --agente-destaque: #7dd3fc;
+  --agente-texto: #dbeafe;
+  --agente-texto-medio: #93c5fd;
+  --agente-texto-suave: #bfdbfe;
+  --agente-rgb-claro: 125 211 252;
+  --agente-rgb-forte: 37 99 235;
+  --agente-rgb-medio: 59 130 246;
+  --agente-rgb-brilho: 96 165 250;
+}
+
+/* Claude Code drives in orange. Same structure, same weights — only the hue
+   changes, so nothing about the window has to be relearned. */
+.agente-controle-indicador.agente-claude,
+.agente-modal.agente-claude,
+.agente-conclusao-modal.agente-claude {
+  --agente-borda: #f97316;
+  --agente-destaque: #fdba74;
+  --agente-texto: #ffedd5;
+  --agente-texto-medio: #fdba74;
+  --agente-texto-suave: #fed7aa;
+  --agente-rgb-claro: 253 186 116;
+  --agente-rgb-forte: 194 65 12;
+  --agente-rgb-medio: 234 88 12;
+  --agente-rgb-brilho: 251 146 60;
+}
 
 .agente-controle-indicador {
   position: fixed;
@@ -1016,11 +1061,11 @@
   gap: 0.65rem;
   max-width: min(34rem, calc(100vw - 44px));
   padding: 0.7rem 0.9rem;
-  border: 1px solid #3b82f6;
+  border: 1px solid var(--agente-borda);
   border-radius: 14px;
-  color: #dbeafe;
+  color: var(--agente-texto);
   background: rgba(8, 15, 31, 0.8);
-  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.58), 0 0 25px rgba(37, 99, 235, 0.42);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.58), 0 0 25px rgb(var(--agente-rgb-forte) / 0.42);
   cursor: pointer;
 }
 
@@ -1049,7 +1094,10 @@
 
 @media (max-width: 960px) {
   .agente-modal-console .registro-linha {
-    grid-template-columns: max-content max-content minmax(0, 1fr);
+    /* Narrow: the mark is hidden and the text takes its own row, so the first
+       row is time, level, module and percent — the module absorbing the slack
+       and the percent staying at the end where the eye already looks for it. */
+    grid-template-columns: max-content max-content minmax(0, 1fr) 2.4rem;
     gap: 0.28rem 0.45rem;
     padding-bottom: 0.3rem;
   }
@@ -1125,11 +1173,11 @@
   padding: 1.25rem;
   box-sizing: border-box;
   overflow: auto;
-  border: 1px solid rgba(96, 165, 250, 0.7);
+  border: 1px solid rgb(var(--agente-rgb-brilho) / 0.7);
   border-radius: 18px;
-  color: #dbeafe;
+  color: var(--agente-texto);
   background: linear-gradient(145deg, rgba(16, 30, 58, 0.98), rgba(5, 11, 26, 0.98));
-  box-shadow: 0 32px 82px rgba(0, 0, 0, 0.72), 0 13px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 36px rgba(37, 99, 235, 0.35);
+  box-shadow: 0 32px 82px rgba(0, 0, 0, 0.72), 0 13px 30px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 36px rgb(var(--agente-rgb-forte) / 0.35);
   transform: perspective(1200px) rotateX(0.6deg) translateZ(24px);
 }
 .agente-conclusao-modal h2 { margin: 0 0 0.45rem; color: #eff6ff; }
@@ -2148,6 +2196,54 @@
  */
 .dialogo-transcricao { width: min(760px, 100%); }
 
+/* ------------------------------------------------------- noise suppression */
+
+.dialogo-fundo-ruido { z-index: 4100; }
+.dialogo-ruido {
+  width: min(760px, 100%);
+  border-color: rgba(77, 163, 255, 0.58);
+  background:
+    radial-gradient(circle at 10% 0%, rgba(77, 163, 255, 0.12), transparent 38%),
+    linear-gradient(120deg, #202029, #272631);
+}
+.dialogo-subtitulo {
+  max-width: 55vw;
+  margin: 2px 0 0;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ruido-corpo { gap: 15px; }
+.ruido-analise, .ruido-comparacao {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(15, 14, 21, 0.28);
+}
+.ruido-relatorio {
+  display: grid;
+  gap: 5px;
+  padding: 12px;
+  border-left: 3px solid #63d999;
+  border-radius: 8px;
+  background: rgba(99, 217, 153, 0.07);
+  color: var(--text-main);
+  font-size: 0.8rem;
+}
+.ruido-relatorio-alto { border-left-color: #ff7b8a; background: rgba(255, 123, 138, 0.07); }
+.ruido-relatorio small { color: var(--text-muted); line-height: 1.4; }
+.ruido-relatorio .aviso { color: #f2bd5b; }
+.ruido-trabalho { display: grid; gap: 7px; color: var(--aqua); font-size: 0.82rem; }
+.ruido-comparacao { display: grid; gap: 12px; }
+.ruido-comparacao > div { display: grid; grid-template-columns: 130px 1fr; align-items: center; gap: 10px; }
+.ruido-comparacao audio { width: 100%; min-width: 0; }
+@media (max-width: 620px) {
+  .ruido-comparacao > div { grid-template-columns: 1fr; }
+}
+
 /* The export button that writes no video. Stroked rather than raised, because
    it is not the thing most readers came to this row for. */
 .btn-transcricao { flex: 0 0 auto; }
@@ -2427,15 +2523,43 @@ ul.reconectar-nomes li {
   opacity: 0.9;
 }
 
+/* Fixed width whether or not the line carries one, so the marks and the text
+   stay in their columns down the whole console. */
+.registro-pct {
+  flex: 0 0 auto;
+  width: 2.4rem;
+  text-align: right;
+  color: #5b7aa0;
+  font-variant-numeric: tabular-nums;
+}
+
 .registro-texto { flex: 1 1 auto; min-width: 0; }
 
 .registro-step .registro-marca,
 .registro-step .registro-texto { color: #00ffd1; }
 
 .registro-clip .registro-marca,
-.registro-clip .registro-texto { color: var(--text-main); font-weight: 600; }
+.registro-clip .registro-texto { color: #5ab0ff; font-weight: 700; }
 
+/* General narration keeps the muted tone it had. Everything below is a timed
+   thing inside a container, and each kind owns a colour so a long log can be
+   read by scanning rather than by reading. */
 .registro-detail .registro-texto { color: #9db2cb; }
+
+.registro-effect .registro-marca,
+.registro-effect .registro-texto { color: #d18cff; }
+
+.registro-caption .registro-marca,
+.registro-caption .registro-texto { color: #6fe3d2; }
+
+.registro-zoom .registro-marca,
+.registro-zoom .registro-texto { color: #ffab70; }
+
+.registro-tag .registro-marca,
+.registro-tag .registro-texto { color: #ff9ecb; }
+
+.registro-image .registro-marca,
+.registro-image .registro-texto { color: #9fd8ff; }
 
 .registro-done .registro-marca,
 .registro-done .registro-texto { color: #5ce08f; }
@@ -2602,3 +2726,18 @@ ul.reconectar-nomes li {
 }
 
 .som-do-clipe .linha-som { margin-top: 0; }
+
+/* ------------------------------------------------------- allowed folders */
+
+.projeto-pastas {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.75rem 0.75rem;
+  border: 1px solid var(--borda, #2c3039);
+  border-radius: 0.5rem;
+}
+
+.projeto-pastas legend {
+  padding: 0 0.35rem;
+  font-size: 0.75rem;
+  opacity: 0.7;
+}

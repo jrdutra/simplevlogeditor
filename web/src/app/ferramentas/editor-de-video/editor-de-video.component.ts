@@ -64,15 +64,42 @@ import {
   writeSubtitles
 } from '../transcricao-de-video/subtitle-formats';
 import { SuppressionCanceled, SuppressionError, suppress } from '../supressao-de-ruido/noise-suppression-client';
+import { analyseNoise } from '../supressao-de-ruido/noise-analysis-client';
+import { DEFAULT_ANALYSIS_SETTINGS, AnalysisSettings, NoiseReport } from '../supressao-de-ruido/noise-analysis';
+import { readAudio as readNoiseAudio, writeAudio as writeNoiseAudio } from '../supressao-de-ruido/media-audio';
 import {
+  AUDIO_FORMATS as NOISE_AUDIO_FORMATS,
   ENGINES as NOISE_ENGINES,
   EngineId,
   STRENGTHS as NOISE_STRENGTHS,
   SuppressionProgress
 } from '../supressao-de-ruido/noise-suppression.models';
 import { BodyPortalDirective } from '../../shared/ui/body-portal.directive';
-import { AgentRuntimeInfo, AgentSystemEvent, DesktopService } from '../../shared/desktop/desktop.service';
-import { DesktopFileDescriptor, PathBackedFile, imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
+import { AgentRuntimeInfo, AgentSystemEvent, DesktopService, MissingRoot } from '../../shared/desktop/desktop.service';
+import {
+  DesktopFileDescriptor, PathBackedFile, imageBitmapForFile, mediaObjectUrl, pathBackedPath, revokeMediaObjectUrl
+} from '../../shared/desktop/path-backed-file';
+import { composeFrame } from './frame-compositor';
+import { captionBox } from './caption-renderer';
+import { editorCapabilities } from './editor-agent-capabilities';
+import { measureTag } from './tag-renderer';
+import { FrameContext, FrameSource } from './frame-source';
+import { SubjectMask, SubjectSegmentationClient } from './subject-segmentation';
+import { captionAt } from './video-editor-timeline';
+import {
+  IMAGE_LIMITS,
+  IMAGE_RESTRAINED_ROTATION,
+  IMAGE_STYLES,
+  forgetImage,
+  imageAspect,
+  imageBox,
+  imageKey,
+  imagePlacement,
+  imagesAt,
+  loadPlanImages,
+  isImageStyle,
+  loadImage
+} from './clip-image';
 import { measureLeadingSilence } from './leading-silence';
 import { AudioSourceDialogComponent } from './audio-source-dialog.component';
 import { TransitionDialogComponent } from './transition-dialog.component';
@@ -96,6 +123,17 @@ import {
 import { qrTagError } from './tag-qrcode';
 import { TRANSITIONS, TRANSITION_SECONDS, transitionDefinition } from './video-transitions';
 import { ClipEditsPanelComponent } from './clip-edits-panel.component';
+import { VideoEffectsGalleryComponent } from './video-effects-gallery.component';
+import { VideoEffectPreviewComponent } from './video-effect-preview.component';
+import { VideoEffect, VIDEO_EFFECTS, VIDEO_VISION_CAPABILITIES, effectDefinition, normalizeVideoEffect } from './video-effects';
+import {
+  ClipNoiseSettings,
+  DEFAULT_CLIP_NOISE,
+  NOISE_STRENGTH_INDEX,
+  NoiseStrengthId,
+  clampClipNoise,
+  sameClipNoise
+} from './clip-noise';
 import { HelpHintComponent } from './help-hint.component';
 import { TimelinePlayer } from './timeline-player';
 import { placeWords, spokenEntries, spokenSpan } from './timeline-transcript';
@@ -122,9 +160,16 @@ import {
   ASPECTS,
   ACCEPTED_IMAGE,
   ACCEPTED_MEDIA,
+  CAPTION_ANIMATIONS,
   CAPTION_FONTS,
   CAPTION_LIMITS,
+  CAPTION_PRESET_GROUPS,
   CAPTION_PRESETS,
+  captionPresetIsBackground,
+  captionPresetPatch,
+  clampClipImage,
+  clampCaption,
+  isBackgroundCaption,
   CAPTION_WEIGHTS,
   DEFAULT_CAPTION,
   DEFAULT_EDITS,
@@ -162,6 +207,8 @@ import {
   EditorAgentProjectPatch,
   EditorAgentRequest,
   EditorAgentResponse,
+  SUBJECT_VISION_ERROR_CODE,
+  SubjectVisionFailure,
   finiteNumber,
   stringValue
 } from './editor-agent-api';
@@ -170,6 +217,7 @@ import {
   clipAt,
   clipBounds,
   clipsNeedingAnalysis,
+  cutTimeOf,
   effectiveEdits,
   isOverridden,
   isTrimmed,
@@ -179,7 +227,10 @@ import {
   sourceDuration,
   sourceTimeAt,
   transitionAt,
-  trimmedDuration
+  trimmedDuration,
+  effectiveClipVideoEffects,
+  videoEffectSlotFor,
+  videoEffectsOverlap
 } from './video-editor-timeline';
 import {
   ProjectPreset,
@@ -201,13 +252,18 @@ import {
   newHandleId,
   recallHandle,
   recallHandleById,
+  onFilesChosenThroughPicker,
   rememberHandle,
   rememberHandleAs
 } from './file-handle-store';
+import { AllowedFoldersComponent } from './allowed-folders.component';
 import {
   ClipAudioMode,
   ClipCaption,
   ClipEdits,
+  ClipImage,
+  ClipImageSource,
+  ClipVideoEffect,
   ClipPlan,
   ClipSoundPlan,
   EditableRange,
@@ -248,6 +304,17 @@ const LARGE_TOTAL_BYTES = 2_000_000_000;
 const TEXT_PREVIEW_WIDTH = 560;
 
 /** Pixel size of the still drawn on each row. Small enough to keep in memory. */
+/**
+ * Seconds at millisecond precision.
+ *
+ * `bounds.end - start` and friends carry the residue of binary floating point,
+ * and that residue reaches the field: a duration clamped to the minimum showed
+ * as 0.10000000000000009.
+ */
+function roundSeconds(value: number): number {
+  return Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
+}
+
 const THUMB_WIDTH = 160;
 const THUMB_HEIGHT = 90;
 
@@ -636,6 +703,8 @@ interface RenderLogLine {
   at: string;
   kind: RenderLogKind;
   text: string;
+  /** Where the export had got to, as a whole number, or null before it could tell. */
+  percent: number | null;
 }
 
 type AgentLogKind = 'command' | 'action' | 'done' | 'fail';
@@ -649,6 +718,14 @@ interface AgentLogLine {
   module: string;
   kind: AgentLogKind;
   text: string;
+  /**
+   * How far the operation this line belongs to had got, 0..100.
+   *
+   * Null for a line that is not about a measurable process — a command
+   * arriving, a clip being added — rather than 0, so the column stays empty
+   * instead of claiming that nothing has happened yet.
+   */
+  percent: number | null;
 }
 
 interface AgentDiagnostic {
@@ -766,8 +843,11 @@ function stemOf(fileName: string): string {
     MatProgressBarModule,
     MatProgressSpinnerModule,
     BodyPortalDirective,
+    AllowedFoldersComponent,
     AudioSourceDialogComponent,
     ClipEditsPanelComponent,
+    VideoEffectsGalleryComponent,
+    VideoEffectPreviewComponent,
     HelpHintComponent,
     TransitionDialogComponent,
     TagDialogComponent,
@@ -789,8 +869,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** The clip whose dialog is open, or null. */
   editing: MediaClip | null = null;
+  /** Per-clip noise configuration/diagnosis dialog. Never points at project settings. */
+  noiseEditor: MediaClip | null = null;
+  noiseAnalysisContent: AnalysisSettings['content'] = DEFAULT_ANALYSIS_SETTINGS.content;
+  noiseAnalysisSensitivity: AnalysisSettings['sensitivity'] = DEFAULT_ANALYSIS_SETTINGS.sensitivity;
+  private readonly noiseControllers = new Map<string, AbortController>();
+  private readonly noiseProgress = new Map<string, SuppressionProgress>();
   /** The one caption whose full form is visible. Null means the list is fully collapsed. */
   expandedCaptionId: string | null = null;
+  /** The one timed Video Effect whose gallery and timing controls are visible. */
+  expandedVideoEffectId: string | null = null;
+  /** The one placed picture whose placement controls are visible. */
+  expandedImageId: string | null = null;
   /**
    * Who is waiting to be told where a replacement soundtrack comes from.
    *
@@ -891,7 +981,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * on is the moment the bar has just disappeared.
    */
   renderLog: RenderLogLine[] = [];
-  logOpen = false;
+  /** The log is what the reader watches while a render runs, so it opens with it. */
+  logOpen = true;
 
   @ViewChild('logConsole') private logConsole?: ElementRef<HTMLDivElement>;
   private logSeq = 0;
@@ -937,6 +1028,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   readonly subtitleFormats = SUBTITLE_FORMATS;
   readonly noiseEngines = NOISE_ENGINES;
   readonly noiseStrengths = NOISE_STRENGTHS;
+  readonly noiseStrengthIds: readonly NoiseStrengthId[] = ['gentle', 'balanced', 'maximum'];
 
   transcriptModelId: string = SPEECH_MODELS[0].id;
   transcriptLanguage = '';
@@ -1031,6 +1123,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** The whole-timeline preview: open, where it is, and what it is showing. */
   previewOpen = false;
   previewPlaying = false;
+  previewEffectStatus = '';
+  /** True while the preview's segmentation failure is one a retry can clear. */
+  previewEffectRetryable = false;
   previewTime = 0;
   previewClipIndex = -1;
   /**
@@ -1101,6 +1196,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private stopper: AbortController | null = null;
   /** One per clip being listened to, so a single clip can be called off. */
   private readonly analysisControllers = new Map<string, AbortController>();
+  /** Media that arrived with usable audio and must receive its first automatic listening pass. */
+  private readonly automaticListeningIds = new Set<string>();
+  /** One shared drain keeps repeated MCP imports from starting an unbounded number of decoders. */
+  private automaticListeningTask: Promise<void> | null = null;
   private nextId = 0;
   /** The audio mode to go back to if the chooser is dismissed. */
   private soundChooserPrevious: ClipAudioMode = 'original';
@@ -1172,8 +1271,21 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   readonly soundFadeLimits = SOUND_FADE_SECONDS;
   readonly silentCutReplacementLimits = SILENT_CUT_REPLACEMENT;
   readonly captionLimits = CAPTION_LIMITS;
+  readonly captionAnimations = CAPTION_ANIMATIONS;
   readonly captionPresets = CAPTION_PRESETS;
+  readonly captionPresetGroups = CAPTION_PRESET_GROUPS.map((group) => ({
+    ...group,
+    presets: CAPTION_PRESETS.filter((preset) => preset.group === group.id)
+  }));
   readonly captionFonts = CAPTION_FONTS;
+  readonly behindSubjectPositions = [
+    { id: 'upper-left', label: 'Upper left', x: 0.3, y: 0.24 },
+    { id: 'upper-center', label: 'Upper center', x: 0.5, y: 0.25 },
+    { id: 'upper-right', label: 'Upper right', x: 0.7, y: 0.24 },
+    { id: 'center-left', label: 'Center left', x: 0.34, y: 0.5 },
+    { id: 'center', label: 'Center', x: 0.5, y: 0.5 },
+    { id: 'center-right', label: 'Center right', x: 0.66, y: 0.5 },
+  ] as const;
   readonly captionWeights = CAPTION_WEIGHTS;
   readonly tagLimits = TAG_LIMITS;
   readonly tagPositions = TAG_POSITIONS;
@@ -1308,6 +1420,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private stopAgentBridge: (() => void) | null = null;
   private stopAgentSystemEvents: (() => void) | null = null;
   private stopAgentCancelBridge: (() => void) | null = null;
+  private stopDesktopCloseBridge: (() => void) | null = null;
   private readonly agentOperationControllers = new Map<string, AbortController>();
   private currentAgentOperationId = '';
 
@@ -1347,21 +1460,37 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       this.cancelAnalyses();
       this.pushAgentLog('action', `Cancellation requested for operation ${operationId}`, 'MCP control', 'WARN');
     }));
+    this.stopDesktopCloseBridge = this.desktop.registerBeforeCloseHandler(() => this.saveNow());
+    this.desktop.registerRootConsentAsker((missing, reason) => this.askForFolder(missing, reason));
+    // Files chosen through showOpenFilePicker fire no change event, so the one
+    // document-level listener in DesktopService cannot see them. Choosing a
+    // file there means the same thing, and must allow its folder the same way.
+    onFilesChosenThroughPicker((files) => void this.desktop.rememberFolders(files));
   }
 
   ngOnDestroy(): void {
+    onFilesChosenThroughPicker(null);
+    this.desktop.registerRootConsentAsker(null);
+    this.resolveFolderRequest?.(null);
     this.stopAgentBridge?.();
     this.stopAgentBridge = null;
     this.stopAgentSystemEvents?.();
     this.stopAgentSystemEvents = null;
     this.stopAgentCancelBridge?.();
     this.stopAgentCancelBridge = null;
+    this.stopDesktopCloseBridge?.();
+    this.stopDesktopCloseBridge = null;
     for (const controller of this.agentOperationControllers.values()) controller.abort();
     this.agentOperationControllers.clear();
+    for (const url of this.imagePreviewUrls.values()) revokeMediaObjectUrl(url);
+    this.imagePreviewUrls.clear();
+    this.agentVision?.dispose();
+    this.agentVision = null;
     this.pararEspelhoBoard();
     this.apagarGiroBoard();
     this.controller?.abort();
     this.cancelAnalyses();
+    this.cancelNoiseOperations();
     this.transcriptController?.abort();
     this.revokeTranscript();
     if (this.redetectTimer) clearTimeout(this.redetectTimer);
@@ -1371,7 +1500,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (this.saveTimer) clearTimeout(this.saveTimer);
     // Written one last time rather than left to the timer: a reader navigating
     // away mid-edit is exactly the case the storage exists for.
-    this.saveNow();
+    void this.saveNow();
     for (const clip of this.clips) this.release(clip);
   }
 
@@ -1413,6 +1542,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.restoring = true;
 
     try {
+      // A project can be opened through MCP while newly imported media is still
+      // being listened to. Stop that old work before ids from the restored
+      // document can reuse the same names.
+      this.cancelAnalyses();
       for (const clip of this.clips) this.release(clip);
       this.clips = restored.clips;
       this.project = restored.project;
@@ -1527,6 +1660,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.awaitingFile = false;
         clip.info = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
+        this.queueAutomaticListening([clip]);
         used = true;
       }
 
@@ -1550,6 +1684,21 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.backgroundUrl = mediaObjectUrl(file);
         used = true;
       }
+
+      // Placed pictures come back the same way the media does: by the reference
+      // the document kept, never by anything stored in it. The placement itself
+      // is untouched, so a picture handed back lands exactly where it was.
+      if (isMediaClip(clip)) {
+        for (const image of clip.images ?? []) {
+          if (!image.source.awaitingFile || !image.source.fileRef) continue;
+          if (!matchesRef(file, image.source.fileRef)) continue;
+          this.releaseImagePreview(image);
+          forgetImage(image.source);
+          image.source = { ...image.source, file, awaitingFile: false };
+          void loadImage(image.source);
+          used = true;
+        }
+      }
     }
 
     const fallback = this.project.defaultAudio;
@@ -1571,22 +1720,37 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.saveTimer = setTimeout(() => {
       this.saveTimer = null;
       this.zone.run(() => {
-        this.saveNow();
+        void this.saveNow();
         this.cdr.markForCheck();
       });
     }, SAVE_DELAY);
   }
 
-  private saveNow(): void {
+  private async saveNow(): Promise<void> {
     if (this.restoring || !this.remembering || !isPlatformBrowser(this.platformId)) return;
 
     if (!this.clips.length) {
       clearStoredProject();
       this.saveState = 'idle';
+      if (this.desktop.isDesktop) {
+        await this.desktop.clearProjectCheckpoint(this.revision).catch((error) => {
+          this.notice = `The timeline was cleared, but desktop recovery could not be cleared: ${error instanceof Error ? error.message : String(error)}`;
+          this.cdr.markForCheck();
+        });
+      }
       return;
     }
 
     this.saveState = writeStoredProject(this.clips, this.project, this.nextId, this.revision);
+    if (this.desktop.isDesktop) {
+      const recoveryDocument = serializeProject(this.clips, this.project, this.nextId, {
+        projectRevision: this.revision
+      });
+      await this.desktop.checkpointProject(recoveryDocument, this.revision).catch((error) => {
+        this.notice = `The browser copy was saved, but desktop recovery could not be updated: ${error instanceof Error ? error.message : String(error)}`;
+        this.cdr.markForCheck();
+      });
+    }
   }
 
   openSaveChooser(): void {
@@ -1823,7 +1987,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   rememberAgain(): void {
     this.remembering = true;
     this.notice = '';
-    this.saveNow();
+    void this.saveNow();
   }
 
   /** The names the timeline is still waiting for, for the message that asks. */
@@ -2050,6 +2214,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       const position = at === undefined ? this.clips.length : Math.max(0, Math.min(at, this.clips.length));
       this.clips.splice(position, 0, ...added);
       for (const clip of added) this.enqueueThumbnail(clip);
+      this.queueAutomaticListening(added);
     } finally {
       this.reading = false;
     }
@@ -2495,6 +2660,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       copy = {
         ...clip,
         id: `clip-${this.nextId++}`,
+        videoEffect: normalizeVideoEffect(clip.videoEffect),
+        images: (clip.images ?? []).map(image => ({ ...image, id: `image-${this.nextId++}` })),
+        videoEffects: (clip.videoEffects ?? []).map(effect => ({ ...effect, id: `effect-${this.nextId++}` })),
         overrides: clip.overrides ? cloneEdits(clip.overrides) : null,
         detected: clip.detected.map((range) => ({ ...range })),
         manualCuts: clip.manualCuts.map((range) => ({ ...range })),
@@ -2531,6 +2699,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   clear(): void {
     this.closeAllDialogs();
     this.closeTimelinePreview();
+    this.cancelAnalyses();
     for (const clip of this.clips) this.release(clip);
     this.clips = [];
     // The settings go with the clips. Leaving them behind is what made a
@@ -2567,7 +2736,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private release(clip: EditorClip): void {
     if (isMediaClip(clip)) {
       if (clip.previewUrl) URL.revokeObjectURL(clip.previewUrl);
+      if (clip.noiseCleanedUrl) URL.revokeObjectURL(clip.noiseCleanedUrl);
       clip.previewUrl = null;
+      clip.noiseCleanedUrl = null;
       return;
     }
     if (!isTextClip(clip)) return;
@@ -2744,10 +2915,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // animation frame, and the dialog is about to put a second `<video>` on the
     // same machine — two decoders competing was what made opening a card feel
     // like the page had stalled.
-    if (isMediaClip(clip)) this.ensureTimedCaptions(clip);
+    if (isMediaClip(clip)) {
+      this.ensureTimedCaptions(clip);
+      this.ensureTimedVideoEffects(clip);
+    }
     this.suspendPreview();
     this.editing = clip;
     this.expandedCaptionId = null;
+    this.expandedVideoEffectId = null;
     this.playhead = 0;
     if (isPlatformBrowser(this.platformId) && !clip.awaitingFile) {
       clip.previewUrl ??= mediaObjectUrl(clip.file);
@@ -2756,7 +2931,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   closeClip(): void {
     this.editing = null;
+    this.noiseEditor = null;
     this.expandedCaptionId = null;
+    this.expandedVideoEffectId = null;
     this.resumePreview();
   }
 
@@ -2792,7 +2969,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private closeAllDialogs(): void {
     this.stopTextPlayback();
     this.editing = null;
+    this.noiseEditor = null;
     this.expandedCaptionId = null;
+    this.expandedVideoEffectId = null;
     this.editingText = null;
     this.preview = null;
     this.soundChooser = null;
@@ -2810,6 +2989,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   get dialogOpen(): boolean {
     return Boolean(
       this.editing ||
+        this.noiseEditor ||
         this.editingText ||
         this.tagEditor ||
         this.saveChooser ||
@@ -2904,6 +3084,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           { canvas, video, videoB, audio },
           {
             onTick: (time, index) => this.onPreviewTick(time, index),
+            onEffectStatus: message => {
+              // The offer to retry travels with the message: a technical
+              // failure the model can recover from is worth a button, a picture
+              // with nobody in it is not.
+              const retryable = this.player?.subjectVisionRetryable ?? false;
+              if (message === this.previewEffectStatus && retryable === this.previewEffectRetryable) return;
+              this.zone.run(() => {
+                this.previewEffectStatus = message;
+                this.previewEffectRetryable = retryable;
+                this.cdr.markForCheck();
+              });
+            },
             onEnded: () => this.zone.run(() => {
               this.previewPlaying = false;
               this.cdr.markForCheck();
@@ -3088,6 +3280,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * otherwise a few times a second, which is the difference between a preview
    * that plays smoothly and one that stutters on its own interface.
    */
+  /**
+   * Clears a recoverable segmentation failure without reopening the editor.
+   *
+   * The next drawn frame asks for its matte again, so the status either clears
+   * on its own or comes back with whatever failed the second time.
+   */
+  retryPreviewSubjectVision(): void {
+    if (!this.player?.retrySubjectVision()) return;
+    this.previewEffectStatus = '';
+    this.previewEffectRetryable = false;
+    this.cdr.markForCheck();
+  }
+
   private onPreviewTick(time: number, index: number): void {
     /*
      * A shot that is still dissolving has not finished.
@@ -5584,6 +5789,211 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return isMediaClip(clip) ? clip.captions?.[0]?.text ?? clip.caption?.text ?? '' : '';
   }
 
+  // ------------------------------------------------------ noise suppression
+
+  noiseSettingsFor(clip: MediaClip): ClipNoiseSettings {
+    return clampClipNoise(clip.noiseSuppression ?? DEFAULT_CLIP_NOISE);
+  }
+
+  noiseProgressOf(clip: MediaClip): SuppressionProgress | null {
+    return this.noiseProgress.get(clip.id) ?? null;
+  }
+
+  noiseWorking(clip: MediaClip): boolean {
+    return this.noiseControllers.has(clip.id);
+  }
+
+  noiseReady(clip: MediaClip): boolean {
+    return Boolean(clip.noiseCleanedAudio && sameClipNoise(clip.noiseCleanedWith, this.noiseSettingsFor(clip)));
+  }
+
+  setNoiseEnabled(clip: MediaClip, enabled: boolean): void {
+    clip.noiseSuppression = { ...this.noiseSettingsFor(clip), enabled };
+    this.touch();
+  }
+
+  setNoiseEnabledFor(clip: EditorClip, enabled: boolean): void {
+    if (isMediaClip(clip)) this.setNoiseEnabled(clip, enabled);
+  }
+
+  openNoiseSettingsFor(clip: EditorClip): void {
+    if (isMediaClip(clip)) this.openNoiseSettings(clip);
+  }
+
+  processNoiseNowFor(clip: EditorClip): void {
+    if (isMediaClip(clip)) void this.processNoiseNow(clip);
+  }
+
+  openNoiseSettings(clip: MediaClip): void {
+    if (clip.awaitingFile || !clip.summary.audioUsable) return;
+    this.noiseEditor = clip;
+    const analysed = clip.noiseAnalyzedWith ?? DEFAULT_ANALYSIS_SETTINGS;
+    this.noiseAnalysisContent = analysed.content;
+    this.noiseAnalysisSensitivity = analysed.sensitivity;
+  }
+
+  closeNoiseSettings(): void {
+    if (this.noiseEditor && this.noiseWorking(this.noiseEditor)) return;
+    this.noiseEditor = null;
+  }
+
+  updateNoiseSettings(clip: MediaClip, patch: Partial<ClipNoiseSettings>): void {
+    const next = clampClipNoise({ ...this.noiseSettingsFor(clip), ...patch });
+    if (sameClipNoise(clip.noiseSuppression, next)) return;
+    clip.noiseSuppression = next;
+    this.dropNoiseResult(clip);
+    this.touch();
+  }
+
+  onNoiseStrength(clip: MediaClip, value: string): void {
+    const strength: NoiseStrengthId = value === 'gentle' || value === 'maximum' ? value : 'balanced';
+    this.updateNoiseSettings(clip, { strength });
+  }
+
+  private dropNoiseResult(clip: MediaClip): void {
+    if (clip.noiseCleanedUrl) URL.revokeObjectURL(clip.noiseCleanedUrl);
+    clip.noiseCleanedUrl = null;
+    clip.noiseCleanedAudio = null;
+    clip.noiseCleanedWith = null;
+    clip.noiseReductionDb = null;
+    this.player?.invalidateSound();
+  }
+
+  async analyzeNoiseClip(clip: MediaClip): Promise<void> {
+    if (this.noiseWorking(clip) || clip.awaitingFile || !clip.summary.audioUsable) return;
+    const controller = new AbortController();
+    this.noiseControllers.set(clip.id, controller);
+    this.clearMessages();
+    try {
+      await this.runNoiseAnalysis(
+        clip,
+        {
+          content: this.noiseAnalysisContent,
+          sensitivity: this.noiseAnalysisSensitivity,
+          background: null,
+          cleanVoice: null
+        },
+        controller.signal
+      );
+      this.message = `Noise analysis completed for "${clip.summary.fileName}". The audio was not changed.`;
+    } catch (error) {
+      if (error instanceof SuppressionCanceled) this.message = 'Noise analysis stopped.';
+      else {
+        this.errorMessage = 'The background noise could not be analyzed.';
+        this.errorHint = error instanceof SuppressionError ? error.hint : error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      this.noiseControllers.delete(clip.id);
+      this.noiseProgress.delete(clip.id);
+      this.cdr.markForCheck();
+    }
+  }
+
+  private async runNoiseAnalysis(
+    clip: MediaClip,
+    settings: AnalysisSettings,
+    signal: AbortSignal,
+    operationId = ''
+  ): Promise<NoiseReport> {
+    const reportProgress = (progress: SuppressionProgress) => this.zone.run(() => {
+      this.noiseProgress.set(clip.id, progress);
+      if (operationId) this.desktop.reportAgentProgress({
+        operationId,
+        state: 'processing',
+        stage: `noise-${progress.stage}`,
+        percent: progress.ratio === null ? null : Math.round(progress.ratio * 100),
+        clipId: clip.id,
+        clipName: clip.summary.fileName
+      });
+      this.cdr.markForCheck();
+    });
+    const decoded = await readNoiseAudio(clip.file, reportProgress, signal);
+    const result = await analyseNoise(
+      decoded.channels.map((channel) => Float32Array.from(channel)),
+      decoded.rate,
+      settings,
+      (ratio, detail) => reportProgress({ stage: 'analysing', ratio, detail }),
+      signal
+    );
+    clip.noiseReport = result;
+    clip.noiseAnalyzedWith = { ...settings };
+    this.touch();
+    return result;
+  }
+
+  async processNoiseNow(clip: MediaClip): Promise<void> {
+    if (this.noiseWorking(clip) || clip.awaitingFile || !clip.summary.audioUsable) return;
+    this.openNoiseSettings(clip);
+    const controller = new AbortController();
+    this.noiseControllers.set(clip.id, controller);
+    this.clearMessages();
+    try {
+      await this.runNoiseSuppression(clip, this.noiseSettingsFor(clip), controller.signal);
+      this.message = `Noise-suppressed preview ready for "${clip.summary.fileName}".`;
+    } catch (error) {
+      if (error instanceof SuppressionCanceled) this.message = 'Noise suppression stopped.';
+      else {
+        this.errorMessage = error instanceof SuppressionError ? error.message : 'The noise could not be removed.';
+        this.errorHint = error instanceof SuppressionError ? error.hint : error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      this.noiseControllers.delete(clip.id);
+      this.noiseProgress.delete(clip.id);
+      this.cdr.markForCheck();
+    }
+  }
+
+  private async runNoiseSuppression(
+    clip: MediaClip,
+    requested: ClipNoiseSettings,
+    signal: AbortSignal,
+    operationId = ''
+  ): Promise<void> {
+    const settings = clampClipNoise(requested);
+    if (clip.noiseCleanedAudio && sameClipNoise(clip.noiseCleanedWith, settings)) return;
+    const reportProgress = (progress: SuppressionProgress) => this.zone.run(() => {
+      this.noiseProgress.set(clip.id, progress);
+      if (operationId) this.desktop.reportAgentProgress({
+        operationId,
+        state: 'processing',
+        stage: `noise-${progress.stage}`,
+        percent: progress.ratio === null ? null : Math.round(progress.ratio * 100),
+        clipId: clip.id,
+        clipName: clip.summary.fileName
+      });
+      this.cdr.markForCheck();
+    });
+
+    const decoded = await readNoiseAudio(clip.file, reportProgress, signal);
+    const result = await suppress({
+      channels: decoded.channels.map((channel) => Float32Array.from(channel)),
+      rate: decoded.rate,
+      engine: settings.engine,
+      attenuationDb: NOISE_STRENGTHS[NOISE_STRENGTH_INDEX[settings.strength]].attenuationDb,
+      preserveHighs: settings.preserveHighs
+    }, reportProgress, signal);
+    const written = await writeNoiseAudio({
+      file: clip.file,
+      channels: result.channels,
+      rate: decoded.rate,
+      format: NOISE_AUDIO_FORMATS[0]
+    }, reportProgress, signal);
+    if (signal.aborted) throw new SuppressionCanceled();
+
+    this.dropNoiseResult(clip);
+    const name = `${stemOf(clip.summary.fileName)}-noise-suppressed.${written.extension}`;
+    clip.noiseCleanedAudio = new File([written.blob], name, { type: written.blob.type, lastModified: Date.now() });
+    clip.noiseCleanedWith = { ...settings };
+    clip.noiseCleanedUrl = URL.createObjectURL(clip.noiseCleanedAudio);
+    clip.noiseReductionDb = result.reduction;
+    this.player?.invalidateSound();
+    this.cdr.markForCheck();
+  }
+
+  cancelNoiseOperations(): void {
+    for (const controller of this.noiseControllers.values()) controller.abort();
+  }
+
   // -------------------------------------------------------------- listening
 
   /**
@@ -5613,16 +6023,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * The hand-drawn cuts survive it. They are the reader's own decisions about
    * this footage, and re-running a detector is not a reason to throw them away.
    */
-  async analyzeClip(clip: MediaClip, quiet = false): Promise<void> {
-    if (!isPlatformBrowser(this.platformId) || this.analyzing.has(clip.id)) return;
+  async analyzeClip(clip: MediaClip, quiet = false): Promise<boolean> {
+    if (!isPlatformBrowser(this.platformId) || this.analyzing.has(clip.id)) return false;
     if (clip.awaitingFile) {
       this.errorMessage = `"${clip.summary.fileName}" is waiting for its file, so there is nothing to listen to yet.`;
       this.errorHint = 'Add the same file again to reconnect it.';
-      return;
+      return false;
     }
     if (!clip.summary.audioUsable) {
       this.errorMessage = `"${clip.summary.fileName}" has no sound this browser can decode, so there is nothing to listen to.`;
-      return;
+      return false;
     }
 
     this.analyzing.set(clip.id, 0);
@@ -5652,6 +6062,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       clip.detected = analysis.silenceRanges.map((range) => ({ ...range }));
       clip.analyzedWith = { ...settings, autoZoom: { ...settings.autoZoom } };
       this.touch();
+      return true;
     } catch (error) {
       if (error instanceof OperationCanceledError) {
         this.message = 'Listening was canceled.';
@@ -5663,6 +6074,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.errorMessage = `"${clip.summary.fileName}" could not be analyzed.`;
         this.errorHint = 'Check that the file is valid, or try another browser.';
       }
+      return false;
     } finally {
       this.analyzing.delete(clip.id);
       this.analysisControllers.delete(clip.id);
@@ -5712,23 +6124,63 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * how a laptop runs out of memory in the middle of something it was told to
    * do. Each lane takes the next clip as it finishes with the last.
    */
-  async analyzeMany(clips: readonly MediaClip[]): Promise<void> {
+  async analyzeMany(clips: readonly MediaClip[], quiet = false, continueAfterFailure = false): Promise<void> {
     const queue = clips.filter((clip) => !clip.awaitingFile && clip.summary.audioUsable && !this.analyzing.has(clip.id));
     if (!queue.length) return;
 
-    this.clearMessages();
+    if (!quiet) this.clearMessages();
     let next = 0;
 
     const lane = async (): Promise<void> => {
       while (next < queue.length) {
         const clip = queue[next++];
-        await this.analyzeClip(clip, true);
-        if (this.errorMessage) return;
+        const listened = await this.analyzeClip(clip, true);
+        if (!listened && !continueAfterFailure) return;
       }
     };
 
     await Promise.all(Array.from({ length: Math.min(this.analysisLanes, queue.length) }, lane));
     this.cdr.markForCheck();
+  }
+
+  /**
+   * Starts the first listening pass automatically when media bytes become
+   * available. The queue is shared by picker, drag/drop, recovery and MCP
+   * imports, so each path has the same behaviour and the global decoder limit
+   * remains effective even when files arrive one at a time.
+   */
+  private queueAutomaticListening(clips: readonly MediaClip[]): void {
+    for (const clip of clips) {
+      if (!clip.awaitingFile && clip.summary.audioUsable && !clip.analysis) {
+        this.automaticListeningIds.add(clip.id);
+      }
+    }
+    if (!this.automaticListeningIds.size || this.automaticListeningTask) return;
+
+    this.automaticListeningTask = this.drainAutomaticListening().finally(() => {
+      this.automaticListeningTask = null;
+      // A file can arrive between the drain's final size check and this
+      // callback. Start a fresh drain rather than leaving that id stranded.
+      if (this.automaticListeningIds.size) this.queueAutomaticListening([]);
+    });
+  }
+
+  private async drainAutomaticListening(): Promise<void> {
+    while (this.automaticListeningIds.size) {
+      const ids = new Set(this.automaticListeningIds);
+      this.automaticListeningIds.clear();
+      const clips = this.clips.filter((clip): clip is MediaClip =>
+        isMediaClip(clip) && ids.has(clip.id) && !clip.awaitingFile && clip.summary.audioUsable && !clip.analysis
+      );
+      // One corrupt recording must not prevent the remaining imported clips
+      // from receiving their own automatic first pass.
+      await this.analyzeMany(clips, true, true);
+    }
+  }
+
+  /** Waits through a batch added while the preceding automatic batch is settling. */
+  private async waitForAutomaticListening(): Promise<void> {
+    while (this.automaticListeningTask) await this.automaticListeningTask;
   }
 
   /** Listens to everything still waiting for it, in parallel. */
@@ -5747,6 +6199,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** Calls off every analysis that is running. */
   cancelAnalyses(): void {
+    this.automaticListeningIds.clear();
     for (const controller of this.analysisControllers.values()) controller.abort();
   }
 
@@ -6459,7 +6912,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const previousEnd = previous
       ? (previous.startSeconds ?? bounds.start) + Math.max(0.1, previous.durationSeconds ?? 0.1)
       : bounds.start;
-    let updated = { ...caption, ...change };
+    let updated = clampCaption({ ...caption, ...change });
     if (change.text !== undefined && caption.durationAutomatic !== false && change.durationSeconds === undefined) {
       updated.durationSeconds = this.estimatedCaptionDuration(change.text);
     }
@@ -6473,36 +6926,992 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.touch();
   }
 
+  setVideoEffect(clip: MediaClip, effect: VideoEffect): void {
+    if (this.exporting || clip.summary.kind === 'audio') return;
+    const next = normalizeVideoEffect(effect), previous = normalizeVideoEffect(clip.videoEffect);
+    if (next.id === previous.id && next.intensity === previous.intensity && !(clip.videoEffects?.length)) return;
+    clip.videoEffect = next;
+    // This is the backwards-compatible whole-container command. It deliberately
+    // replaces timed sections, rather than leaving an invisible list with
+    // precedence over the setting the caller just chose.
+    clip.videoEffects = [];
+    this.touch();
+  }
+
+  videoEffectsOf(clip: MediaClip): ClipVideoEffect[] { return clip.videoEffects ?? []; }
+
+  videoEffectName(effect: ClipVideoEffect): string {
+    return effectDefinition(effect.effectId)?.name ?? 'Original';
+  }
+
+  videoEffectForPreview(clip: MediaClip): VideoEffect {
+    const time = this.playhead;
+    const active = (clip.videoEffects ?? []).find(item => {
+      const start = item.startSeconds ?? clipBounds(clip).start;
+      return time >= start && time < start + (item.durationSeconds ?? 0);
+    });
+    return active
+      ? normalizeVideoEffect({ id: active.effectId, intensity: active.intensity })
+      : normalizeVideoEffect(clip.videoEffect);
+  }
+
+  addVideoEffect(clip: MediaClip, at: number = this.playhead): void {
+    if (this.exporting || clip.summary.kind === 'audio') return;
+    this.ensureTimedVideoEffects(clip);
+    const bounds = clipBounds(clip);
+    const start = Math.max(bounds.start, Math.min(bounds.end, at));
+    const available = videoEffectSlotFor(clip, start);
+    if (available < 0.1) return;
+    const definition = effectDefinition('cinematic')!;
+    const effect: ClipVideoEffect = {
+      id: `effect-${this.nextId++}`,
+      effectId: definition.id,
+      intensity: definition.defaultIntensity,
+      startSeconds: start,
+      durationSeconds: Math.min(5, available)
+    };
+    clip.videoEffects = [...(clip.videoEffects ?? []), effect]
+      .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
+    clip.videoEffect = { id: 'none', intensity: 0 };
+    this.expandedVideoEffectId = effect.id ?? null;
+    this.touch();
+  }
+
+  openVideoEffect(effect: ClipVideoEffect): void { this.expandedVideoEffectId = effect.id ?? null; }
+
+  confirmVideoEffect(effect: ClipVideoEffect): void {
+    if (this.expandedVideoEffectId === effect.id) this.expandedVideoEffectId = null;
+  }
+
+  updateVideoEffect(clip: MediaClip, effect: ClipVideoEffect, change: Partial<ClipVideoEffect>): void {
+    const items = clip.videoEffects ?? [];
+    const index = items.findIndex(item => item.id === effect.id);
+    if (index < 0) return;
+    const bounds = clipBounds(clip);
+    // Only the clip's own edges and the 0.1s minimum bound what the reader
+    // typed. Snapping it to the neighbouring section as well is what made a
+    // field answer with a number nobody asked for — and, when the room left
+    // was the minimum, with the floating-point residue of that subtraction.
+    // Overlap is now reported rather than prevented: the fields turn red and
+    // say why, and the value stays what was typed so it can be corrected.
+    const start = roundSeconds(Math.max(bounds.start, Math.min(
+      Number(change.startSeconds ?? effect.startSeconds ?? bounds.start),
+      Math.max(bounds.start, bounds.end - 0.1)
+    )));
+    const duration = roundSeconds(Math.max(0.1, Math.min(
+      Number(change.durationSeconds ?? effect.durationSeconds ?? 5),
+      bounds.end - start
+    )));
+    // Half the section at most, so the two ramps cannot meet.
+    const fadeSeconds = roundSeconds(Math.max(0, Math.min(Number(change.fadeSeconds ?? effect.fadeSeconds ?? 0), duration / 2)));
+    const updated: ClipVideoEffect = {
+      ...effect,
+      ...change,
+      effectId: effectDefinition(change.effectId ?? effect.effectId)?.id ?? effect.effectId,
+      intensity: normalizeVideoEffect({
+        id: change.effectId ?? effect.effectId,
+        intensity: change.intensity ?? effect.intensity
+      }).intensity,
+      startSeconds: start,
+      durationSeconds: duration,
+      fadeSeconds
+    };
+    const changed = items.map((item, itemIndex) => itemIndex === index ? updated : item)
+      .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
+    this.videoEffectNotice = videoEffectsOverlap(clip, changed)
+      ? 'Two effects cover the same part of this clip. Fix the times in red: while they overlap, the earlier section is the one that plays.'
+      : '';
+    clip.videoEffects = changed;
+    clip.videoEffect = { id: 'none', intensity: 0 };
+    this.touch();
+  }
+
+  chooseVideoEffect(clip: MediaClip, effect: ClipVideoEffect, value: VideoEffect): void {
+    const next = normalizeVideoEffect(value);
+    if (next.id === 'none') {
+      this.removeVideoEffect(clip, effect);
+      return;
+    }
+    this.updateVideoEffect(clip, effect, { effectId: next.id, intensity: next.intensity });
+  }
+
+  /** What the editor did with the last placement the reader asked for. */
+  videoEffectNotice = '';
+
+  /**
+   * Whether this section shares any of its time with another on the same clip.
+   *
+   * Used by the template to mark the start and duration fields, so an
+   * impossible placement is visible where it was typed instead of being
+   * silently moved somewhere else.
+   */
+  videoEffectConflicts(clip: MediaClip, effect: ClipVideoEffect): boolean {
+    const bounds = clipBounds(clip);
+    const span = (item: ClipVideoEffect) => {
+      const from = Math.max(bounds.start, item.startSeconds ?? bounds.start);
+      return { from, to: Math.min(bounds.end, from + Math.max(0, item.durationSeconds ?? bounds.end - from)) };
+    };
+    const mine = span(effect);
+    return (clip.videoEffects ?? []).some(item => {
+      if (item.id === effect.id) return false;
+      const other = span(item);
+      return other.from < mine.to - 0.0005 && mine.from < other.to - 0.0005;
+    });
+  }
+
+  /**
+   * Reads a number out of the field and writes the accepted one back into it.
+   *
+   * The accepted value is often not the typed one: it is clamped to the room
+   * between the neighbouring sections. Without writing it back, the input keeps
+   * the typed text while the section sits elsewhere, because the bound
+   * expression has not changed and Angular therefore leaves the element alone.
+   */
+  onVideoEffectNumber(
+    clip: MediaClip,
+    effect: ClipVideoEffect,
+    key: 'startSeconds' | 'durationSeconds' | 'fadeSeconds',
+    target: HTMLInputElement
+  ): void {
+    const parsed = Number(target.value);
+    if (Number.isFinite(parsed)) {
+      // Start and duration are read on whichever clock the fields are showing;
+      // the fade is a length of ramp and belongs to neither.
+      const seconds = key === 'startSeconds' ? this.sourceSeconds(clip, parsed)
+        : key === 'durationSeconds' ? this.sourceDurationOf(clip, effect.startSeconds, parsed)
+        : parsed;
+      this.updateVideoEffect(clip, effect, { [key]: seconds });
+    }
+    const saved = (clip.videoEffects ?? []).find(item => item.id === effect.id);
+    target.value = String(
+      key === 'startSeconds' ? this.displaySeconds(clip, saved?.startSeconds)
+        : key === 'durationSeconds' ? this.displayDuration(clip, saved?.startSeconds, saved?.durationSeconds)
+        : roundSeconds(Number(saved?.[key] ?? parsed))
+    );
+  }
+
+  removeVideoEffect(clip: MediaClip, effect: ClipVideoEffect): void {
+    clip.videoEffects = (clip.videoEffects ?? []).filter(item => item.id !== effect.id);
+    if (this.expandedVideoEffectId === effect.id) this.expandedVideoEffectId = null;
+    clip.videoEffect = { id: 'none', intensity: 0 };
+    this.touch();
+  }
+
+  videoEffectMinimumStart(clip: MediaClip, effect: ClipVideoEffect): number {
+    const items = clip.videoEffects ?? [];
+    const index = items.findIndex(item => item.id === effect.id);
+    const previous = items[index - 1];
+    return previous
+      ? (previous.startSeconds ?? clipBounds(clip).start) + (previous.durationSeconds ?? 0)
+      : clipBounds(clip).start;
+  }
+
+  /**
+   * The longest ramp this section can carry.
+   *
+   * Half its length: past that the two ends would meet and the effect would
+   * never reach the strength the reader asked for.
+   */
+  videoEffectMaximumFade(effect: ClipVideoEffect): number {
+    return Math.max(0, (effect.durationSeconds ?? 0) / 2);
+  }
+
+  /** "Cut" reads better than "0 s" on a control whose other values are ramps. */
+  videoEffectEdgeLabel(effect: ClipVideoEffect): string {
+    const fade = effect.fadeSeconds ?? 0;
+    return fade <= 0 ? 'Cut' : `${fade.toFixed(1)}s ease in and out`;
+  }
+
+  /** The middle of the section, in source seconds, for the gallery's frame. */
+  videoEffectPreviewTime(clip: MediaClip, effect: ClipVideoEffect): number {
+    const bounds = clipBounds(clip);
+    const start = Math.max(bounds.start, effect.startSeconds ?? bounds.start);
+    const span = Math.max(0, Math.min(effect.durationSeconds ?? 0, bounds.end - start));
+    return roundSeconds(start + span / 2);
+  }
+
+  /**
+   * Where this section lands in the finished clip, in seconds.
+   *
+   * The time fields are read on the **source** clock, the same one captions and
+   * the MCP use, because that is the only clock that survives a change to the
+   * cuts. What the reader watches is the edited clip, where removed material
+   * has pulled everything earlier — and the further into the clip, the more of
+   * it has been removed. Showing both stops that gap from being invisible.
+   */
+  videoEffectEditedStart(clip: MediaClip, effect: ClipVideoEffect): number {
+    const edits = this.editsFor(clip);
+    const speed = clampSpeed(edits.speed);
+    const bounds = clipBounds(clip);
+    const source = Math.max(bounds.start, effect.startSeconds ?? bounds.start);
+    return roundSeconds(cutTimeOf(keepRangesFor(clip, edits), source) / speed);
+  }
+
+  /** True when the cuts or the speed move this section away from its source time. */
+  videoEffectClocksDiffer(clip: MediaClip, effect: ClipVideoEffect): boolean {
+    const bounds = clipBounds(clip);
+    const source = Math.max(bounds.start, effect.startSeconds ?? bounds.start);
+    return Math.abs(this.videoEffectEditedStart(clip, effect) - (source - bounds.start)) > 0.05;
+  }
+
+  videoEffectMaximumDuration(clip: MediaClip, effect: ClipVideoEffect): number {
+    const bounds = clipBounds(clip);
+    return roundSeconds(Math.max(0.1, bounds.end - (effect.startSeconds ?? bounds.start)));
+  }
+
+  videoEffectOverflows(clip: MediaClip, effect: ClipVideoEffect): boolean {
+    return (effect.startSeconds ?? 0) + (effect.durationSeconds ?? 0) > clipBounds(clip).end + 1e-4;
+  }
+
+  canAddVideoEffect(clip: MediaClip): boolean {
+    return videoEffectSlotFor(clip, this.playhead) >= 0.1;
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Placed pictures
+  //
+  // The same shape as the captions above, and deliberately so: a container may
+  // carry any number of them, each with its own interval on the container's own
+  // source clock, and nothing is ever inherited from the project or from another
+  // container. The one real difference is that two placements may overlap — a
+  // logo in a corner and a screenshot in the middle is a normal thing to ask
+  // for — so there is no conflict to report here, unlike an effect section.
+  // ---------------------------------------------------------------------------
+
+
+  // ---------------------------------------------------------------------------
+  // The two clocks
+  //
+  // Everything timed inside a container — a caption, an effect section, a placed
+  // picture — is written on the container's **source** clock, the one the
+  // original file runs on. That is the only clock that survives a change to the
+  // cuts: move a deleted range and a caption pinned to source second 12 is still
+  // on the same word.
+  //
+  // What the reader watches is the **edited** clip, where the removed material
+  // has pulled everything earlier, and the further into the clip the more has
+  // gone. Asking someone to type a source time while they are looking at an
+  // edited preview is asking them to do that subtraction in their head, and it
+  // is exactly how a section ends up a second away from where it was wanted.
+  //
+  // So the fields accept either, and say which. Only the field changes: what is
+  // stored is always the source time, so a project written in either mode opens
+  // the same and the MCP contract is untouched.
+  // ---------------------------------------------------------------------------
+
+  /** Which clock the timing fields read and write. Not persisted; a habit, not a setting. */
+  timeClock: 'source' | 'edited' = 'source';
+
+  toggleTimeClock(): void {
+    this.timeClock = this.timeClock === 'source' ? 'edited' : 'source';
+  }
+
+  get timeClockLabel(): string {
+    return this.timeClock === 'source' ? 'Original file time' : 'Edited clip time';
+  }
+
+  /** True when the cuts or the speed make the two clocks disagree on this clip. */
+  clocksDiffer(clip: MediaClip): boolean {
+    const bounds = clipBounds(clip);
+    const edits = this.editsFor(clip);
+    if (clampSpeed(edits.speed) !== 1) return true;
+    const span = Math.max(0, bounds.end - bounds.start);
+    return Math.abs(cutTimeOf(keepRangesFor(clip, edits), bounds.end) - span) > 0.05;
+  }
+
+  /** A source second as the field should show it, in whichever clock is chosen. */
+  displaySeconds(clip: MediaClip, sourceSeconds: number | undefined): number {
+    const bounds = clipBounds(clip);
+    const source = Math.max(bounds.start, Math.min(bounds.end, sourceSeconds ?? bounds.start));
+    if (this.timeClock === 'source') return roundSeconds(source);
+    const edits = this.editsFor(clip);
+    return roundSeconds(cutTimeOf(keepRangesFor(clip, edits), source) / clampSpeed(edits.speed));
+  }
+
+  /**
+   * What the reader typed, as a source second.
+   *
+   * The edited clock is not invertible everywhere: a time inside a removed
+   * stretch has no edited counterpart, and several source instants can map to
+   * the same edited one at a cut. `sourceTimeAt` resolves that the way the
+   * planner does, which is the same answer the preview gives — so a value
+   * written here and read back lands where the reader saw it.
+   */
+  sourceSeconds(clip: MediaClip, typed: number): number {
+    const bounds = clipBounds(clip);
+    if (this.timeClock === 'source') return roundSeconds(Math.max(bounds.start, Math.min(bounds.end, typed)));
+    const entry = this.plan.clips.find(candidate => candidate.clip.id === clip.id);
+    if (!entry) return roundSeconds(Math.max(bounds.start, Math.min(bounds.end, typed)));
+    const { sourceTime } = sourceTimeAt(entry, entry.outputStart + Math.max(0, typed));
+    return roundSeconds(Math.max(bounds.start, Math.min(bounds.end, sourceTime)));
+  }
+
+  /**
+   * A duration in the chosen clock.
+   *
+   * A duration is not a point, so it cannot be converted by mapping one instant:
+   * it is the distance between the placement's two ends, measured on whichever
+   * clock is showing. On the edited clock a section spanning a removed stretch
+   * therefore reads shorter than it does on the source clock, which is correct —
+   * that is how long it is on screen.
+   */
+  displayDuration(clip: MediaClip, sourceStart: number | undefined, sourceDuration: number | undefined): number {
+    const bounds = clipBounds(clip);
+    const duration = Math.max(0, sourceDuration ?? 0);
+    if (this.timeClock === 'source') return roundSeconds(duration);
+    const start = Math.max(bounds.start, Math.min(bounds.end, sourceStart ?? bounds.start));
+    const end = Math.min(bounds.end, start + duration);
+    const edits = this.editsFor(clip);
+    const speed = clampSpeed(edits.speed);
+    const keep = keepRangesFor(clip, edits);
+    return roundSeconds(Math.max(0, (cutTimeOf(keep, end) - cutTimeOf(keep, start)) / speed));
+  }
+
+  /** The typed duration as a source duration, measured from the placement's start. */
+  sourceDurationOf(clip: MediaClip, sourceStart: number | undefined, typed: number): number {
+    const bounds = clipBounds(clip);
+    if (this.timeClock === 'source') return roundSeconds(Math.max(0, typed));
+    const start = Math.max(bounds.start, Math.min(bounds.end, sourceStart ?? bounds.start));
+    const entry = this.plan.clips.find(candidate => candidate.clip.id === clip.id);
+    if (!entry) return roundSeconds(Math.max(0, typed));
+    const edits = this.editsFor(clip);
+    const editedStart = cutTimeOf(keepRangesFor(clip, edits), start) / clampSpeed(edits.speed);
+    const { sourceTime } = sourceTimeAt(entry, entry.outputStart + editedStart + Math.max(0, typed));
+    return roundSeconds(Math.max(0, Math.min(bounds.end, sourceTime) - start));
+  }
+
+
+  // ---------------------------------------------------------------------------
+  // Placing a picture by hand
+  //
+  // Position and size are shares of the frame, and typing 0.72 into a box is a
+  // poor way to decide where a picture goes. Everything below exists so the
+  // reader can do it the way anyone would: look at the preview and drag.
+  //
+  // The numbers stay. They are what the project stores, what an agent sends and
+  // what a reader reaches for when they want two pictures in exactly the same
+  // place — the drag writes through the same `updateClipImage` the fields do, so
+  // the two are never out of step.
+  // ---------------------------------------------------------------------------
+
+  /** The gesture in progress, or null. Only one picture is ever being moved. */
+  private imageDrag: {
+    clip: MediaClip;
+    image: ClipImage;
+    mode: 'move' | 'scale' | 'rotate';
+    /** Where the frame is on screen, so pixels can be read as shares of it. */
+    rect: DOMRect;
+    pointerX: number;
+    pointerY: number;
+    origin: { positionX: number; positionY: number; scale: number; rotationDegrees: number };
+    /** Centre-to-pointer at the start, for the two gestures measured from it. */
+    radius: number;
+    angle: number;
+  } | null = null;
+
+  /** True while this picture is the one being dragged. */
+  draggingImage(image: ClipImage): boolean {
+    return this.imageDrag?.image.id === image.id;
+  }
+
+  /**
+   * True when the handles should be on the preview for this placement.
+   *
+   * Only the row the reader has open: handles for every picture on the clip at
+   * once would cover the picture they are trying to look at.
+   */
+  imageHandlesVisible(clip: MediaClip, image: ClipImage): boolean {
+    return this.previewOpen && this.expandedImageId === image.id &&
+      !this.exporting && this.previewClipIsCurrent(clip);
+  }
+
+  private previewClipIsCurrent(clip: MediaClip): boolean {
+    return this.plan.clips[this.previewClipIndex]?.clip.id === clip.id;
+  }
+
+  /**
+   * Where to put the handle box over the preview, as CSS percentages.
+   *
+   * Percentages rather than pixels because the preview is resizable and the
+   * canvas is scaled by CSS: a box in percentages of the same element needs no
+   * recalculation when the reader drags the height handle under the stage.
+   */
+  imageHandleStyle(image: ClipImage): Record<string, string> {
+    const placement = imagePlacement(image);
+    const aspect = imageAspect(image.source);
+    const plan = this.plan;
+    const widthShare = placement.scale;
+    // The frame is not square, so a width share becomes a different height
+    // share once the picture's own proportions are taken into account.
+    const heightShare = widthShare * (plan.width / Math.max(1, plan.height)) / Math.max(0.0001, aspect);
+    return {
+      left: `${(placement.positionX - widthShare / 2) * 100}%`,
+      top: `${(placement.positionY - heightShare / 2) * 100}%`,
+      width: `${widthShare * 100}%`,
+      height: `${heightShare * 100}%`,
+      transform: `rotate(${placement.rotationDegrees}deg)`
+    };
+  }
+
+  beginImageDrag(clip: MediaClip, image: ClipImage, mode: 'move' | 'scale' | 'rotate', event: PointerEvent): void {
+    const canvas = this.previewCanvas?.nativeElement;
+    if (!canvas || this.exporting) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) return;
+    const placement = imagePlacement(image);
+    const centreX = rect.left + placement.positionX * rect.width;
+    const centreY = rect.top + placement.positionY * rect.height;
+    this.imageDrag = {
+      clip, image, mode, rect,
+      pointerX: event.clientX,
+      pointerY: event.clientY,
+      origin: placement,
+      radius: Math.max(1, Math.hypot(event.clientX - centreX, event.clientY - centreY)),
+      angle: Math.atan2(event.clientY - centreY, event.clientX - centreX)
+    };
+    (event.target as Element).setPointerCapture?.(event.pointerId);
+  }
+
+  moveImageDrag(event: PointerEvent): void {
+    const drag = this.imageDrag;
+    if (!drag) return;
+    event.preventDefault();
+    const { rect, origin } = drag;
+
+    if (drag.mode === 'move') {
+      this.updateClipImage(drag.clip, drag.image, {
+        positionX: origin.positionX + (event.clientX - drag.pointerX) / rect.width,
+        positionY: origin.positionY + (event.clientY - drag.pointerY) / rect.height
+      });
+      return;
+    }
+
+    const centreX = rect.left + origin.positionX * rect.width;
+    const centreY = rect.top + origin.positionY * rect.height;
+
+    if (drag.mode === 'scale') {
+      const radius = Math.hypot(event.clientX - centreX, event.clientY - centreY);
+      this.updateClipImage(drag.clip, drag.image, { scale: origin.scale * (radius / drag.radius) });
+      return;
+    }
+
+    const angle = Math.atan2(event.clientY - centreY, event.clientX - centreX);
+    let degrees = origin.rotationDegrees + (angle - drag.angle) * 180 / Math.PI;
+    // Upright is the value people want far more often than any other, and it is
+    // the one a free rotation never quite lands on. Shift skips the snap.
+    if (!event.shiftKey && Math.abs(degrees % 90) < 3) degrees = Math.round(degrees / 90) * 90;
+    this.updateClipImage(drag.clip, drag.image, { rotationDegrees: degrees });
+  }
+
+  endImageDrag(event: PointerEvent): void {
+    if (!this.imageDrag) return;
+    (event.target as Element).releasePointerCapture?.(event.pointerId);
+    this.imageDrag = null;
+  }
+
+  /** Nudges the picture a step at a time, for a reader working from the keyboard. */
+  nudgeImage(clip: MediaClip, image: ClipImage, event: KeyboardEvent): void {
+    const step = event.shiftKey ? 0.05 : 0.005;
+    const moves: Record<string, [number, number]> = {
+      ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step]
+    };
+    const move = moves[event.key];
+    if (!move) return;
+    event.preventDefault();
+    const placement = imagePlacement(image);
+    this.updateClipImage(clip, image, {
+      positionX: placement.positionX + move[0],
+      positionY: placement.positionY + move[1]
+    });
+  }
+
+  readonly imageStyles = IMAGE_STYLES;
+  /**
+   * Limits for a picture *placed over* a clip.
+   *
+   * Not to be confused with `imageLimits` above, which is how long a still
+   * image clip may stay on screen. Two different things that both wanted the
+   * same name; this one is about placement.
+   */
+  readonly imagePlacementLimits = IMAGE_LIMITS;
+  readonly restrainedRotation = IMAGE_RESTRAINED_ROTATION;
+  /** What the editor did with the last picture the reader asked for. */
+  imageNotice = '';
+  private readonly imagePreviewUrls = new Map<string, string>();
+
+  canAddClipImage(clip: MediaClip): boolean {
+    return !this.exporting && clip.summary.kind !== 'audio';
+  }
+
+  /** Opens the file dialog for a new placement on this container. */
+  requestClipImage(clip: MediaClip, input: HTMLInputElement): void {
+    if (!this.canAddClipImage(clip)) return;
+    this.imageTarget = { clip, replacing: null };
+    input.value = '';
+    input.click();
+  }
+
+  /** Opens the file dialog to swap the file of an existing placement. */
+  replaceClipImage(clip: MediaClip, image: ClipImage, input: HTMLInputElement): void {
+    if (this.exporting) return;
+    this.imageTarget = { clip, replacing: image.id ?? null };
+    input.value = '';
+    input.click();
+  }
+
+  private imageTarget: { clip: MediaClip; replacing: string | null } | null = null;
+
+  async onClipImagePicked(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const file = input.files?.[0];
+    input.value = '';
+    const target = this.imageTarget;
+    this.imageTarget = null;
+    if (!file || !target) return;
+    await this.attachClipImage(target.clip, file, target.replacing);
+  }
+
+  /**
+   * Measures the file and either places it or swaps it into an existing row.
+   *
+   * The natural size is read once, here, because everything downstream needs it
+   * and none of it can afford to decode a picture: the panel shapes a preview
+   * from it, the placement keeps the aspect ratio from it, and the report an
+   * agent reads back says whether the picture fits the frame from it.
+   */
+  private async attachClipImage(clip: MediaClip, file: File, replacing: string | null): Promise<void> {
+    let width = 0;
+    let height = 0;
+    try {
+      const bitmap = await imageBitmapForFile(file);
+      width = bitmap.width;
+      height = bitmap.height;
+      bitmap.close();
+    } catch {
+      this.imageNotice = `${file.name} could not be read as a picture.`;
+      this.cdr.markForCheck();
+      return;
+    }
+
+    const source: ClipImageSource = {
+      file,
+      name: file.name,
+      width,
+      height,
+      ...(pathBackedPath(file) ? { sourcePath: pathBackedPath(file) } : {}),
+      fileRef: { name: file.name, size: file.size, lastModified: file.lastModified, ...(pathBackedPath(file) ? { path: pathBackedPath(file)! } : {}) }
+    };
+
+    if (replacing) {
+      const existing = (clip.images ?? []).find(item => item.id === replacing);
+      if (!existing) return;
+      forgetImage(existing.source);
+      this.releaseImagePreview(existing);
+      existing.source = source;
+      this.imageNotice = '';
+      await loadImage(source);
+      this.touch();
+      this.cdr.markForCheck();
+      return;
+    }
+
+    this.addClipImage(clip, source);
+    await loadImage(source);
+    this.cdr.markForCheck();
+  }
+
+  /**
+   * Places a measured picture on the container, starting at the playhead.
+   *
+   * `placement` is what an MCP call already knows and the panel does not: it is
+   * applied here rather than through a second `updateClipImage`, so one request
+   * is one revision and one undo step.
+   */
+  addClipImage(
+    clip: MediaClip, source: ClipImageSource, at: number = this.playhead, placement: Partial<ClipImage> = {}
+  ): ClipImage {
+    const bounds = clipBounds(clip);
+    const start = roundSeconds(Math.max(bounds.start, Math.min(at, Math.max(bounds.start, bounds.end - 0.2))));
+    const image: ClipImage = clampClipImage({
+      id: `image-${this.nextId++}`,
+      source,
+      startSeconds: start,
+      durationSeconds: roundSeconds(Math.min(4, Math.max(0.2, bounds.end - start))),
+      style: 'overlay',
+      positionX: 0.5,
+      positionY: 0.5,
+      scale: IMAGE_LIMITS.scale.default,
+      rotationDegrees: 0,
+      opacity: 1,
+      fadeSeconds: IMAGE_LIMITS.fadeSeconds.default,
+      ...placement,
+      // Clamped after the placement is merged, and to this container's edges:
+      // an agent may legitimately ask for a picture longer than what is left.
+      ...(placement.startSeconds === undefined ? {} : {
+        startSeconds: roundSeconds(Math.max(bounds.start, Math.min(placement.startSeconds, Math.max(bounds.start, bounds.end - 0.2))))
+      })
+    });
+    image.durationSeconds = roundSeconds(Math.max(0.2, Math.min(
+      image.durationSeconds ?? 4, bounds.end - (image.startSeconds ?? bounds.start)
+    )));
+    image.fadeSeconds = roundSeconds(Math.max(0, Math.min(image.fadeSeconds ?? 0, (image.durationSeconds ?? 0) / 2)));
+    clip.images = [...(clip.images ?? []), image]
+      .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
+    this.expandedImageId = image.id ?? null;
+    this.imageNotice = '';
+    this.touch();
+    return image;
+  }
+
+  openClipImage(image: ClipImage): void { this.expandedImageId = image.id ?? null; }
+
+  confirmClipImage(image: ClipImage): void {
+    if (this.expandedImageId === image.id) this.expandedImageId = null;
+  }
+
+  updateClipImage(clip: MediaClip, image: ClipImage, change: Partial<ClipImage>): void {
+    const items = clip.images ?? [];
+    const index = items.findIndex(item => item.id === image.id);
+    if (index < 0) return;
+    const bounds = clipBounds(clip);
+    // Bounded by the container's own edges and by nothing else. Two placements
+    // are allowed to share an instant, so there is no neighbour to snap to and
+    // no residue of a subtraction to write back into the field.
+    const start = roundSeconds(Math.max(bounds.start, Math.min(
+      Number(change.startSeconds ?? image.startSeconds ?? bounds.start),
+      Math.max(bounds.start, bounds.end - 0.2)
+    )));
+    const duration = roundSeconds(Math.max(0.2, Math.min(
+      Number(change.durationSeconds ?? image.durationSeconds ?? 4),
+      bounds.end - start
+    )));
+    const fadeSeconds = roundSeconds(Math.max(0, Math.min(
+      Number(change.fadeSeconds ?? image.fadeSeconds ?? 0), duration / 2
+    )));
+    const updated = clampClipImage({
+      ...image,
+      ...change,
+      source: change.source ?? image.source,
+      startSeconds: start,
+      durationSeconds: duration,
+      fadeSeconds
+    });
+    clip.images = items.map((item, itemIndex) => itemIndex === index ? updated : item)
+      .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
+    this.touch();
+  }
+
+  removeClipImage(clip: MediaClip, image: ClipImage): void {
+    this.releaseImagePreview(image);
+    clip.images = (clip.images ?? []).filter(item => item.id !== image.id);
+    if (this.expandedImageId === image.id) this.expandedImageId = null;
+    this.touch();
+  }
+
+  /**
+   * Reads a number out of the field and writes the accepted one back into it.
+   *
+   * The same reason the effect sections do it: without writing it back, a value
+   * the editor clamped leaves the typed text on screen while the placement sits
+   * somewhere else, because the bound expression never changed.
+   */
+  onClipImageNumber(
+    clip: MediaClip,
+    image: ClipImage,
+    key: 'startSeconds' | 'durationSeconds' | 'fadeSeconds' | 'positionX' | 'positionY' | 'scale' | 'rotationDegrees' | 'opacity',
+    target: HTMLInputElement
+  ): void {
+    const parsed = Number(target.value);
+    if (Number.isFinite(parsed)) {
+      const seconds = key === 'startSeconds' ? this.sourceSeconds(clip, parsed)
+        : key === 'durationSeconds' ? this.sourceDurationOf(clip, image.startSeconds, parsed)
+        : parsed;
+      this.updateClipImage(clip, image, { [key]: seconds });
+    }
+    const saved = (clip.images ?? []).find(item => item.id === image.id);
+    target.value = String(
+      key === 'startSeconds' ? this.displaySeconds(clip, saved?.startSeconds)
+        : key === 'durationSeconds' ? this.displayDuration(clip, saved?.startSeconds, saved?.durationSeconds)
+        : roundSeconds(Number(saved?.[key] ?? parsed))
+    );
+  }
+
+  onClipImageStyle(clip: MediaClip, image: ClipImage, value: string): void {
+    if (isImageStyle(value)) this.updateClipImage(clip, image, { style: value });
+  }
+
+  /**
+   * A browser URL for the panel's thumbnail, made once per distinct file.
+   *
+   * Keyed by the file rather than by the placement on purpose. Keyed by the
+   * placement's id, swapping a picture and then undoing would leave the id
+   * pointing at the URL of the file that was swapped in — the panel would show
+   * one picture while the frame drew another. Two placements of the same file
+   * also share one URL this way, which is what anyone would expect.
+   */
+  clipImagePreview(image: ClipImage): string {
+    const key = imageKey(image.source);
+    const held = this.imagePreviewUrls.get(key);
+    if (held) return held;
+    if (image.source.awaitingFile || !image.source.file || image.source.file.size === 0) return '';
+    const url = mediaObjectUrl(image.source.file);
+    this.imagePreviewUrls.set(key, url);
+    return url;
+  }
+
+  /**
+   * Releases a thumbnail, but only once nothing is using it.
+   *
+   * The URL belongs to the file, and the same file may be placed twice, or be
+   * sitting in an undo snapshot waiting to come back. Revoking it while any of
+   * those still point at it turns a working thumbnail into a broken one.
+   */
+  private releaseImagePreview(image: ClipImage): void {
+    const key = imageKey(image.source);
+    const held = this.imagePreviewUrls.get(key);
+    if (!held) return;
+    const stillUsed = this.clips.some(candidate =>
+      isMediaClip(candidate) && (candidate.images ?? []).some(other =>
+        other !== image && imageKey(other.source) === key
+      )
+    );
+    if (stillUsed) return;
+    // Not `URL.revokeObjectURL` directly: a picture opened from a local path
+    // carries the desktop's own URL rather than a blob, and revoking that is
+    // meaningless at best.
+    revokeMediaObjectUrl(held);
+    this.imagePreviewUrls.delete(key);
+  }
+
+  /** True when this placement is still waiting for its file after a reload. */
+  clipImageMissing(image: ClipImage): boolean {
+    return !!image.source.awaitingFile || !image.source.file || image.source.file.size === 0;
+  }
+
+  /**
+   * True when the whole picture lands inside the finished frame.
+   *
+   * Measured against the plan's own frame, not against the resolution preset:
+   * a reframed project crops, and a placement that fits a 16:9 master can be
+   * half off the side of the 9:16 export it is actually being written into.
+   */
+  clipImageFits(image: ClipImage): boolean {
+    const plan = this.plan;
+    return imageBox(image, Math.max(1, plan.width), Math.max(1, plan.height)).contained;
+  }
+
+  /**
+   * What else this picture lands on, at the instants it is on screen.
+   *
+   * The editor already knows exactly where the caption and the tag are drawn,
+   * so a picture covering either is something it can say rather than something
+   * the reader has to discover in the export. Only the overlap that actually
+   * hides something is reported: a picture sitting *behind* the person is still
+   * in front of the scenery, and a caption underneath it is still covered.
+   *
+   * Measured against the placement's own interval, not the whole clip. A logo
+   * that leaves before the caption arrives is not covering anything.
+   */
+  clipImageCovers(clip: MediaClip, image: ClipImage): string[] {
+    const plan = this.plan;
+    const width = Math.max(1, plan.width);
+    const height = Math.max(1, plan.height);
+    const box = imageBox(image, width, height);
+    const context = this.measuringContext();
+    if (!context) return [];
+
+    const bounds = clipBounds(clip);
+    const start = Math.max(bounds.start, image.startSeconds ?? bounds.start);
+    const end = Math.min(bounds.end, start + Math.max(0, image.durationSeconds ?? 0));
+    const overlaps = (other: { left: number; top: number; right: number; bottom: number }) =>
+      other.left < box.right && box.left < other.right && other.top < box.bottom && box.top < other.bottom;
+
+    const covered: string[] = [];
+    for (const caption of clip.captions ?? []) {
+      const captionStart = Math.max(bounds.start, caption.startSeconds ?? bounds.start);
+      const captionEnd = Math.min(bounds.end, captionStart + Math.max(0, caption.durationSeconds ?? bounds.end - captionStart));
+      if (captionEnd <= start + 1e-4 || end <= captionStart + 1e-4) continue;
+      const area = captionBox(context, caption, width, height);
+      if (area && overlaps(area)) {
+        const text = caption.text.trim().replace(/\s+/g, ' ');
+        covered.push(`the caption "${text.length > 24 ? `${text.slice(0, 23)}…` : text}"`);
+      }
+    }
+
+    // A tag belongs to the whole container rather than to an interval, so any
+    // placement on this container can reach it.
+    if (clip.tag) {
+      const tag = measureTag(context, clip.tag, width, height);
+      if (overlaps({ left: tag.x, top: tag.y, right: tag.x + tag.width, bottom: tag.y + tag.height })) {
+        covered.push('the tag');
+      }
+    }
+    return covered;
+  }
+
+  /** How the panel says it. Empty when the picture covers nothing. */
+  clipImageCoversLabel(clip: MediaClip, image: ClipImage): string {
+    const covered = this.clipImageCovers(clip, image);
+    if (!covered.length) return '';
+    return covered.length === 1
+      ? `This image covers ${covered[0]}.`
+      : `This image covers ${covered.slice(0, -1).join(', ')} and ${covered[covered.length - 1]}.`;
+  }
+
+  /**
+   * A throwaway 2D context, kept for measuring text.
+   *
+   * Nothing is ever drawn on it. Both `captionBox` and `measureTag` have to set
+   * a font and ask the browser how wide the glyphs are, and that needs a real
+   * canvas even when the answer is only a number.
+   */
+  private measuring: CanvasRenderingContext2D | null = null;
+
+  private measuringContext(): CanvasRenderingContext2D | null {
+    if (!this.measuring) {
+      const canvas = document.createElement('canvas');
+      canvas.width = 2;
+      canvas.height = 2;
+      this.measuring = canvas.getContext('2d');
+    }
+    return this.measuring;
+  }
+
+  /** True when the rotation is past the restraint the AI clients are held to. */
+  clipImageStronglyRotated(image: ClipImage): boolean {
+    return Math.abs(image.rotationDegrees ?? 0) > IMAGE_RESTRAINED_ROTATION;
+  }
+
+  clipImageMaximumFade(image: ClipImage): number {
+    return Math.max(0, (image.durationSeconds ?? 0) / 2);
+  }
+
+  clipImageEdgeLabel(image: ClipImage): string {
+    const fade = image.fadeSeconds ?? 0;
+    return fade <= 0 ? 'Cut' : `${fade.toFixed(1)}s fade in and out`;
+  }
+
+  clipImageMaximumDuration(clip: MediaClip, image: ClipImage): number {
+    const bounds = clipBounds(clip);
+    return roundSeconds(Math.max(0.2, bounds.end - (image.startSeconds ?? bounds.start)));
+  }
+
+  clipImageOverflows(clip: MediaClip, image: ClipImage): boolean {
+    return (image.startSeconds ?? 0) + (image.durationSeconds ?? 0) > clipBounds(clip).end + 1e-4;
+  }
+
+  /** Where this placement lands in the finished clip, in seconds. */
+  clipImageEditedStart(clip: MediaClip, image: ClipImage): number {
+    const edits = this.editsFor(clip);
+    const speed = clampSpeed(edits.speed);
+    const bounds = clipBounds(clip);
+    const source = Math.max(bounds.start, image.startSeconds ?? bounds.start);
+    return roundSeconds(cutTimeOf(keepRangesFor(clip, edits), source) / speed);
+  }
+
+  /** True when the cuts or the speed move this placement away from its source time. */
+  clipImageClocksDiffer(clip: MediaClip, image: ClipImage): boolean {
+    const bounds = clipBounds(clip);
+    const source = Math.max(bounds.start, image.startSeconds ?? bounds.start);
+    return Math.abs(this.clipImageEditedStart(clip, image) - (source - bounds.start)) > 0.05;
+  }
+
+  /**
+   * Puts the playhead in the middle of this placement, so the preview shows it.
+   *
+   * The placement is timed on the container's source clock and the playhead
+   * runs on the output clock, so the conversion is the same one the panel
+   * already shows beside the field: the cuts pull it earlier, the speed divides
+   * it, and the container's own start on the timeline puts it back.
+   */
+  previewClipImage(clip: MediaClip, image: ClipImage): void {
+    const entry = this.plan.clips.find(candidate => candidate.clip.id === clip.id);
+    if (!entry) return;
+    const bounds = clipBounds(clip);
+    const start = Math.max(bounds.start, image.startSeconds ?? bounds.start);
+    const span = Math.max(0, Math.min(image.durationSeconds ?? 0, bounds.end - start));
+    const edits = this.editsFor(clip);
+    const middle = cutTimeOf(keepRangesFor(clip, edits), start + span / 2) / clampSpeed(edits.speed);
+    this.playhead = Math.max(0, Math.min(this.plan.totalDuration, entry.outputStart + middle));
+  }
+
+  private ensureTimedVideoEffects(clip: MediaClip): void {
+    if (clip.videoEffects) return;
+    const legacy = normalizeVideoEffect(clip.videoEffect);
+    const bounds = clipBounds(clip);
+    clip.videoEffects = legacy.id === 'none' || legacy.intensity <= 0 ? [] : [{
+      id: `effect-${this.nextId++}`,
+      effectId: legacy.id,
+      intensity: legacy.intensity,
+      startSeconds: bounds.start,
+      durationSeconds: bounds.end - bounds.start
+    }];
+    clip.videoEffect = { id: 'none', intensity: 0 };
+  }
+
   applyCaptionPreset(clip: MediaClip, caption: ClipCaption, presetId: string): void {
-    const preset = CAPTION_PRESETS.find((candidate) => candidate.id === presetId);
-    if (preset) this.updateCaption(clip, caption, { ...preset.style, stylePreset: preset.id });
+    const patch = captionPresetPatch(caption, presetId);
+    if (patch) this.updateCaption(clip, caption, patch);
   }
 
   updateCaptionStyle(clip: MediaClip, caption: ClipCaption, change: Partial<ClipCaption>): void {
-    this.updateCaption(clip, caption, { ...change, stylePreset: 'custom' });
+    const behindSubject = this.isBehindSubjectCaption(caption);
+    this.updateCaption(clip, caption, {
+      ...change,
+      ...(behindSubject ? { style: 'behind-subject', stylePreset: 'custom-background' } : { stylePreset: 'custom' })
+    });
   }
 
   captionPresetOf(caption: ClipCaption): string {
-    return caption.stylePreset && CAPTION_PRESETS.some((preset) => preset.id === caption.stylePreset)
+    if (this.isBehindSubjectCaption(caption)) {
+      return caption.stylePreset && captionPresetIsBackground(caption.stylePreset)
+        ? caption.stylePreset : 'custom-background';
+    }
+    return caption.stylePreset && CAPTION_PRESETS.some((preset) => preset.id === caption.stylePreset && preset.group === 'classic')
       ? caption.stylePreset : caption.stylePreset === 'custom' ? 'custom' : 'classic';
+  }
+
+  isBehindSubjectCaption(caption: ClipCaption): boolean {
+    return isBackgroundCaption(caption);
+  }
+
+  behindSubjectPositionOf(caption: ClipCaption): string {
+    const x = caption.positionX ?? 0.5;
+    const y = caption.positionY ?? 0.25;
+    return this.behindSubjectPositions.find((item) => Math.abs(item.x - x) < 0.005 && Math.abs(item.y - y) < 0.005)?.id ?? 'custom';
+  }
+
+  applyBehindSubjectPosition(clip: MediaClip, caption: ClipCaption, id: string): void {
+    const position = this.behindSubjectPositions.find((item) => item.id === id);
+    if (position) this.updateCaptionStyle(clip, caption, { positionX: position.x, positionY: position.y });
   }
 
   onCaptionNumber(
     clip: MediaClip,
     caption: ClipCaption,
-    key: 'startSeconds' | 'durationSeconds' | 'fontScale' | 'bottomMargin' | 'outlinePercent' | 'fadeSeconds',
+    key: 'startSeconds' | 'durationSeconds' | 'fontScale' | 'bottomMargin' | 'outlinePercent' | 'fadeSeconds' |
+      'positionX' | 'positionY' | 'rotationDegrees' | 'shadowBlurPercent' | 'shadowOpacity',
     value: string
   ): void {
     const parsed = Number(value);
     if (!Number.isFinite(parsed)) return;
-    if (key === 'fontScale' || key === 'bottomMargin' || key === 'outlinePercent' || key === 'fadeSeconds') {
+    if (key === 'fontScale' || key === 'bottomMargin' || key === 'outlinePercent' || key === 'fadeSeconds' ||
+        key === 'positionX' || key === 'positionY' || key === 'rotationDegrees' || key === 'shadowBlurPercent' || key === 'shadowOpacity') {
       const limits = CAPTION_LIMITS[key];
       const change = { [key]: Math.min(limits.max, Math.max(limits.min, parsed)) } as Partial<ClipCaption>;
-      if (key === 'fontScale' || key === 'outlinePercent') this.updateCaptionStyle(clip, caption, change);
+      if (key === 'fontScale' || key === 'outlinePercent' || key === 'positionX' || key === 'positionY' ||
+          key === 'rotationDegrees' || key === 'shadowBlurPercent' || key === 'shadowOpacity') this.updateCaptionStyle(clip, caption, change);
       else this.updateCaption(clip, caption, change);
       return;
     }
-    this.updateCaption(clip, caption, { [key]: parsed, ...(key === 'durationSeconds' ? { durationAutomatic: false } : {}) });
+    // Read on whichever clock the fields are showing, stored on the source one.
+    const seconds = key === 'startSeconds'
+      ? this.sourceSeconds(clip, parsed)
+      : this.sourceDurationOf(clip, caption.startSeconds, parsed);
+    this.updateCaption(clip, caption, { [key]: seconds, ...(key === 'durationSeconds' ? { durationAutomatic: false } : {}) });
   }
 
   removeCaption(clip: MediaClip, caption: ClipCaption): void {
@@ -6845,6 +8254,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     try {
       await this.runPendingAnalyses(controller.signal);
+      await this.runPendingNoiseSuppressions(controller.signal);
 
       const whole = buildProjectPlan(this.clips, this.project, kind);
       // The whole edit, or what is left of one that was stopped. Sliced here
@@ -6968,6 +8378,15 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * finished analysis is kept on the clip until a setting invalidates it.
    */
   private async runPendingAnalyses(signal: AbortSignal): Promise<void> {
+    const cancelAutomatic = () => this.cancelAnalyses();
+    signal.addEventListener('abort', cancelAutomatic, { once: true });
+    try {
+      await this.waitForAutomaticListening();
+    } finally {
+      signal.removeEventListener('abort', cancelAutomatic);
+    }
+    if (signal.aborted) throw new EditorCanceledError();
+
     const pending = clipsNeedingAnalysis(this.clips, this.project).concat(
       this.clips.filter((clip): clip is MediaClip => isMediaClip(clip) && this.isStale(clip))
     );
@@ -7019,6 +8438,31 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     };
 
     await Promise.all(Array.from({ length: Math.min(this.analysisLanes, unique.length) }, lane));
+  }
+
+  /** Builds only the enabled per-clip caches that export actually needs. */
+  private async runPendingNoiseSuppressions(signal: AbortSignal): Promise<void> {
+    const pending = this.clips.filter((clip): clip is MediaClip =>
+      isMediaClip(clip) &&
+      !clip.awaitingFile &&
+      clip.summary.audioUsable &&
+      this.noiseSettingsFor(clip).enabled &&
+      !this.noiseReady(clip)
+    );
+    for (const [index, clip] of pending.entries()) {
+      if (signal.aborted) throw new EditorCanceledError();
+      const text = `Removing noise from ${clip.summary.fileName}`;
+      this.pushLog({ kind: 'clip', text });
+      this.progress = {
+        stage: 'analyzing',
+        ratio: pending.length ? index / pending.length : 0,
+        clipIndex: index + 1,
+        clipCount: pending.length,
+        clipName: clip.summary.fileName
+      };
+      await this.runNoiseSuppression(clip, this.noiseSettingsFor(clip), signal);
+      this.noiseProgress.delete(clip.id);
+    }
   }
 
   /**
@@ -7371,11 +8815,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.transcriptStage = TRANSCRIPT_STAGE[progress.stage] ?? '';
     this.transcriptDetail = progress.detail ?? '';
     this.transcriptRatio = progress.ratio === null ? null : Math.min(1, Math.max(0, progress.ratio));
-    if (this.agentWorking && progress.stage !== this.lastAgentTranscriptStage) {
-      this.lastAgentTranscriptStage = progress.stage;
-      this.agentTranscriptStageTimeout?.(progress.stage);
-      const percent = progress.ratio === null ? '' : ` (${Math.round(progress.ratio * 100)}%)`;
-      this.pushAgentLog('action', `${this.transcriptStage || progress.stage}${percent}${progress.detail ? ` — ${progress.detail}` : ''}`, 'transcribe', 'DEBUG');
+    if (this.agentWorking) {
+      if (progress.stage !== this.lastAgentTranscriptStage) {
+        this.lastAgentTranscriptStage = progress.stage;
+        this.agentTranscriptStageTimeout?.(progress.stage);
+        // A new stage is worth a line whatever the throttle thinks: it is the
+        // difference between "still fetching the model" and "actually
+        // listening", which is the question a reader is asking.
+        this.agentProgressReset('transcribe');
+      }
+      this.agentProgress(
+        'transcribe',
+        `${this.transcriptStage || progress.stage}${progress.detail ? ` — ${progress.detail}` : ''}`,
+        this.transcriptRatio === null ? null : this.transcriptRatio * 100
+      );
     }
     this.cdr.markForCheck();
   }
@@ -7998,6 +9451,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const bounds = clipBounds(clip);
     const second: MediaClip = {
       ...clip,
+      videoEffect: normalizeVideoEffect(clip.videoEffect),
+      images: (clip.images ?? []).map(image => ({ ...image, id: `image-${this.nextId++}` })),
+      videoEffects: (clip.videoEffects ?? []).map(effect => ({ ...effect, id: `effect-${this.nextId++}` })),
       id: `clip-${this.nextId++}`,
       summary: { ...clip.summary },
       inPoint: sourceTime,
@@ -8556,6 +10012,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.logStartedAt = performance.now();
     this.logFollowing = true;
     this.logDirty = true;
+    // Every export starts expanded, including one that follows an export the
+    // reader had collapsed: the panel is there to be read while it fills.
+    this.logOpen = true;
   }
 
   /**
@@ -8570,7 +10029,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const minutes = Math.floor(seconds / 60);
     const at = `${String(minutes).padStart(2, '0')}:${(seconds - minutes * 60).toFixed(1).padStart(4, '0')}`;
 
-    this.renderLog.push({ seq: this.logSeq++, at, kind: entry.kind, text: entry.text });
+    this.renderLog.push({ seq: this.logSeq++, at, kind: entry.kind, text: entry.text, percent: entry.percent ?? null });
     if (this.renderLog.length > LOG_LIMIT) this.renderLog.splice(0, this.renderLog.length - LOG_LIMIT);
     this.logDirty = true;
   }
@@ -8687,9 +10146,73 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
+  /**
+   * How the activity window dresses itself for whoever is driving.
+   *
+   * The identity already travels: the client sets `SVE_CONTROLLER`, Electron
+   * normalises it and publishes it with the control state. All that was missing
+   * was for the window to look like it — and at a glance, while an agent is
+   * editing, the colour is the fastest way to know which one has the wheel.
+   *
+   * The marks are the project's own drawings, not either company's logo.
+   */
+  private static readonly CONTROLLERS: Readonly<Record<string, { label: string; icon: string; theme: string }>> = {
+    codex: { label: 'Codex', icon: 'assets/icons/codex-mark.svg', theme: 'agente-codex' },
+    chatgpt: { label: 'ChatGPT', icon: 'assets/icons/codex-mark.svg', theme: 'agente-codex' },
+    'claude-code': { label: 'Claude Code', icon: 'assets/icons/claude-mark.svg', theme: 'agente-claude' }
+  };
+
+  /* ----------------------------------------------------- allowed folders */
+
+  /** The folder being asked for right now, or null when nothing is pending. */
+  folderRequest: (MissingRoot & { reason?: string }) | null = null;
+  private resolveFolderRequest: ((folder: string | null) => void) | null = null;
+
+  /**
+   * Put the request on screen and wait for the user.
+   *
+   * One at a time: media from three folders asks three times rather than
+   * stacking three dialogs, and each answer narrows what is still missing.
+   */
+  private askForFolder(missing: MissingRoot, reason: string): Promise<string | null> {
+    this.resolveFolderRequest?.(null);
+    this.folderRequest = { ...missing, reason };
+    this.pushAgentLog('action', `Waiting for permission to use ${missing.folder}`, 'Allowed folders', 'WARN');
+    this.cdr.markForCheck();
+    return new Promise<string | null>((resolve) => {
+      this.resolveFolderRequest = (folder) => {
+        this.resolveFolderRequest = null;
+        this.folderRequest = null;
+        this.cdr.markForCheck();
+        resolve(folder);
+      };
+    });
+  }
+
+  onFolderRequestResolved(folder: string | null): void {
+    this.pushAgentLog('action',
+      folder ? `Permission granted for ${folder}` : 'Permission was not granted',
+      'Allowed folders', folder ? 'INFO' : 'WARN');
+    this.resolveFolderRequest?.(folder);
+  }
+
+  private get agentController(): { label: string; icon: string; theme: string } {
+    return EditorDeVideoComponent.CONTROLLERS[this.desktop.agentControl().controller] ??
+      { label: 'AI client', icon: 'assets/icons/codex-mark.svg', theme: 'agente-generico' };
+  }
+
   get agentControllerLabel(): string {
-    const controller = this.desktop.agentControl().controller;
-    return controller === 'chatgpt' ? 'ChatGPT' : controller === 'codex' ? 'Codex' : 'AI client';
+    return this.agentController.label;
+  }
+
+  /** The mark shown in the header, the badge and the minimized pill. */
+  get agentControllerIcon(): string {
+    return this.agentController.icon;
+  }
+
+  /** The class that colours the whole window for this controller. */
+  get agentControllerTheme(): string {
+    return this.agentController.theme;
   }
 
   openAgentLog(): void {
@@ -8782,6 +10305,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'done': return '*';
       case 'warn': return '!';
       case 'fail': return 'x';
+      // One glyph per kind of timed thing, so the console reads as a list of
+      // what happened even where colour is not available.
+      case 'effect': return '~';
+      case 'caption': return 'T';
+      case 'image': return 'P';
+      case 'zoom': return '+';
+      case 'tag': return '@';
       default: return ' ';
     }
   }
@@ -8843,8 +10373,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'started', percent: 0 });
     this.agentWorking = true;
     if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
+    const startedAt = Date.now();
+    this.agentProgressReset(request.name);
     if (request.name !== 'apply_edit_batch' && request.name !== '__has_media_path') this.pushAgentLog('command', this.agentCommandLabel(request.name, args), request.name, 'INFO');
-    else this.pushAgentLog('command', `Applying edit batch: ${String(args['label'] || 'Agent edit')}`, request.name, 'INFO');
+    else this.pushAgentLog('command', `Applying edit batch: ${this.agentBatchLabel(args)}`, request.name, 'INFO');
     await this.paintAgentProgress();
 
     try {
@@ -8877,20 +10409,27 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           break;
         }
         case 'analyze_silence': result = await this.agentAnalyzeSilence(args, operationController.signal, operationId); break;
+        case 'analyze_noise': result = await this.agentAnalyzeNoise(args, operationController.signal, operationId); break;
+        case 'suppress_noise': result = await this.agentSuppressNoise(args, operationController.signal, operationId); break;
         case 'get_waveform_page': result = this.agentWaveformPage(args); break;
         case 'transcribe': result = await this.agentTranscribe(args, operationController.signal); break;
-        case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest); break;
-        case 'get_contact_sheet': result = await this.agentContactSheet(args); break;
-        case 'export': result = await this.agentExport(args); break;
+        case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest, operationController.signal, operationId); break;
+        case 'get_contact_sheet': result = await this.agentContactSheet(args, operationController.signal, operationId); break;
+        case 'export': result = await this.agentExport(args, operationController.signal, operationId); break;
         default: throw new EditorAgentError(`Unknown editor command "${request.name}".`, 'unknown_command');
       }
 
-      if (request.name !== '__has_media_path') this.pushAgentLog('done', `${this.agentCommandNoun(request.name)} completed`, request.name, 'INFO');
+      if (request.name !== '__has_media_path') {
+        this.pushAgentLog(
+          'done', `${this.agentCommandNoun(request.name)} completed in ${this.agentElapsed(startedAt)}`,
+          request.name, 'INFO', new Date().toISOString(), 100
+        );
+      }
       this.desktop.reportAgentProgress({ operationId, state: 'applied', stage: 'completed', percent: 100 });
       return { apiVersion: EDITOR_AGENT_API_VERSION, projectRevision: this.revision, result };
     } catch (error) {
       const friendly = error instanceof Error ? error.message : String(error);
-      this.pushAgentLog('fail', friendly, request.name, 'ERROR');
+      this.pushAgentLog('fail', `${friendly} (after ${this.agentElapsed(startedAt)})`, request.name, 'ERROR');
       this.agentDiagnostic = await this.captureAgentDiagnostic(error, request);
       this.agentDiagnosticMessage = '';
       this.desktop.reportAgentProgress({
@@ -8905,6 +10444,32 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       this.agentWorking = false;
       await this.paintAgentProgress();
     }
+  }
+
+  /**
+   * What a batch is about to do, counted by kind.
+   *
+   * The label an agent sends is its own summary and can be anything; the counts
+   * are what the editor is actually being asked to do, which is the thing a
+   * reader watching the console wants to check against what they asked for.
+   */
+  private agentBatchLabel(args: Record<string, unknown>): string {
+    const label = String(args['label'] || 'Agent edit');
+    const operations = Array.isArray(args['operations']) ? args['operations'] as { type?: unknown }[] : [];
+    if (!operations.length) return label;
+    const counts = new Map<string, number>();
+    for (const operation of operations) {
+      const type = typeof operation?.type === 'string' ? operation.type : 'unknown';
+      counts.set(type, (counts.get(type) ?? 0) + 1);
+    }
+    const summary = [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 4)
+      .map(([type, count]) => count > 1 ? `${count}x ${type}` : type)
+      .join(', ');
+    const rest = counts.size > 4 ? ` and ${counts.size - 4} more kind${counts.size - 4 === 1 ? '' : 's'}` : '';
+    const dry = args['dryRun'] === true ? ' (simulation)' : '';
+    return `${label}${dry} — ${operations.length} operation${operations.length === 1 ? '' : 's'}: ${summary}${rest}`;
   }
 
   private agentCommandLabel(name: string, args: Record<string, unknown>): string {
@@ -8930,8 +10495,24 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'undo': return 'Undoing the last edit';
       case 'redo': return 'Redoing the last edit';
       case 'analyze_silence': return args['clipId'] ? `Finding pauses in ${mediaName()}` : 'Finding pauses in all videos';
-      case 'transcribe': return `Understanding video ${mediaName()}`;
-      case 'get_frames': return `Inspecting frames from ${mediaName()}`;
+      case 'analyze_noise': return args['clipId'] ? `Analyzing noise in ${mediaName()}` : 'Analyzing noise in all videos';
+      case 'suppress_noise': return `Removing noise from ${mediaName()}`;
+      // The settings are half of what a reader wants to know here: a transcript
+      // that came back poor is usually the model or the language, and the log
+      // is where they will look for which ones were used.
+      case 'transcribe': {
+        const model = String(args['model'] ?? 'default model');
+        const language = String(args['language'] ?? 'auto');
+        const denoise = args['denoise'] ? `, denoise ${String(args['noiseEngine'] ?? 'gtcrn')}/${String(args['noiseStrength'] ?? 'balanced')}` : '';
+        return `Understanding video ${mediaName()} (${model}, language ${language}${denoise})`;
+      }
+      case 'get_frames': {
+        const times = Array.isArray(args['timestamps']) ? args['timestamps'] as number[] : [];
+        const where = times.length === 1
+          ? `at ${this.formatTime(times[0])}`
+          : times.length ? `at ${times.length} times, ${this.formatTime(Math.min(...times))}–${this.formatTime(Math.max(...times))}` : '';
+        return `${args['composited'] ? 'Checking the composed frame' : 'Inspecting frames'} from ${mediaName()} ${where}`.trim();
+      }
       case 'get_contact_sheet': return `Understanding the pictures in ${mediaName()}`;
       case 'export': return `Exporting project to ${String(args['path'] ?? '')}`;
       default: return `Running MCP command ${name}`;
@@ -8946,9 +10527,50 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       __import_media_path: 'Media file import', __has_media_path: 'Duplicate check',
       apply_edit_batch: 'Edit batch', undo: 'Undo', redo: 'Redo',
       analyze_silence: 'Silence analysis', get_waveform_page: 'Waveform page', transcribe: 'Video understanding', get_frames: 'Frame inspection',
+      analyze_noise: 'Noise analysis', suppress_noise: 'Noise suppression',
       get_contact_sheet: 'Visual inspection', export: 'Export'
     };
     return labels[name] ?? name;
+  }
+
+
+  /**
+   * A progress line for the activity console, without flooding it.
+   *
+   * Every long operation reports far more often than a reader can follow — the
+   * encoder ticks per frame, a transcription per chunk — so a line is written
+   * only when the number has actually moved five points, or when a second and a
+   * half has passed with it creeping, or when it reaches the end. The console
+   * holds five hundred lines; spending them on "41%, 42%, 43%" would push the
+   * decisions an agent made off the top of it.
+   */
+  private readonly agentProgressState = new Map<string, { percent: number; at: number }>();
+
+  private agentProgress(module: string, text: string, percent: number | null, level: AgentLogLevel = 'DEBUG'): void {
+    const value = percent === null || !Number.isFinite(percent)
+      ? null
+      : Math.max(0, Math.min(100, Math.round(percent)));
+    const now = Date.now();
+    const last = this.agentProgressState.get(module);
+    const finished = value !== null && value >= 100;
+    const moved = value === null || !last || Math.abs(value - last.percent) >= 5;
+    const waited = !last || now - last.at >= 1500;
+    if (!finished && !moved && !waited) return;
+    this.agentProgressState.set(module, { percent: value ?? last?.percent ?? 0, at: now });
+    this.pushAgentLog('action', text, module, level, new Date().toISOString(), value);
+  }
+
+  /** Forgets a module's throttle, so the next operation starts reporting at once. */
+  private agentProgressReset(module: string): void {
+    this.agentProgressState.delete(module);
+  }
+
+  /** "1.4s", "2m 05s" — how long something took, said the way a reader reads it. */
+  private agentElapsed(since: number): string {
+    const seconds = Math.max(0, (Date.now() - since) / 1000);
+    if (seconds < 60) return `${seconds.toFixed(1)}s`;
+    const minutes = Math.floor(seconds / 60);
+    return `${minutes}m ${String(Math.round(seconds - minutes * 60)).padStart(2, '0')}s`;
   }
 
   private pushAgentLog(
@@ -8956,7 +10578,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     text: string,
     module = 'Editor',
     level: AgentLogLevel = kind === 'fail' ? 'ERROR' : 'INFO',
-    timestamp = new Date().toISOString()
+    timestamp = new Date().toISOString(),
+    percent: number | null = null
   ): void {
     this.agentLog.push({
       seq: this.agentLogSeq++,
@@ -8964,7 +10587,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       level,
       module,
       kind,
-      text
+      text,
+      percent: percent === null || !Number.isFinite(percent)
+        ? null
+        : Math.max(0, Math.min(100, Math.round(percent)))
     });
     if (this.agentLog.length > AGENT_LOG_LIMIT) this.agentLog.splice(0, this.agentLog.length - AGENT_LOG_LIMIT);
     this.agentLogDirty = true;
@@ -8986,7 +10612,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       code?: string; stage?: string; details?: unknown; cause?: unknown;
       exitCode?: number; signal?: string; stdout?: string; stderr?: string;
     };
-    const retryable = ['transcribe', 'analyze_silence', 'get_frames', 'get_contact_sheet', 'get_project', 'list_assets', 'get_timeline']
+    const retryable = ['transcribe', 'analyze_silence', 'analyze_noise', 'get_frames', 'get_contact_sheet', 'get_project', 'list_assets', 'get_timeline']
       .includes(request.name) || (request.name === 'apply_edit_batch' && request.arguments?.['dryRun'] === true);
     const recentLogs = this.agentLog.slice(-40).map((line) =>
       `[${line.timestamp}] [${line.level}] [${line.module}] ${line.text}`);
@@ -9073,63 +10699,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     };
   }
 
+  /**
+   * What an agent is told this editor can do.
+   *
+   * The answer itself lives in `editor-agent-capabilities`: it is seven
+   * kilobytes of near-pure data, and it was the largest thing in this file that
+   * had no reason to be in it. What stays here is the part only the running
+   * editor knows.
+   */
   private agentCapabilities(): unknown {
-    return {
-      commands: [
-        'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'add_media', 'open_project', 'save_project', 'set_project_soundtrack', 'finish_editing', 'preview',
-        'analyze_silence', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export'
-      ],
-      operationTypes: [
-        'remove_clip', 'move_clip', 'duplicate_clip', 'add_text_clip', 'update_text_clip', 'set_text_background',
-        'add_transition', 'update_transition', 'split_clip', 'trim_clip', 'clear_trim', 'set_image_duration',
-        'delete_source_range', 'restore_source_ranges', 'set_detected_range', 'set_speed', 'set_volume', 'set_audio_mode', 'set_clip_edits',
-        'clear_clip_overrides', 'attach_audio', 'detach_audio', 'add_caption', 'update_caption', 'remove_caption',
-        'set_tag', 'remove_tag', 'add_push_in', 'update_push_in', 'remove_push_in',
-        'add_zoom', 'update_zoom', 'remove_zoom', 'set_project_settings'
-      ],
-      pushIn: {
-        preferredOperations: ['add_push_in', 'update_push_in', 'remove_push_in'],
-        legacyAliases: ['add_zoom', 'update_zoom', 'remove_zoom'],
-        timeSpace: 'source',
-        scalePercent: MANUAL_ZOOM_LIMITS.scalePercent,
-        rampSeconds: MANUAL_ZOOM_LIMITS.rampSeconds,
-        durationSeconds: MANUAL_ZOOM_LIMITS.seconds,
-        note: 'A push-in ramps from 1x to scalePercent, holds for the selected source interval, and optionally eases back out.'
-      },
-      tagShapes: [
-        ...TAG_SHAPES.map((item) => ({ id: item.id, label: item.label, qr: false })),
-        ...TAG_SPECIALS.map((item) => ({ id: item.id, label: item.label, family: item.family, qr: shapeIsQr(item.id) }))
-      ],
-      transitions: TRANSITIONS.map((item) => ({ id: item.id, label: item.label, description: item.description })),
-      textCards: {
-        fonts: FONTS.map((item) => item.id),
-        animations: ANIMATIONS.map((item) => item.id),
-        legibility: LEGIBILITY_OPTIONS.map((item) => item.id),
-        align: ['left', 'center', 'right'],
-        vertical: ['top', 'middle', 'bottom']
-      },
-      captions: {
-        presets: CAPTION_PRESETS.map((item) => item.id),
-        fonts: CAPTION_FONTS.map((item) => item.value)
-      },
-      project: {
-        aspects: ASPECTS.map((item) => item.value),
-        reframes: REFRAME_FITS.map((item) => item.value),
-        resolutions: ['auto', ...RESOLUTIONS.map((item) => item.value)],
-        videoFormats: VIDEO_FORMATS.map((item) => item.id),
-        audioFormats: AUDIO_FORMATS.map((item) => item.id)
-      },
-      audio: {
-        defaultTarget: 'project',
-        note: 'Omit clipId when attaching generally requested music or background audio. Use clipId only for an explicitly named section.'
-      },
-      semantics: {
-        mutable: ['add_media', 'open_project', 'set_project_soundtrack', 'apply_edit_batch', 'undo', 'redo'],
-        derivedState: ['analyze_silence'],
-        readOnly: ['get_project', 'list_assets', 'get_timeline', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet'],
-        waveform: 'analyze_silence returns summary metadata by default; use includeWaveform with a bounded page or get_waveform_page.'
-      }
-    };
+    return editorCapabilities({
+      behindSubjectPositions: this.behindSubjectPositions,
+      captionPresetGroups: this.captionPresetGroups,
+      noiseStrengthIds: this.noiseStrengthIds
+    });
   }
 
   private agentAssetId(clip: MediaClip): string {
@@ -9209,6 +10792,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           tag: clip.tag ?? null,
           manualZooms: clip.manualZooms ?? [],
           pushIns: clip.manualZooms ?? [],
+          noiseSuppression: this.noiseSettingsFor(clip),
+          videoEffect: normalizeVideoEffect(clip.videoEffect),
+          videoEffects: (clip.videoEffects ?? []).map(effect => ({ ...effect })),
+          images: (clip.images ?? []).map(image => this.agentImagePayload(clip, image)),
+          noiseAnalysis: clip.noiseReport ?? null,
+          noisePreviewReady: this.noiseReady(clip),
           replacementAudio: clip.replacementAudio?.summary.fileName ?? null
         };
       })
@@ -9264,6 +10853,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       waiting.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: descriptor.filePath };
       waiting.previewUrl = null;
       this.enqueueThumbnail(waiting);
+      this.queueAutomaticListening([waiting]);
       this.touch();
       this.pushAgentLog('action', `Reconnected ${file.name} from its local path`);
       await this.paintAgentProgress();
@@ -9278,6 +10868,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const position = Math.max(0, Math.min(requested, this.clips.length));
     this.clips.splice(position, 0, clip);
     this.enqueueThumbnail(clip);
+    this.queueAutomaticListening([clip]);
     this.applyTimelapseTarget();
     this.touch();
     this.pushAgentLog('action', `Added ${clip.file.name} to the timeline`);
@@ -9441,6 +11032,216 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     await this.export('video');
   }
 
+  /** A container with a picture. Audio has nothing for an effect to act on. */
+  private agentVisualClip(id: unknown): MediaClip {
+    const clip = this.agentMediaClip(id);
+    if (clip.summary.kind === 'audio') {
+      throw new EditorAgentError('Video Effects require a visual media container.', 'invalid_target');
+    }
+    return clip;
+  }
+
+  /** Rejects `none`, which would leave a section that does nothing. */
+  private agentEffectId(value: unknown): string {
+    const id = stringValue(value, 'effectId');
+    if (id === 'none') {
+      throw new EditorAgentError(
+        'Use remove_video_effect to take a section away. "none" would leave an empty section behind.',
+        'invalid_arguments'
+      );
+    }
+    if (!effectDefinition(id)) {
+      throw new EditorAgentError(
+        `Unknown Video Effect "${id}". Read get_editor_capabilities.videoEffects.presets.`,
+        'invalid_arguments'
+      );
+    }
+    return id;
+  }
+
+  private agentEffectIntensity(value: unknown): number | undefined {
+    if (value === undefined) return undefined;
+    const intensity = finiteNumber(value, 'intensity');
+    if (intensity < 0 || intensity > 1) {
+      throw new EditorAgentError('Effect intensity must be between 0 and 1.', 'invalid_arguments');
+    }
+    return intensity;
+  }
+
+  private agentEffectFade(value: unknown): number | undefined {
+    if (value === undefined) return undefined;
+    const fade = finiteNumber(value, 'fadeSeconds');
+    if (fade < 0 || fade > 10) {
+      throw new EditorAgentError('fadeSeconds must be between 0 and 10. Use 0 for a hard cut.', 'invalid_arguments');
+    }
+    return fade;
+  }
+
+
+  private agentVision: SubjectSegmentationClient | null = null;
+
+  /**
+   * The segmentation client used to compose frames for an agent.
+   *
+   * One per session rather than one per call. An agent is told to verify every
+   * placement it makes with a composed frame, so this is the most-called path
+   * there is — and a fresh client each time reloads the model, starts a worker
+   * and throws away a mask cache that the next call over the same clip would
+   * almost certainly have hit.
+   *
+   * A client that failed earlier is asked to try again rather than left broken
+   * for the rest of the session; `retry` refuses on its own when the failure
+   * was not the retryable kind.
+   */
+  private agentSubjectVision(): SubjectSegmentationClient {
+    this.agentVision ??= new SubjectSegmentationClient();
+    if (this.agentVision.state === 'unavailable') this.agentVision.retry();
+    return this.agentVision;
+  }
+
+  /**
+   * Opens one picture from an absolute path and measures it.
+   *
+   * The path is read through the desktop bridge, which is the only thing that
+   * checks it against the roots the session was started with — the editor never
+   * reaches a path on its own. No picture bytes are sent anywhere: the file is
+   * decoded here, in the page, exactly as one chosen by hand would be.
+   */
+  private async agentImageSource(path: string): Promise<ClipImageSource> {
+    const [file] = await this.desktop.readAgentFiles([path]);
+    if (!file) throw new EditorAgentError(`No picture could be read at ${path}.`, 'media_unavailable');
+    let width = 0;
+    let height = 0;
+    try {
+      const bitmap = await imageBitmapForFile(file);
+      width = bitmap.width;
+      height = bitmap.height;
+      bitmap.close();
+    } catch {
+      throw new EditorAgentError(`${file.name} is not a picture this browser can decode.`, 'media_unavailable');
+    }
+    return {
+      file,
+      name: file.name,
+      width,
+      height,
+      sourcePath: path,
+      fileRef: { name: file.name, size: file.size, lastModified: file.lastModified, path }
+    };
+  }
+
+  /** Every placement value an agent may send, checked against its limit. */
+  private agentImagePlacement(patch: Record<string, unknown>): Partial<ClipImage> {
+    const change: Partial<ClipImage> = {};
+    const bounded = (key: string, limits: { min: number; max: number }): number | undefined => {
+      if (patch[key] === undefined) return undefined;
+      const value = finiteNumber(patch[key], key);
+      if (value < limits.min || value > limits.max) {
+        throw new EditorAgentError(`${key} must be between ${limits.min} and ${limits.max}.`, 'invalid_arguments');
+      }
+      return value;
+    };
+    const positionX = bounded('positionX', IMAGE_LIMITS.position);
+    const positionY = bounded('positionY', IMAGE_LIMITS.position);
+    const scale = bounded('scale', IMAGE_LIMITS.scale);
+    const rotation = bounded('rotationDegrees', IMAGE_LIMITS.rotationDegrees);
+    const opacity = bounded('opacity', IMAGE_LIMITS.opacity);
+    const fade = bounded('fadeSeconds', IMAGE_LIMITS.fadeSeconds);
+    if (positionX !== undefined) change.positionX = positionX;
+    if (positionY !== undefined) change.positionY = positionY;
+    if (scale !== undefined) change.scale = scale;
+    if (rotation !== undefined) change.rotationDegrees = rotation;
+    if (opacity !== undefined) change.opacity = opacity;
+    if (fade !== undefined) change.fadeSeconds = fade;
+    const style = patch['style'];
+    if (style !== undefined) {
+      if (!isImageStyle(style)) {
+        throw new EditorAgentError("style must be 'overlay' or 'behind-subject'.", 'invalid_arguments');
+      }
+      change.style = style;
+    }
+    return change;
+  }
+
+  /**
+   * What an agent reads back about one placement.
+   *
+   * The measured box is included rather than left to be worked out from the
+   * scale, because that sum needs the frame size and the picture's own aspect
+   * ratio, and an agent guessing at either is how a picture ends up reported as
+   * fitting while half of it is off the side. `fitsInFrame` is the same answer
+   * the panel shows, from the same function.
+   */
+  private agentImagePayload(clip: MediaClip, image: ClipImage): unknown {
+    const plan = this.plan;
+    const box = imageBox(image, Math.max(1, plan.width), Math.max(1, plan.height));
+    return {
+      imageId: image.id ?? null,
+      name: image.source.name,
+      path: image.source.sourcePath ?? null,
+      naturalWidth: image.source.width,
+      naturalHeight: image.source.height,
+      startSeconds: image.startSeconds ?? null,
+      durationSeconds: image.durationSeconds ?? null,
+      fadeSeconds: image.fadeSeconds ?? 0,
+      style: image.style ?? 'overlay',
+      positionX: image.positionX ?? 0.5,
+      positionY: image.positionY ?? 0.5,
+      scale: image.scale ?? IMAGE_LIMITS.scale.default,
+      rotationDegrees: image.rotationDegrees ?? 0,
+      opacity: image.opacity ?? 1,
+      frame: { width: plan.width, height: plan.height },
+      box: {
+        left: Math.round(box.left), top: Math.round(box.top),
+        right: Math.round(box.right), bottom: Math.round(box.bottom),
+        width: Math.round(box.width), height: Math.round(box.height)
+      },
+      fitsInFrame: box.contained,
+      // The same answer the panel shows the reader. An agent is told to look at
+      // a composed frame, and it should — but a picture sitting on top of the
+      // caption is a fact the editor already knows, and making the agent
+      // rediscover it by eye is how it gets missed.
+      covers: this.clipImageCovers(clip, image),
+      awaitingFile: !!image.source.awaitingFile
+    };
+  }
+
+  /**
+   * Refuses a section that would land on another one, and says where they are.
+   *
+   * The editor's own `updateVideoEffect` silently declines an overlapping edit,
+   * which is the right answer to a dragged field and the wrong answer to an
+   * agent: it would read as success and the edit would quietly not exist. The
+   * agent gets the occupied ranges and the room actually available instead.
+   */
+  private agentAssertEffectSlot(clip: MediaClip, start: number, duration: number, excludeId?: string): void {
+    const available = videoEffectSlotFor(clip, start, excludeId);
+    if (available >= duration - 0.0005) return;
+    const bounds = clipBounds(clip);
+    const occupied = effectiveClipVideoEffects(clip)
+      .filter(item => item.id !== excludeId)
+      .map(item => {
+        const from = Math.max(bounds.start, item.startSeconds ?? bounds.start);
+        const to = Math.min(bounds.end, from + Math.max(0, item.durationSeconds ?? bounds.end - from));
+        return { videoEffectId: item.id ?? null, effectId: item.effectId, start: +from.toFixed(3), end: +to.toFixed(3) };
+      })
+      .sort((a, b) => a.start - b.start);
+    throw new EditorAgentError(
+      available <= 0
+        ? `A Video Effect section already covers ${start.toFixed(2)}s on clip "${clip.id}".`
+        : `A Video Effect section starting at ${start.toFixed(2)}s may last at most ${available.toFixed(2)}s on clip "${clip.id}".`,
+      'video_effect_overlap',
+      {
+        clipId: clip.id,
+        start: +start.toFixed(3),
+        requestedDuration: +duration.toFixed(3),
+        maximumDuration: +Math.max(0, available).toFixed(3),
+        clipBounds: { start: +bounds.start.toFixed(3), end: +bounds.end.toFixed(3) },
+        occupied
+      }
+    );
+  }
+
   private agentMediaClip(id: unknown): MediaClip {
     const clipId = stringValue(id, 'clipId');
     const clip = this.clips.find((candidate): candidate is MediaClip => candidate.id === clipId && isMediaClip(candidate));
@@ -9488,7 +11289,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           operationIndex, operationCount: batch.operations.length,
           clipId: 'clipId' in operation ? operation.clipId : null
         });
-        this.pushAgentLog('action', `${batch.dryRun ? 'Simulating: ' : ''}${this.agentOperationLabel(operation)}`);
+        this.pushAgentLog(
+          'action',
+          `${batch.dryRun ? 'Simulating' : 'Operation'} ${operationIndex + 1}/${batch.operations.length}: ${this.agentOperationLabel(operation)}`,
+          'apply_edit_batch', 'INFO', new Date().toISOString(), percent
+        );
         await this.paintAgentProgress();
         await this.agentApplyOperation(operation);
         if (!batch.dryRun) await this.paintAgentProgress();
@@ -9561,6 +11366,15 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       : '';
     switch (operation.type) {
       case 'remove_clip': return `Removing ${label}`;
+      case 'set_video_effect': return `Applying ${effectDefinition(operation.effectId)?.name ?? operation.effectId} to ${label}`;
+      case 'add_video_effect': return `Adding ${effectDefinition(operation.effectId)?.name ?? operation.effectId} to a section of ${label}`;
+      case 'update_video_effect': return `Updating a Video Effect section on ${label}`;
+      case 'remove_video_effect': return `Removing a Video Effect section from ${label}`;
+      case 'add_image': return `Placing ${operation.path.split(/[\\/]/).pop()} on ${label} at ${operation.start.toFixed(2)}s`;
+      case 'update_image': return operation.image?.path
+        ? `Swapping the picture on ${label}`
+        : `Adjusting a placed picture on ${label}`;
+      case 'remove_image': return `Removing a placed picture from ${label}`;
       case 'move_clip': return `Moving ${label} to timeline position ${operation.toIndex}`;
       case 'duplicate_clip': return `Duplicating ${label}`;
       case 'add_text_clip': return `Adding text card: ${operation.text.slice(0, 60)}`;
@@ -9578,12 +11392,17 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'set_speed': return `Changing the speed of ${label} to ${operation.speed}x`;
       case 'set_volume': return `Changing the volume of ${label} to ${operation.volumePercent}%`;
       case 'set_audio_mode': return `Changing the audio mode of ${label} to ${operation.mode}`;
+      case 'set_noise_suppression': return `${operation.enabled ? 'Scheduling' : 'Disabling'} noise suppression on ${label}`;
       case 'set_clip_edits': return `Updating effects on ${label}`;
       case 'clear_clip_overrides': return `Returning ${label} to project defaults`;
       case 'attach_audio': return operation.clipId ? `Adding audio to ${label}` : 'Adding the project soundtrack';
       case 'detach_audio': return operation.clipId ? `Removing replacement audio from ${label}` : 'Removing the project soundtrack';
-      case 'add_caption': return `Adding a caption to ${label}: ${operation.text.slice(0, 60)}`;
-      case 'update_caption': return `Updating a caption on ${label}`;
+      case 'add_caption': return captionPresetIsBackground(String(operation.caption?.['stylePreset'] ?? '')) || operation.caption?.['style'] === 'behind-subject'
+        ? `Adding a Behind Subject caption to ${label}: ${operation.text.slice(0, 60)}`
+        : `Adding a caption to ${label}: ${operation.text.slice(0, 60)}`;
+      case 'update_caption': return captionPresetIsBackground(String(operation.caption?.['stylePreset'] ?? '')) || operation.caption?.['style'] === 'behind-subject'
+        ? `Applying Behind Subject to a caption on ${label}`
+        : `Updating a caption on ${label}`;
       case 'remove_caption': return `Removing a caption from ${label}`;
       case 'set_tag': {
         const tag = operation.tag;
@@ -9646,14 +11465,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'set_text_background': {
         const clip = this.agentClip(operation.clipId);
         if (!isTextClip(clip)) throw new EditorAgentError('set_text_background requires a text card.', 'invalid_target');
-        if (clip.backgroundUrl) URL.revokeObjectURL(clip.backgroundUrl);
         if (operation.path === null) {
+          if (clip.backgroundUrl) URL.revokeObjectURL(clip.backgroundUrl);
           clip.backgroundFile = null;
           clip.backgroundUrl = null;
           clip.backgroundRef = undefined;
         } else {
           const [file] = await this.desktop.readAgentFiles([stringValue(operation.path, 'path')]);
           if (!file.type.startsWith('image/')) throw new EditorAgentError('A text-card background must be an image.', 'invalid_media');
+          // Do not revoke the current background until the replacement has
+          // been read and validated. A bad path must leave the visible card
+          // untouched, even before the surrounding transaction rolls back.
+          if (clip.backgroundUrl) URL.revokeObjectURL(clip.backgroundUrl);
           clip.backgroundFile = file;
           clip.backgroundUrl = mediaObjectUrl(file);
           clip.backgroundRef = undefined;
@@ -9766,6 +11589,162 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.touch();
         return;
       }
+      case 'set_video_effect': {
+        const clip = this.agentMediaClip(operation.clipId);
+        if (clip.summary.kind === 'audio') throw new EditorAgentError('Video Effects require a visual media container.', 'invalid_target');
+        if (!effectDefinition(operation.effectId)) throw new EditorAgentError('Unknown Video Effect. Read get_capabilities.videoEffects.presets.', 'invalid_arguments');
+        const intensity = operation.intensity === undefined ? undefined : finiteNumber(operation.intensity, 'intensity');
+        if (intensity !== undefined && (intensity < 0 || intensity > 1)) throw new EditorAgentError('Effect intensity must be between 0 and 1.', 'invalid_arguments');
+        this.setVideoEffect(clip, normalizeVideoEffect({ id: operation.effectId, intensity }));
+        return;
+      }
+      case 'add_video_effect': {
+        const clip = this.agentVisualClip(operation.clipId);
+        const effectId = this.agentEffectId(operation.effectId);
+        const intensity = this.agentEffectIntensity(operation.intensity);
+        const fadeSeconds = this.agentEffectFade(operation.fadeSeconds);
+        // Migrate a legacy whole-clip effect first, so the room left on the
+        // clip is measured against a list that already contains it.
+        this.ensureTimedVideoEffects(clip);
+        const bounds = clipBounds(clip);
+        const start = Math.max(bounds.start, Math.min(bounds.end, finiteNumber(operation.start, 'start')));
+        const room = videoEffectSlotFor(clip, start);
+        const duration = operation.duration === undefined
+          ? Math.min(5, room)
+          : finiteNumber(operation.duration, 'duration');
+        if (duration < 0.1) {
+          throw new EditorAgentError('A Video Effect section must last at least 0.1s.', 'invalid_arguments');
+        }
+        this.agentAssertEffectSlot(clip, start, duration);
+        const section: ClipVideoEffect = {
+          id: `effect-${this.nextId++}`,
+          effectId,
+          intensity: normalizeVideoEffect({ id: effectId, intensity }).intensity,
+          startSeconds: start,
+          durationSeconds: Math.min(duration, bounds.end - start),
+          fadeSeconds: Math.max(0, Math.min(fadeSeconds ?? 0, duration / 2))
+        };
+        clip.videoEffects = [...(clip.videoEffects ?? []), section]
+          .sort((a, b) => (a.startSeconds ?? bounds.start) - (b.startSeconds ?? bounds.start));
+        clip.videoEffect = { id: 'none', intensity: 0 };
+        this.touch();
+        return;
+      }
+      case 'update_video_effect': {
+        const clip = this.agentVisualClip(operation.clipId);
+        this.ensureTimedVideoEffects(clip);
+        const sectionId = stringValue(operation.videoEffectId, 'videoEffectId');
+        const section = clip.videoEffects?.find(candidate => candidate.id === sectionId);
+        if (!section) {
+          throw new EditorAgentError(`Video Effect section "${sectionId}" was not found.`, 'not_found');
+        }
+        const patch = operation.videoEffect ?? {};
+        const change: Partial<ClipVideoEffect> = {};
+        if (patch.effectId !== undefined) change.effectId = this.agentEffectId(patch.effectId);
+        const intensity = this.agentEffectIntensity(patch.intensity);
+        if (intensity !== undefined) change.intensity = intensity;
+        const fadeSeconds = this.agentEffectFade(patch.fadeSeconds);
+        if (fadeSeconds !== undefined) change.fadeSeconds = fadeSeconds;
+        if (patch.startSeconds !== undefined) change.startSeconds = finiteNumber(patch.startSeconds, 'startSeconds');
+        if (patch.durationSeconds !== undefined) {
+          const wanted = finiteNumber(patch.durationSeconds, 'durationSeconds');
+          if (wanted < 0.1) {
+            throw new EditorAgentError('A Video Effect section must last at least 0.1s.', 'invalid_arguments');
+          }
+          change.durationSeconds = wanted;
+        }
+        const bounds = clipBounds(clip);
+        const start = change.startSeconds ?? section.startSeconds ?? bounds.start;
+        const duration = change.durationSeconds ?? section.durationSeconds ?? Math.max(0.1, bounds.end - start);
+        this.agentAssertEffectSlot(clip, start, duration, section.id);
+        this.updateVideoEffect(clip, section, change);
+        return;
+      }
+      case 'remove_video_effect': {
+        const clip = this.agentVisualClip(operation.clipId);
+        this.ensureTimedVideoEffects(clip);
+        const sectionId = stringValue(operation.videoEffectId, 'videoEffectId');
+        const section = clip.videoEffects?.find(candidate => candidate.id === sectionId);
+        if (!section) {
+          throw new EditorAgentError(`Video Effect section "${sectionId}" was not found.`, 'not_found');
+        }
+        this.removeVideoEffect(clip, section);
+        return;
+      }
+      case 'add_image': {
+        const clip = this.agentVisualClip(operation.clipId);
+        const path = stringValue(operation.path, 'path');
+        const bounds = clipBounds(clip);
+        const start = Math.max(bounds.start, Math.min(bounds.end, finiteNumber(operation.start, 'start')));
+        const room = Math.max(0, bounds.end - start);
+        if (room < 0.2) {
+          throw new EditorAgentError('There is less than 0.2s left on this container at that time.', 'invalid_arguments', {
+            clipBounds: { start: bounds.start, end: bounds.end }
+          });
+        }
+        const duration = operation.duration === undefined
+          ? Math.min(4, room)
+          : finiteNumber(operation.duration, 'duration');
+        if (duration < 0.2) throw new EditorAgentError('A placed picture must last at least 0.2s.', 'invalid_arguments');
+        const placement = this.agentImagePlacement(operation as unknown as Record<string, unknown>);
+        const source = await this.agentImageSource(path);
+        // Placed complete rather than added and then corrected: two mutations
+        // for one operation would bump the revision twice and put a placement
+        // nobody asked for into the undo history between them.
+        this.addClipImage(clip, source, start, {
+          ...placement,
+          startSeconds: start,
+          durationSeconds: Math.min(duration, room)
+        });
+        await loadImage(source);
+        this.pushAgentLog('action', `Placed ${source.name} on ${clip.file.name}`);
+        return;
+      }
+      case 'update_image': {
+        const clip = this.agentVisualClip(operation.clipId);
+        const imageId = stringValue(operation.imageId, 'imageId');
+        const placed = (clip.images ?? []).find(candidate => candidate.id === imageId);
+        if (!placed) throw new EditorAgentError(`Placed picture "${imageId}" was not found.`, 'not_found');
+        const patch = (operation.image ?? {}) as Record<string, unknown>;
+        const change: Partial<ClipImage> = this.agentImagePlacement(patch);
+        if (patch['startSeconds'] !== undefined) change.startSeconds = finiteNumber(patch['startSeconds'], 'startSeconds');
+        if (patch['durationSeconds'] !== undefined) {
+          const duration = finiteNumber(patch['durationSeconds'], 'durationSeconds');
+          if (duration < 0.2) throw new EditorAgentError('A placed picture must last at least 0.2s.', 'invalid_arguments');
+          change.durationSeconds = duration;
+        }
+        // A new file is a separate step from a new placement, so an agent can
+        // swap the picture without restating where it sits.
+        if (patch['path'] !== undefined) {
+          const replacement = await this.agentImageSource(stringValue(patch['path'], 'path'));
+          forgetImage(placed.source);
+          this.releaseImagePreview(placed);
+          change.source = replacement;
+          await loadImage(replacement);
+        }
+        this.updateClipImage(clip, placed, change);
+        return;
+      }
+      case 'remove_image': {
+        const clip = this.agentVisualClip(operation.clipId);
+        const imageId = stringValue(operation.imageId, 'imageId');
+        const placed = (clip.images ?? []).find(candidate => candidate.id === imageId);
+        if (!placed) throw new EditorAgentError(`Placed picture "${imageId}" was not found.`, 'not_found');
+        this.removeClipImage(clip, placed);
+        return;
+      }
+      case 'set_noise_suppression': {
+        const clip = this.agentMediaClip(operation.clipId);
+        clip.noiseSuppression = clampClipNoise({
+          ...this.noiseSettingsFor(clip),
+          enabled: operation.enabled,
+          ...(operation.engine === undefined ? {} : { engine: operation.engine }),
+          ...(operation.strength === undefined ? {} : { strength: operation.strength }),
+          ...(operation.preserveHighs === undefined ? {} : { preserveHighs: operation.preserveHighs })
+        });
+        this.touch();
+        return;
+      }
       case 'set_clip_edits': {
         const clip = this.agentClip(operation.clipId);
         if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no clip effects.', 'invalid_target');
@@ -9788,13 +11767,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           const clip = this.agentClip(operation.clipId);
           if (isTransitionClip(clip)) throw new EditorAgentError('A transition cannot carry audio.', 'invalid_target');
           await this.attachAudio(clip, file);
-          if (!clip.replacementAudio) throw new EditorAgentError(this.errorMessage || 'The audio could not be attached.', 'invalid_media');
+          // An unsuccessful replacement deliberately preserves the prior
+          // soundtrack. Check that this exact file was committed rather than
+          // mistaking an older soundtrack for a successful operation.
+          if (clip.replacementAudio?.file !== file) {
+            throw new EditorAgentError(this.errorMessage || 'The audio could not be attached.', 'invalid_media');
+          }
           if (operation.skipLeadingSilence !== undefined) {
             clip.replacementAudio = { ...clip.replacementAudio, skipLeadingSilence: operation.skipLeadingSilence };
           }
         } else {
           await this.setDefaultAudio(file);
-          if (!this.project.defaultAudio) throw new EditorAgentError(this.errorMessage || 'The project audio could not be attached.', 'invalid_media');
+          if (this.project.defaultAudio?.file !== file) {
+            throw new EditorAgentError(this.errorMessage || 'The project audio could not be attached.', 'invalid_media');
+          }
           if (operation.skipLeadingSilence !== undefined) {
             this.project = {
               ...this.project,
@@ -9813,9 +11799,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         const clip = this.agentMediaClip(operation.clipId);
         const previous = new Set((clip.captions ?? []).map((caption) => caption.id));
         this.addCaption(clip, finiteNumber(operation.start, 'start'), stringValue(operation.text, 'text'));
-        if (operation.duration !== undefined) {
-          const caption = clip.captions?.find((candidate) => !previous.has(candidate.id));
-          if (caption) this.updateCaption(clip, caption, { durationSeconds: finiteNumber(operation.duration, 'duration'), durationAutomatic: false });
+        const caption = clip.captions?.find((candidate) => !previous.has(candidate.id));
+        if (caption && operation.caption) {
+          this.updateCaption(clip, caption, this.agentCaptionPatch(operation.caption, caption));
+        }
+        if (caption && operation.duration !== undefined) {
+          this.updateCaption(clip, caption, { durationSeconds: finiteNumber(operation.duration, 'duration'), durationAutomatic: false });
         }
         return;
       }
@@ -9823,7 +11812,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         const clip = this.agentMediaClip(operation.clipId);
         const caption = clip.captions?.find((candidate) => candidate.id === operation.captionId);
         if (!caption) throw new EditorAgentError(`Caption "${operation.captionId}" was not found.`, 'not_found');
-        this.updateCaption(clip, caption, this.agentCaptionPatch(operation.caption));
+        this.updateCaption(clip, caption, this.agentCaptionPatch(operation.caption, caption));
         return;
       }
       case 'remove_caption': {
@@ -10053,9 +12042,28 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return next;
   }
 
-  private agentCaptionPatch(patch: Record<string, unknown>): Partial<ClipCaption> {
+  private agentCaptionPatch(patch: Record<string, unknown>, current?: ClipCaption): Partial<ClipCaption> {
     if (!patch || typeof patch !== 'object') throw new EditorAgentError('caption must be an object.', 'invalid_arguments');
     const result: Partial<ClipCaption> = {};
+    if (patch['style'] !== undefined && !['classic', 'behind-subject'].includes(String(patch['style']))) {
+      throw new EditorAgentError('Unknown caption style.', 'invalid_arguments');
+    }
+    const requestedPreset = patch['stylePreset'] !== undefined
+      ? String(patch['stylePreset'])
+      : patch['style'] !== undefined && patch['style'] !== current?.style ? String(patch['style']) : null;
+    const requestedBackground = requestedPreset ? captionPresetIsBackground(requestedPreset) : false;
+    if (requestedPreset && patch['style'] !== undefined &&
+        requestedBackground !== (patch['style'] === 'behind-subject')) {
+      throw new EditorAgentError('Caption style and stylePreset conflict.', 'invalid_arguments');
+    }
+    const behindSubject = requestedBackground ||
+      (!requestedPreset &&
+        Boolean(current && isBackgroundCaption(current)));
+    if (requestedPreset) {
+      const preset = captionPresetPatch(current ?? DEFAULT_CAPTION, requestedPreset);
+      if (!preset) throw new EditorAgentError('Unknown caption stylePreset.', 'invalid_arguments');
+      Object.assign(result, preset);
+    }
     if (patch['text'] !== undefined) result.text = stringValue(patch['text'], 'text').slice(0, 1000);
     if (patch['startSeconds'] !== undefined) result.startSeconds = finiteNumber(patch['startSeconds'], 'startSeconds');
     if (patch['durationSeconds'] !== undefined) {
@@ -10072,6 +12080,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (patch['fadeIn'] !== undefined) result.fadeIn = Boolean(patch['fadeIn']);
     if (patch['fadeOut'] !== undefined) result.fadeOut = Boolean(patch['fadeOut']);
     if (patch['shadowEnabled'] !== undefined) result.shadowEnabled = Boolean(patch['shadowEnabled']);
+    if (patch['uppercase'] !== undefined) result.uppercase = Boolean(patch['uppercase']);
+    if (patch['animation'] !== undefined) {
+      const animation = String(patch['animation']);
+      if (!CAPTION_ANIMATIONS.some((item) => item.value === animation)) {
+        throw new EditorAgentError('Unknown caption animation.', 'invalid_arguments');
+      }
+      result.animation = animation as NonNullable<ClipCaption['animation']>;
+    }
     for (const key of ['textColor', 'outlineColor', 'shadowColor'] as const) {
       if (patch[key] !== undefined) {
         if (typeof patch[key] !== 'string' || !/^#[0-9a-f]{6}$/i.test(patch[key] as string)) {
@@ -10080,13 +12096,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         result[key] = patch[key] as string;
       }
     }
-    for (const key of ['fontScale', 'bottomMargin', 'outlinePercent', 'fadeSeconds'] as const) {
+    for (const key of ['fontScale', 'bottomMargin', 'outlinePercent', 'fadeSeconds', 'positionX', 'positionY',
+      'rotationDegrees', 'shadowBlurPercent', 'shadowOpacity'] as const) {
       if (patch[key] !== undefined) {
-        const limits = CAPTION_LIMITS[key];
+        const limits = key === 'fontScale'
+          ? behindSubject ? { min: 0.2, max: 0.4 } : { min: 0.02, max: 0.12 }
+          : CAPTION_LIMITS[key];
         result[key] = Math.max(limits.min, Math.min(limits.max, finiteNumber(patch[key], key)));
       }
     }
-    result.stylePreset = 'custom';
+    if (!requestedPreset) {
+      const visualChange = Object.keys(result).some((key) => !['text', 'startSeconds', 'durationSeconds', 'durationAutomatic', 'fadeIn', 'fadeOut', 'fadeSeconds'].includes(key));
+      if (visualChange) result.stylePreset = behindSubject ? 'custom-background' : 'custom';
+    }
     return result;
   }
 
@@ -10141,15 +12163,106 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.touch();
   }
 
+  private agentNoiseSettings(args: Record<string, unknown>, current: ClipNoiseSettings, enabled: boolean): ClipNoiseSettings {
+    const engine = args['engine'] ?? current.engine;
+    const strength = args['strength'] ?? current.strength;
+    if (engine !== 'gtcrn' && engine !== 'rnnoise') {
+      throw new EditorAgentError('Noise engine must be gtcrn or rnnoise.', 'invalid_arguments');
+    }
+    if (strength !== 'gentle' && strength !== 'balanced' && strength !== 'maximum') {
+      throw new EditorAgentError('Noise strength must be gentle, balanced or maximum.', 'invalid_arguments');
+    }
+    return clampClipNoise({
+      enabled,
+      engine,
+      strength,
+      preserveHighs: args['preserveHighs'] === undefined ? current.preserveHighs : Boolean(args['preserveHighs'])
+    });
+  }
+
+  private agentAssertRevision(args: Record<string, unknown>): void {
+    if (args['expectedRevision'] === undefined) return;
+    const expected = finiteNumber(args['expectedRevision'], 'expectedRevision');
+    if (expected !== this.revision) {
+      throw new EditorAgentError(
+        `Project revision ${expected} is stale; the current revision is ${this.revision}.`,
+        'revision_conflict',
+        { expectedRevision: expected, actualRevision: this.revision, nextStep: 'Call get_project and retry with its current projectRevision.' }
+      );
+    }
+  }
+
+  private async agentAnalyzeNoise(args: Record<string, unknown>, signal: AbortSignal, operationId = ''): Promise<unknown> {
+    const content = args['content'] === 'speech-music' ? 'speech-music' : 'speech';
+    const sensitivity = args['sensitivity'] === 'low' || args['sensitivity'] === 'high'
+      ? args['sensitivity']
+      : 'balanced';
+    const settings: AnalysisSettings = { content, sensitivity, background: null, cleanVoice: null };
+    const targets = args['clipId']
+      ? [this.agentMediaClip(args['clipId'])]
+      : this.clips.filter((clip): clip is MediaClip =>
+          isMediaClip(clip) && !clip.awaitingFile && clip.summary.audioUsable && clip.summary.kind !== 'image');
+    const results: unknown[] = [];
+    for (const [index, clip] of targets.entries()) {
+      if (signal.aborted) throw new EditorAgentError('Noise analysis was cancelled.', 'cancelled', { stage: 'noise-analysis' });
+      this.pushAgentLog('action', `Understanding noise in ${clip.summary.fileName}`, 'analyze_noise', 'DEBUG');
+      const report = await this.runNoiseAnalysis(clip, settings, signal, operationId);
+      this.noiseProgress.delete(clip.id);
+      results.push({
+        clipId: clip.id,
+        source: clip.summary.fileName,
+        ...report,
+        suppressionRecommended: report.status === 'Probable noise' || report.status === 'Relevant noise',
+        suppressionEnabled: this.noiseSettingsFor(clip).enabled
+      });
+      this.desktop.reportAgentProgress({
+        operationId, state: 'processing', stage: 'noise-analysis',
+        percent: Math.round((index + 1) * 100 / Math.max(1, targets.length)),
+        clipIndex: index + 1, clipCount: targets.length, clipId: clip.id, clipName: clip.summary.fileName
+      });
+    }
+    return {
+      clips: results,
+      analyzed: results.length,
+      note: 'Analysis did not enable or apply noise suppression. Removal requires an explicit suppress_noise or set_noise_suppression command.'
+    };
+  }
+
+  private async agentSuppressNoise(args: Record<string, unknown>, signal: AbortSignal, operationId = ''): Promise<unknown> {
+    this.agentAssertRevision(args);
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.summary.audioUsable || clip.summary.kind === 'image') {
+      throw new EditorAgentError('This media container has no decodable audio to suppress.', 'media_unavailable');
+    }
+    const settings = this.agentNoiseSettings(args, this.noiseSettingsFor(clip), true);
+    await this.runNoiseSuppression(clip, settings, signal, operationId);
+    if (signal.aborted) throw new EditorAgentError('Noise suppression was cancelled.', 'cancelled', { stage: 'noise-suppression' });
+    clip.noiseSuppression = settings;
+    this.noiseProgress.delete(clip.id);
+    this.touch();
+    return {
+      clipId: clip.id,
+      source: clip.summary.fileName,
+      settings,
+      previewReady: this.noiseReady(clip),
+      quietRegionChangeDb: clip.noiseReductionDb ?? null,
+      scheduledForExport: true
+    };
+  }
+
   private async agentAnalyzeSilence(args: Record<string, unknown>, signal?: AbortSignal, operationId = ''): Promise<unknown> {
     const targets = args['clipId'] ? [this.agentMediaClip(args['clipId'])] : this.clips.filter(isMediaClip);
     const revisionBefore = this.revision;
     this.pushAgentLog('action', `Analyzing ${targets.length} clip(s) with ${this.analysisLanes} bounded worker lane(s)`, 'analyze_silence', 'DEBUG');
+    this.clearMessages();
     const cancel = () => this.cancelAnalyses();
     signal?.addEventListener('abort', cancel, { once: true });
     try {
       if (operationId) this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'decoding-and-detecting-silence', percent: null });
-      await this.analyzeMany(targets);
+      await this.waitForAutomaticListening();
+      if (signal?.aborted) throw new EditorAgentError('Silence analysis was cancelled.', 'cancelled', { stage: 'audio-analysis' });
+      const pending = targets.filter((clip) => !clip.analysis || this.isStale(clip));
+      await this.analyzeMany(pending);
     } finally {
       signal?.removeEventListener('abort', cancel);
     }
@@ -10316,7 +12429,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     };
   }
 
-  private async agentContactSheet(args: Record<string, unknown>): Promise<unknown> {
+  private async agentContactSheet(
+    args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
     const clip = this.agentMediaClip(args['clipId']);
     const start = args['start'] === undefined ? clip.inPoint ?? 0 : finiteNumber(args['start'], 'start');
     const end = args['end'] === undefined ? clip.outPoint ?? clip.summary.durationSeconds : finiteNumber(args['end'], 'end');
@@ -10330,10 +12445,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       timestamps,
       width: args['width'] === undefined ? 480 : finiteNumber(args['width'], 'width'),
       quality: args['quality'] === undefined ? 0.72 : finiteNumber(args['quality'], 'quality')
-    });
+    }, signal, operationId);
   }
 
-  private async agentFrames(request: EditorAgentFrameRequest): Promise<unknown> {
+  private async agentFrames(
+    request: EditorAgentFrameRequest, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
     const clip = this.agentMediaClip(request.clipId);
     if (!clip.summary.videoUsable && clip.summary.kind !== 'image') {
       throw new EditorAgentError('This clip has no decodable picture.', 'media_unavailable');
@@ -10343,11 +12460,185 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
     const width = Math.round(Math.max(96, Math.min(1280, request.width ?? 640)));
     const quality = Math.max(0.25, Math.min(0.95, request.quality ?? 0.78));
-    const frames = await this.captureAgentFrames(clip, request.timestamps, width, quality);
-    return { clipId: clip.id, assetId: this.agentAssetId(clip), timeSpace: 'source', frames };
+    if (request.composited) {
+      return await this.captureComposedFrames(clip, request.timestamps, width, quality, signal, operationId);
+    }
+    const frames = await this.captureAgentFrames(clip, request.timestamps, width, quality, signal, operationId);
+    return { clipId: clip.id, assetId: this.agentAssetId(clip), timeSpace: 'source', frames, composited: false };
   }
 
-  private async captureAgentFrames(clip: MediaClip, timestamps: readonly number[], width: number, quality: number): Promise<unknown[]> {
+
+  /**
+   * The same frames, but as the export will actually write them.
+   *
+   * `captureAgentFrames` answers with the *source* picture: no zoom, no caption,
+   * no effect, no placed picture. That is the right answer for understanding
+   * what was filmed and the wrong one for checking what was made — a picture
+   * placed half off the side of the frame looks perfect in a source frame,
+   * because the source frame is not the frame it was placed on.
+   *
+   * So this goes through `composeFrame`, the one function the preview and the
+   * encoder both draw with, at the plan's own aspect ratio and on the plan's own
+   * clock. What comes back is the finished picture, and an agent that reads it
+   * is looking at the export rather than at an approximation of it.
+   */
+  private async captureComposedFrames(
+    clip: MediaClip,
+    timestamps: readonly number[],
+    width: number,
+    quality: number,
+    signal?: AbortSignal,
+    operationId = ''
+  ): Promise<unknown> {
+    const cancelled = (stage: string) => new EditorAgentError(
+      'Visual inspection was cancelled.', 'cancelled', { stage, terminalState: 'cancelled' }
+    );
+    const plan = this.plan;
+    const entry = plan.clips.find(candidate => candidate.clip.id === clip.id);
+    if (!entry) {
+      throw new EditorAgentError(
+        'This container contributes nothing to the finished timeline, so it has no composed frame.',
+        'invalid_target'
+      );
+    }
+    await loadPlanImages(plan);
+
+    const height = Math.max(2, Math.round(width * plan.height / Math.max(1, plan.width)) & ~1);
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d') as FrameContext | null;
+    if (!context) throw new EditorAgentError('Canvas is unavailable.', 'unsupported');
+
+    const edits = this.editsFor(clip);
+    const speed = clampSpeed(edits.speed);
+    const keep = keepRangesFor(clip, edits);
+    const bounds = clipBounds(clip);
+    const outputTimeOf = (sourceTime: number) =>
+      entry.outputStart + cutTimeOf(keep, Math.max(bounds.start, Math.min(bounds.end, sourceTime))) / speed;
+
+    // Only built when something actually sits in the middle layer at one of the
+    // requested instants. Loading a segmentation model to check a logo in a
+    // corner would be a slow answer to a question nobody asked.
+    const needsSubject = timestamps.some(raw => {
+      const time = outputTimeOf(finiteNumber(raw, 'timestamp'));
+      const caption = captionAt(plan.captions, time);
+      return (caption !== null && isBackgroundCaption(caption.caption)) ||
+        imagesAt(plan.images ?? [], time).some(item => item.image.style === 'behind-subject');
+    });
+    const vision = needsSubject ? this.agentSubjectVision() : null;
+    let subjectLayerDrawn = !needsSubject;
+    let subjectNote = '';
+
+    const drawSource = async (video: HTMLVideoElement | null, bitmap: ImageBitmap | null): Promise<FrameSource> => {
+      if (bitmap) {
+        return { width: bitmap.width, height: bitmap.height, draw: (target, x, y, w, h) => target.drawImage(bitmap, x, y, w, h) };
+      }
+      const element = video!;
+      return {
+        width: element.videoWidth || clip.summary.width || width,
+        height: element.videoHeight || clip.summary.height || height,
+        draw: (target, x, y, w, h) => target.drawImage(element, x, y, w, h)
+      };
+    };
+
+    const video = clip.summary.kind === 'image' ? null : document.createElement('video');
+    const bitmap = clip.summary.kind === 'image' ? await imageBitmapForFile(clip.file) : null;
+    const url = video ? mediaObjectUrl(clip.file) : '';
+    if (video) {
+      video.muted = true;
+      video.preload = 'auto';
+      video.src = url;
+    }
+
+    try {
+      if (video) await this.waitAgentMedia(video, 'loadedmetadata', signal);
+      const frames: unknown[] = [];
+
+      for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
+        if (signal?.aborted) throw cancelled('composing-frames');
+        const raw = finiteNumber(timestamps[frameIndex], 'timestamp');
+        const duration = video ? (video.duration || clip.summary.durationSeconds) : clip.summary.durationSeconds;
+        const timestamp = Math.max(0, Math.min(Math.max(0, duration - 0.001), raw));
+        if (video && Math.abs(video.currentTime - timestamp) > 0.001) {
+          video.currentTime = timestamp;
+          await this.waitAgentMedia(video, 'seeked', signal);
+        }
+        const time = outputTimeOf(timestamp);
+        const source = await drawSource(video, bitmap);
+
+        let mask: SubjectMask | null = null;
+        if (vision) {
+          try {
+            mask = await vision.maskFor(source, width, height, 1, plan.fillFrame, `${clip.id}:composed`, time);
+            subjectLayerDrawn = subjectLayerDrawn || mask !== null;
+          } catch (error) {
+            // Said plainly rather than swallowed: a frame composed without the
+            // matte is still worth looking at, but an agent must not read it as
+            // proof that the person covers the middle layer.
+            subjectNote = error instanceof Error ? error.message : String(error);
+          }
+          if (!mask && !subjectNote && vision.state === 'unavailable') {
+            subjectNote = vision.lastError || 'Subject segmentation is unavailable on this machine.';
+          }
+        }
+
+        composeFrame(context, plan, time, width, height, source, null, mask, null);
+        frames.push({
+          timestamp,
+          outputTime: roundSeconds(time),
+          width,
+          height,
+          mimeType: 'image/jpeg',
+          dataUrl: canvas.toDataURL('image/jpeg', quality)
+        });
+        const done = Math.round((frameIndex + 1) * 100 / timestamps.length);
+        if (operationId) this.desktop.reportAgentProgress({
+          operationId, state: 'processing', stage: 'extracting-frames',
+          percent: done, frameIndex: frameIndex + 1, frameCount: timestamps.length, clipId: clip.id
+        });
+        this.agentProgress(
+          'get_frames',
+          `Composed frame ${frameIndex + 1}/${timestamps.length} at ${this.formatTime(timestamp)}${mask ? ' with the subject matte' : ''}`,
+          done
+        );
+      }
+
+      return {
+        clipId: clip.id,
+        assetId: this.agentAssetId(clip),
+        timeSpace: 'source',
+        composited: true,
+        frame: { width: plan.width, height: plan.height },
+        subjectLayerRendered: subjectLayerDrawn,
+        ...(subjectNote ? { subjectNote } : {}),
+        images: (clip.images ?? []).map(image => this.agentImagePayload(clip, image)),
+        frames
+      };
+    } finally {
+      // Deliberately not disposed: it is the session's client, kept warm on
+      // purpose. See `agentSubjectVision`.
+      bitmap?.close();
+      if (video) {
+        video.removeAttribute('src');
+        video.load();
+        URL.revokeObjectURL(url);
+      }
+    }
+  }
+
+  private async captureAgentFrames(
+    clip: MediaClip,
+    timestamps: readonly number[],
+    width: number,
+    quality: number,
+    signal?: AbortSignal,
+    operationId = ''
+  ): Promise<unknown[]> {
+    const cancelled = (stage: string) => new EditorAgentError(
+      'Visual inspection was cancelled.', 'cancelled', { stage, terminalState: 'cancelled' }
+    );
+    if (signal?.aborted) throw cancelled('preparing-frames');
     const sourceWidth = Math.max(1, clip.summary.width ?? width);
     const sourceHeight = Math.max(1, clip.summary.height ?? Math.round(width * 9 / 16));
     const height = Math.max(1, Math.round(width * sourceHeight / sourceWidth));
@@ -10360,7 +12651,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (clip.summary.kind === 'image') {
       const bitmap = await imageBitmapForFile(clip.file);
       try {
+        if (signal?.aborted) throw cancelled('decoding-image');
         context.drawImage(bitmap, 0, 0, width, height);
+        if (operationId) this.desktop.reportAgentProgress({
+          operationId, state: 'processing', stage: 'extracting-frames', percent: 100,
+          frameIndex: 1, frameCount: 1, clipId: clip.id
+        });
         return [{ timestamp: 0, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality) }];
       } finally { bitmap.close(); }
     }
@@ -10371,17 +12667,25 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const url = mediaObjectUrl(clip.file);
     video.src = url;
     try {
-      await this.waitAgentMedia(video, 'loadedmetadata');
+      await this.waitAgentMedia(video, 'loadedmetadata', signal);
       const result: unknown[] = [];
-      for (const raw of timestamps) {
+      for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
+        if (signal?.aborted) throw cancelled('extracting-frames');
+        const raw = timestamps[frameIndex];
         const duration = video.duration || clip.summary.durationSeconds;
         const timestamp = Math.max(0, Math.min(Math.max(0, duration - 0.001), finiteNumber(raw, 'timestamp')));
         if (Math.abs(video.currentTime - timestamp) > 0.001) {
           video.currentTime = timestamp;
-          await this.waitAgentMedia(video, 'seeked');
+          await this.waitAgentMedia(video, 'seeked', signal);
         }
         context.drawImage(video, 0, 0, width, height);
         result.push({ timestamp, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality) });
+        const done = Math.round((frameIndex + 1) * 100 / timestamps.length);
+        if (operationId) this.desktop.reportAgentProgress({
+          operationId, state: 'processing', stage: 'extracting-frames',
+          percent: done, frameIndex: frameIndex + 1, frameCount: timestamps.length, clipId: clip.id
+        });
+        this.agentProgress('get_frames', `Frame ${frameIndex + 1}/${timestamps.length} at ${this.formatTime(timestamp)}`, done);
       }
       return result;
     } finally {
@@ -10391,33 +12695,47 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
   }
 
-  private waitAgentMedia(media: HTMLMediaElement, event: string): Promise<void> {
+  private waitAgentMedia(media: HTMLMediaElement, event: string, signal?: AbortSignal): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => finish(new EditorAgentError(`Timed out waiting for media ${event}.`, 'media_timeout')), 15000);
       const finish = (error?: Error) => {
         clearTimeout(timer);
         media.removeEventListener(event, ready);
         media.removeEventListener('error', failed);
+        signal?.removeEventListener('abort', aborted);
         error ? reject(error) : resolve();
       };
       const ready = () => finish();
       const failed = () => finish(new EditorAgentError('The video frame could not be decoded.', 'decode_failed'));
+      const aborted = () => finish(new EditorAgentError(
+        'Visual inspection was cancelled.', 'cancelled', { stage: `waiting-for-${event}`, terminalState: 'cancelled' }
+      ));
+      if (signal?.aborted) return aborted();
       media.addEventListener(event, ready, { once: true });
       media.addEventListener('error', failed, { once: true });
+      signal?.addEventListener('abort', aborted, { once: true });
     });
   }
 
-  private async agentExport(args: Record<string, unknown>): Promise<unknown> {
+  private async agentExport(
+    args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
     const kind = args['kind'] === 'audio' ? 'audio' : 'video';
     const path = stringValue(args['path'], 'path');
     if (this.exporting) throw new EditorAgentError('An export is already running.', 'busy');
     this.exporting = kind;
-    const controller = new AbortController();
-    const handle = await this.desktop.openAgentOutput(path);
+    const renderSignal = signal ?? new AbortController().signal;
+    let handle: Awaited<ReturnType<DesktopService['openAgentOutput']>> | null = null;
     try {
-      await this.runPendingAnalyses(controller.signal);
+      // Keep opening the output inside the protected region. A denied or
+      // invalid destination must release the editor's exporting state too.
+      handle = await this.desktop.openAgentOutput(path);
+      if (renderSignal.aborted) throw new EditorAgentError('Export was cancelled.', 'cancelled', { stage: 'preparing-export' });
+      await this.runPendingAnalyses(renderSignal);
+      await this.runPendingNoiseSuppressions(renderSignal);
       const plan = buildProjectPlan(this.clips, this.project, kind);
       const format = kind === 'video' ? this.videoFormat : this.audioFormat;
+      let lastStage = '';
       const result = await this.renderer.render({
         plan,
         project: this.project,
@@ -10425,12 +12743,50 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         format,
         envelopes: this.buildEnvelopes(),
         destination: { handle: handle as never, fileName: path.split(/[\\/]/).pop() ?? `edited.${format.extension}` },
-        signal: controller.signal,
-        onProgress: (progress) => { this.progress = progress; this.cdr.markForCheck(); }
+        signal: renderSignal,
+        onProgress: (progress) => {
+          this.progress = progress;
+          const percent = progress.ratio === null
+            ? null
+            : Math.max(0, Math.min(100, Math.round(progress.ratio * 100)));
+          if (operationId) this.desktop.reportAgentProgress({
+            operationId, state: 'processing', stage: `render-${progress.stage}`, percent,
+            clipIndex: progress.clipIndex, clipCount: progress.clipCount, clipName: progress.clipName
+          });
+          if (progress.stage !== lastStage) {
+            lastStage = progress.stage;
+            this.agentProgressReset('export');
+          }
+          {
+            const where = progress.clipCount
+              ? ` — container ${progress.clipIndex}/${progress.clipCount}${progress.clipName ? ` (${progress.clipName})` : ''}`
+              : '';
+            this.agentProgress('export', `Rendering ${kind}: ${progress.stage}${where}`, percent);
+          }
+          this.cdr.markForCheck();
+        }
       });
       return { path, kind, duration: result.plan.totalDuration, partial: result.partial };
     } catch (error) {
-      await handle.abort().catch(() => undefined);
+      await handle?.abort().catch(() => undefined);
+      if (renderSignal.aborted) {
+        throw new EditorAgentError('Export was cancelled and its partial output was removed.', 'cancelled', {
+          stage: this.progress?.stage ? `render-${this.progress.stage}` : 'render', terminalState: 'cancelled', path
+        });
+      }
+      // A look that could not be produced is reported as such, with its kind,
+      // so an agent cannot record a finished edit for a file that is missing
+      // what was asked for. The partial output was already discarded above, so
+      // any earlier export at this path survives and the recovery checkpoint is
+      // untouched.
+      const failure = (error as { subjectFailure?: SubjectVisionFailure } | null)?.subjectFailure;
+      if (failure) {
+        throw new EditorAgentError(
+          error instanceof Error ? error.message : String(error),
+          SUBJECT_VISION_ERROR_CODE,
+          { ...failure, recoverable: failure.retryable, terminalState: 'failed', path }
+        );
+      }
       throw error;
     } finally {
       this.exporting = null;
@@ -10467,8 +12823,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         manualZooms: (clip.manualZooms ?? []).map((zoom) => ({ ...zoom })),
         caption: clip.caption ? { ...clip.caption } : null,
         captions: (clip.captions ?? []).map((caption) => ({ ...caption })),
+        // Copied, not shared. Replacing a placement's file assigns to
+        // `image.source` in place, and a snapshot holding the same object would
+        // have its own past rewritten by that assignment.
+        images: (clip.images ?? []).map((image) => ({ ...image, source: { ...image.source } })),
         tag: clip.tag ? { ...clip.tag } : null,
         replacementAudio: clip.replacementAudio ? { ...clip.replacementAudio } : null,
+        noiseSuppression: clip.noiseSuppression ? { ...clip.noiseSuppression } : undefined,
+        videoEffect: normalizeVideoEffect(clip.videoEffect),
+        videoEffects: (clip.videoEffects ?? []).map(effect => ({ ...effect })),
+        noiseReport: clip.noiseReport ? structuredClone(clip.noiseReport) : null,
+        noiseAnalyzedWith: clip.noiseAnalyzedWith ? structuredClone(clip.noiseAnalyzedWith) : null,
+        noiseCleanedWith: clip.noiseCleanedWith ? { ...clip.noiseCleanedWith } : null,
         // Not carried across. A removed clip has its preview URL revoked, and a
         // snapshot holding the revoked string would come back as a broken
         // picture; the dialog makes a new one the moment it is opened.
@@ -10555,6 +12921,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
             clip.caption,
             clip.captions ?? [],
             clip.tag ?? null,
+            clip.noiseSuppression ?? null,
+            normalizeVideoEffect(clip.videoEffect),
+            clip.videoEffects ?? [],
+            // Projected rather than stringified whole: a `File` serializes to
+            // `{}`, so two different pictures in the same place would compare
+            // equal and the edit would be dropped as a no-op.
+            (clip.images ?? []).map((image) => [
+              image.id, image.source.name, image.source.sourcePath ?? null, image.source.awaitingFile === true,
+              image.startSeconds ?? null, image.durationSeconds ?? null, image.style ?? 'overlay',
+              image.positionX ?? null, image.positionY ?? null, image.scale ?? null,
+              image.rotationDegrees ?? null, image.opacity ?? null, image.fadeSeconds ?? null
+            ]),
+            clip.noiseReport ?? null,
             clip.replacementAudio?.summary.fileName ?? null
           ];
         }

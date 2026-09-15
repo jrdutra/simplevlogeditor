@@ -150,6 +150,7 @@ contextBridge.exposeInMainWorld('desktop', {
     catch { return null; }
   },
   rememberFolders: (paths) => ipcRenderer.invoke('roots:remember', paths),
+  ensureRoots: (paths) => ipcRenderer.invoke('roots:ensure', paths),
   listRoots: () => ipcRenderer.invoke('roots:list'),
   addRoot: () => ipcRenderer.invoke('roots:add'),
   removeRoot: (folder) => ipcRenderer.invoke('roots:remove', folder),
