@@ -1019,7 +1019,18 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** Commands and visible edits arriving from an attached MCP client. */
   agentLog: AgentLogLine[] = [];
   agentLogOpen = true;
+  /**
+   * Closed outright, not minimized.
+   *
+   * Minimizing left a badge on screen that could not be got rid of. A session
+   * that has ended, or one the reader simply does not want to watch, should
+   * leave the editor looking like the editor. What brings the panel back is an
+   * AI connecting — see `onAgentConnected` — not activity from the connection
+   * that was dismissed.
+   */
+  agentPanelDismissed = false;
   private agentLogMinimizedByUser = false;
+  private stopAgentConnected: (() => void) | null = null;
   agentWorking = false;
   agentDiagnostic: AgentDiagnostic | null = null;
   agentDiagnosticMessage = '';
@@ -1490,6 +1501,15 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }));
     this.stopDesktopCloseBridge = this.desktop.registerBeforeCloseHandler(() => this.saveNow());
     this.desktop.registerRootConsentAsker((missing, reason) => this.askForFolder(missing, reason));
+    // A new connection is the one thing that reopens a dismissed panel, and it
+    // opens dressed as whichever client just arrived.
+    this.stopAgentConnected = this.desktop.onAgentConnected(() => this.zone.run(() => {
+      this.agentPanelDismissed = false;
+      this.agentLogMinimizedByUser = false;
+      this.agentLogOpen = true;
+      this.agentLogFollowing = true;
+      this.cdr.markForCheck();
+    }));
     // Files chosen through showOpenFilePicker fire no change event, so the one
     // document-level listener in DesktopService cannot see them. Choosing a
     // file there means the same thing, and must allow its folder the same way.
@@ -1499,6 +1519,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   ngOnDestroy(): void {
     onFilesChosenThroughPicker(null);
     this.desktop.registerRootConsentAsker(null);
+    this.stopAgentConnected?.();
+    this.stopAgentConnected = null;
     this.resolveFolderRequest?.(null);
     this.stopAgentBridge?.();
     this.stopAgentBridge = null;
@@ -10270,6 +10292,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.agentLogMinimizedByUser = true;
   }
 
+  /** Puts the whole panel away, badge included, until an AI connects again. */
+  dismissAgentPanel(): void {
+    this.agentLogOpen = false;
+    this.agentLogMinimizedByUser = true;
+    this.agentPanelDismissed = true;
+    this.cdr.markForCheck();
+  }
+
   clearAgentLog(): void {
     if (this.agentWorking) return;
     this.agentLog = [];
@@ -10294,7 +10324,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private onAgentSystemEvent(entry: AgentSystemEvent): void {
     const kind: AgentLogKind = entry.level === 'ERROR' ? 'fail' : entry.level === 'WARN' ? 'action' : 'done';
     this.pushAgentLog(kind, entry.message, entry.module || 'MCP bridge', entry.level, entry.timestamp);
-    if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
+    if (!this.agentLogMinimizedByUser && !this.agentPanelDismissed) this.agentLogOpen = true;
   }
 
   async copyAgentDiagnostic(): Promise<void> {
@@ -10529,7 +10559,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.currentAgentOperationId = operationId;
     this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'started', percent: 0 });
     this.agentWorking = true;
-    if (!this.agentLogMinimizedByUser) this.agentLogOpen = true;
+    if (!this.agentLogMinimizedByUser && !this.agentPanelDismissed) this.agentLogOpen = true;
     const startedAt = Date.now();
     this.agentProgressReset(request.name);
     // Before the command, not after it fails: a resumed project is intact on

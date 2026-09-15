@@ -1697,16 +1697,24 @@
     }
   }
 
-  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentLogOpen) {
-    <button type="button" class="agente-controle-indicador" [class]="agentControllerTheme"
-      appBodyPortal (click)="openAgentLog()">
-      <img [src]="agentControllerIcon" alt="" aria-hidden="true">
-      <span><strong>{{ agentControllerLabel }}</strong> {{ desktop.agentControl().active ? 'is controlling the editor' : 'connection was lost' }}</span>
-      <span class="agente-pulso" aria-hidden="true"></span>
-    </button>
+  <!-- Dismissing puts both of these away for good. Only an AI connecting
+       brings them back, dressed as whichever client that is. -->
+  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && !agentLogOpen) {
+    <div class="agente-controle-indicador-caixa" [class]="agentControllerTheme" appBodyPortal>
+      <button type="button" class="agente-controle-indicador" (click)="openAgentLog()">
+        <img [src]="agentControllerIcon" alt="" aria-hidden="true">
+        <span><strong>{{ agentControllerLabel }}</strong> {{ desktop.agentControl().active ? 'is controlling the editor' : 'connection was lost' }}</span>
+        <span class="agente-pulso" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="agente-indicador-fechar" (click)="dismissAgentPanel()"
+        aria-label="Close the activity panel until an AI connects again"
+        title="Close until an AI connects again">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
   }
 
-  @if ((desktop.agentControl().visible || desktop.agentControl().active) && agentLogOpen) {
+  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && agentLogOpen) {
     <div class="agente-modal-fundo" appBodyPortal>
       <section class="agente-modal" [class]="agentControllerTheme"
         role="dialog" aria-modal="true" aria-labelledby="agente-modal-titulo">
@@ -1722,8 +1730,14 @@
             <span class="agente-pulso" aria-hidden="true"></span>
             {{ !desktop.agentControl().active ? 'Disconnected' : agentWorking ? 'Working' : 'Connected' }}
           </span>
-          <button mat-icon-button type="button" class="agente-modal-fechar" (click)="closeAgentLog()" aria-label="Minimize activity log">
+          <button mat-icon-button type="button" class="agente-modal-fechar" (click)="closeAgentLog()"
+            aria-label="Minimize activity log" title="Minimize to the badge">
             <mat-icon>close_fullscreen</mat-icon>
+          </button>
+          <button mat-icon-button type="button" class="agente-modal-fechar" (click)="dismissAgentPanel()"
+            aria-label="Close the activity panel until an AI connects again"
+            title="Close until an AI connects again">
+            <mat-icon>close</mat-icon>
           </button>
         </header>
 

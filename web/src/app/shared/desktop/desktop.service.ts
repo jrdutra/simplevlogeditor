@@ -161,7 +161,10 @@ export class DesktopService {
     const stop = this.bridge.onState((state) => this.apply(state));
     inject(DestroyRef).onDestroy(stop);
     const stopAgentControl = this.bridge.onAgentControlState?.((state) => {
-      this.zone.run(() => this.agentControl.set(state));
+      this.zone.run(() => {
+        this.agentControl.set(state);
+        this.noticeConnection(state);
+      });
     });
     if (stopAgentControl) inject(DestroyRef).onDestroy(stopAgentControl);
 
@@ -204,6 +207,33 @@ export class DesktopService {
       document.removeEventListener('drop', onDrop, true);
       document.removeEventListener('change', onChange, true);
     });
+  }
+
+  /**
+   * A *new* client connection, as opposed to one that is merely still there.
+   *
+   * The control panel can be closed outright, and what brings it back is an AI
+   * connecting — not more activity from the one the user just dismissed. That
+   * distinction needs an edge, and the state signal only offers a level.
+   */
+  private lastConnectionStamp: string | null = null;
+  private readonly connectionHandlers = new Set<() => void>();
+
+  onAgentConnected(handler: () => void): () => void {
+    this.connectionHandlers.add(handler);
+    return () => this.connectionHandlers.delete(handler);
+  }
+
+  private noticeConnection(state: AgentControlState): void {
+    if (!state.active) {
+      // A drop clears the stamp, so reconnecting afterwards counts as new.
+      this.lastConnectionStamp = null;
+      return;
+    }
+    const stamp = state.lastConnectionAt ?? state.sessionId ?? null;
+    if (!stamp || stamp === this.lastConnectionStamp) return;
+    this.lastConnectionStamp = stamp;
+    for (const handler of this.connectionHandlers) handler();
   }
 
   /**

@@ -1021,7 +1021,7 @@
    looks exactly as it did before. The triples are bare so each rule can keep
    the alpha it was written with. */
 
-.agente-controle-indicador,
+.agente-controle-indicador-caixa,
 .agente-modal,
 .agente-conclusao-modal {
   --agente-borda: #3b82f6;
@@ -1037,7 +1037,7 @@
 
 /* Claude Code drives in orange. Same structure, same weights — only the hue
    changes, so nothing about the window has to be relearned. */
-.agente-controle-indicador.agente-claude,
+.agente-controle-indicador-caixa.agente-claude,
 .agente-modal.agente-claude,
 .agente-conclusao-modal.agente-claude {
   --agente-borda: #f97316;
@@ -1051,23 +1051,54 @@
   --agente-rgb-brilho: 251 146 60;
 }
 
-.agente-controle-indicador {
+/* The badge and its dismiss button share one shell, so the X sits inside the
+   same border rather than floating beside it. */
+.agente-controle-indicador-caixa {
   position: fixed;
   right: 22px;
   bottom: 22px;
   z-index: 2500;
   display: inline-flex;
-  align-items: center;
-  gap: 0.65rem;
+  align-items: stretch;
   max-width: min(34rem, calc(100vw - 44px));
-  padding: 0.7rem 0.9rem;
   border: 1px solid var(--agente-borda);
   border-radius: 14px;
   color: var(--agente-texto);
   background: rgba(8, 15, 31, 0.8);
   box-shadow: 0 14px 38px rgba(0, 0, 0, 0.58), 0 0 25px rgb(var(--agente-rgb-forte) / 0.42);
+  overflow: hidden;
+}
+
+.agente-controle-indicador {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.65rem;
+  min-width: 0;
+  padding: 0.7rem 0.9rem;
+  border: 0;
+  color: inherit;
+  background: transparent;
+  font: inherit;
   cursor: pointer;
 }
+
+.agente-controle-indicador span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+.agente-indicador-fechar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.25rem;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid rgb(var(--agente-rgb-medio) / 0.45);
+  color: var(--agente-texto-medio);
+  background: transparent;
+  cursor: pointer;
+}
+
+.agente-indicador-fechar:hover { color: var(--agente-texto); background: rgb(var(--agente-rgb-forte) / 0.28); }
+.agente-indicador-fechar mat-icon { width: 1.1rem; height: 1.1rem; font-size: 1.1rem; }
 
 .agente-controle-indicador img { width: 1.9rem; height: 1.9rem; }
 
