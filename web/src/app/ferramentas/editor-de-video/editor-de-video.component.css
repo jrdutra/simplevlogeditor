@@ -2841,3 +2841,23 @@ ul.reconectar-nomes li {
 }
 
 .erro-trace-aviso { font-size: 0.75rem; opacity: 0.8; }
+
+
+/* ------------------------------------------- the working bar, per controller */
+
+/*
+ * The one thing in the panel that was still wearing Material's own colour.
+ * Everything around it is the controller's — blue for Codex, orange for Claude
+ * — so a purple bar underneath the title read as a third party in the window.
+ *
+ * Both the track and the moving bar are set: the component paints them from
+ * separate custom properties, and colouring only the bar leaves the track in
+ * the theme's tint.
+ */
+.agente-modal-barra {
+  --mdc-linear-progress-active-indicator-color: var(--agente-destaque);
+  --mdc-linear-progress-track-color: rgb(var(--agente-rgb-forte) / 0.35);
+  height: 3px;
+  border-radius: 999px;
+  overflow: hidden;
+}

@@ -11,7 +11,7 @@
     "dev": "electron . --dev",
     "mcp": "node src/mcp-host.js",
     "mcp:dev": "node src/mcp-host.js --dev",
-    "test:mcp": "node --test src/mcp-roots.test.js src/roots-store-file.test.js src/roots-consent.test.js src/recovery-state.test.js src/mcp-server.test.js src/media-import-service.test.js src/editor-process-manager.test.js src/server.test.js src/agent-ui-contract.test.js src/idempotency-ledger.test.js src/recovery-checkpoint-store.test.js src/stable-origin.test.js src/editor-location.test.js",
+    "test:mcp": "node --test src/mcp-roots.test.js src/roots-store-file.test.js src/roots-consent.test.js src/recovery-state.test.js src/startup-gate.test.js src/mcp-server.test.js src/media-import-service.test.js src/editor-process-manager.test.js src/server.test.js src/agent-ui-contract.test.js src/idempotency-ledger.test.js src/recovery-checkpoint-store.test.js src/stable-origin.test.js src/editor-location.test.js",
     "test:mcp:lifecycle": "node scripts/smoke-lifecycle.js",
     "build:web": "npm --prefix ../web run build:site",
     "dist": "npm --prefix ../web run build",

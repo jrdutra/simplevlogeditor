@@ -558,19 +558,79 @@ async function recoveryState() {
   }
 }
 
+/**
+ * The editor is not open for business until it has finished opening.
+ *
+ * A client connects and its first tool call can arrive twenty milliseconds
+ * later, while the checkpoint is still being restored and the media still being
+ * reconnected. Everything it was told in that window was true for a fraction of
+ * a second: `transcribe clip-0` was answered "not found" on a project that was
+ * about to have clip-0 in it, and a `get_project` that raced the restore handed
+ * back revision 4 for a project that settled at 8 — so the batch guarded on 4
+ * and was refused. Both read as editor faults and neither was one.
+ *
+ * So the bridge holds those calls instead of answering them from a half-built
+ * project. Status and control are exempt: asking whether the editor is healthy,
+ * or telling it to stop, must work precisely when it is busy.
+ *
+ * The ceiling matters as much as the gate. A startup that never finishes must
+ * degrade to the old behaviour rather than hanging every command forever.
+ */
+const STARTUP_GATE_TIMEOUT_MS = 30_000;
+
+/** Answerable while the project is still being assembled: they do not read it. */
+const STARTUP_EXEMPT = new Set([
+  'health_check', 'get_diagnostics', 'get_recovery_state', 'get_editor_capabilities',
+  'get_operation_status', 'cancel_operation', 'get_import_status', 'cancel_import',
+  'close_editor', 'restart_editor'
+]);
+
+let startupSettled = null;
+let releaseStartup = null;
+
+function startupGate() {
+  if (!startupSettled) {
+    startupSettled = new Promise((resolve) => { releaseStartup = resolve; });
+    const ceiling = setTimeout(() => {
+      log.warn('startup_gate_timeout', { afterMs: STARTUP_GATE_TIMEOUT_MS });
+      finishStartup('timeout');
+    }, STARTUP_GATE_TIMEOUT_MS);
+    ceiling.unref?.();
+    startupSettled.finally(() => clearTimeout(ceiling));
+  }
+  return startupSettled;
+}
+
+function finishStartup(reason) {
+  if (!releaseStartup) return;
+  const release = releaseStartup;
+  releaseStartup = null;
+  log.info('startup_settled', { reason });
+  release();
+}
+
 async function restoreCheckpointIfEmpty() {
   const checkpointPath = recoveryProjectPath();
-  if (restoreAttemptedPath === checkpointPath || !agentContents || agentContents.isDestroyed()) return;
+  // The renderer is not up yet: leave the gate shut, because `agent:ready`
+  // calls this again and that attempt is the one that decides.
+  if (!agentContents || agentContents.isDestroyed()) return;
+  if (restoreAttemptedPath === checkpointPath) { finishStartup('already_attempted'); return; }
   restoreAttemptedPath = checkpointPath;
-  const state = await recoveryState();
-  if (!state.exists) return;
-  const current = await callEditor({ name: 'get_project', arguments: {} });
-  if (Number(current.result?.clipCount || 0) > 0) {
-    log.info('project_checkpoint_restore_skipped', { path: checkpointPath, reason: 'editor_not_empty' });
-    return;
+  try {
+    const state = await recoveryState();
+    if (!state.exists) return;
+    const current = await callEditor({ name: 'get_project', arguments: {} });
+    if (Number(current.result?.clipCount || 0) > 0) {
+      log.info('project_checkpoint_restore_skipped', { path: checkpointPath, reason: 'editor_not_empty' });
+      return;
+    }
+    const restored = await callEditor({ name: 'open_project', arguments: { path: checkpointPath } });
+    log.info('project_checkpoint_restored', { path: checkpointPath, projectRevision: restored.projectRevision });
+  } finally {
+    // Restored, skipped or thrown — the project is as assembled as it is going
+    // to get, and holding the agent past that point would be its own fault.
+    finishStartup('restore_complete');
   }
-  const restored = await callEditor({ name: 'open_project', arguments: { path: checkpointPath } });
-  log.info('project_checkpoint_restored', { path: checkpointPath, projectRevision: restored.projectRevision });
 }
 
 function commandVersion(command) {
@@ -762,6 +822,9 @@ const IDEMPOTENT_PROJECT_MUTATIONS = new Set([
  * read and fresh request ids, as advertised by the protocol.
  */
 async function routeAgentRequest(request) {
+  // Every call that reads or changes the project waits for startup. See
+  // `startupGate`: this is the whole reason it exists.
+  if (!STARTUP_EXEMPT.has(request?.name)) await startupGate();
   if (!IDEMPOTENT_PROJECT_MUTATIONS.has(request?.name) || request?.arguments?.dryRun === true) {
     return executeAgentRequest(request);
   }
@@ -826,6 +889,7 @@ function startEditorBridgeServer() {
           publishAgentSystemLog('INFO', 'MCP bridge', wasDisconnected
             ? `${controller === 'codex' ? 'Codex' : controller === 'chatgpt' ? 'ChatGPT' : 'AI client'} connection restored.`
             : `${controller === 'codex' ? 'Codex' : controller === 'chatgpt' ? 'ChatGPT' : 'AI client'} connected to the editor.`);
+          startupGate();
           restoreCheckpointIfEmpty().catch((error) => log.warn('project_checkpoint_restore_failed', { error }));
           continue;
         }
@@ -942,6 +1006,10 @@ function wireAgentBridge() {
     // user-data checkpoint during the few milliseconds before it arrives.
     if (!MCP_OPEN || agentControllers.size > 0) {
       restoreCheckpointIfEmpty().catch((error) => log.warn('project_checkpoint_restore_failed', { error }));
+    } else {
+      // Launched by MCP and no client has said hello yet. The hello opens the
+      // gate; nothing here should hold it shut on its own.
+      finishStartup('renderer_ready_without_client');
     }
   });
 
