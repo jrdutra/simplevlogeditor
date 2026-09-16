@@ -234,10 +234,48 @@ export class VideoEditorRenderService {
     // log can see where in the render each thing happened rather than only in
     // what order it happened.
     let reached: number | null = null;
+    let lastProgressAt = Date.now();
+    let lastProgress = { stage: 'starting', index: 0, name: '', percent: 0 };
+    let stallAnnouncedAt = 0;
+    const STALL_AFTER_MS = 45_000;
     const report = (stage: RenderProgress['stage'], ratio: number | null, index: number, name: string) => {
       if (ratio !== null && Number.isFinite(ratio)) reached = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+      // Proof of life for the watchdog below, recorded before the callback so
+      // a slow subscriber cannot look like a stalled encoder.
+      lastProgressAt = Date.now();
+      lastProgress = { stage, index, name, percent: reached ?? 0 };
+      stallAnnouncedAt = 0;
       onProgress({ stage, ratio, clipIndex: index, clipCount: plan.clips.length, clipName: name });
     };
+
+    /*
+     * A render that stops making progress used to say nothing at all.
+     *
+     * Every other failure throws, and a thrown failure carries a message, a
+     * stage and a trace. A stall carries none of that: the bar holds at 84%,
+     * the log's last line is whatever was happening a minute ago, and there is
+     * no way to tell a slow container from a stuck one — which is the
+     * difference between waiting and reporting a bug.
+     *
+     * So silence is watched. The watchdog does not abort: an encoder that is
+     * genuinely slow on a 4K container must be allowed to finish. It writes
+     * what is stuck and for how long into the render log, which is what the
+     * trace is built from, so the reader can capture a hang while it is
+     * happening instead of describing it afterwards.
+     */
+    const watchdog = setInterval(() => {
+      const silentForMs = Date.now() - lastProgressAt;
+      if (silentForMs < STALL_AFTER_MS) return;
+      // Once, then every half minute: enough to show it is still stuck without
+      // burying the line that says where.
+      if (stallAnnouncedAt && Date.now() - stallAnnouncedAt < 30_000) return;
+      stallAnnouncedAt = Date.now();
+      log('warn',
+        `No progress for ${Math.round(silentForMs / 1000)}s — still on ${lastProgress.stage}, `
+        + `container ${lastProgress.index}/${plan.clips.length}`
+        + `${lastProgress.name ? ` (${lastProgress.name})` : ''} at ${lastProgress.percent}%. `
+        + 'The export has not failed; it is either slow or stuck. Copy the trace if it does not move.');
+    }, 5_000);
 
     const startedAt = Date.now();
     /**
@@ -520,6 +558,7 @@ export class VideoEditorRenderService {
       if (!finalized) await output.cancel().catch(() => undefined);
       throw this.describe(error, Boolean(destination.handle) && !finalized);
     } finally {
+      clearInterval(watchdog);
       signal.removeEventListener('abort', cancelSegmentation);
       subjectSegmentation.dispose();
       effectContexts.forEach(disposeFrameEffects);

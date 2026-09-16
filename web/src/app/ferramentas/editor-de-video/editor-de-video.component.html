@@ -1859,6 +1859,13 @@
                written so far and offers the rest as a second file; cancelling
                throws the file away, which is what it always did. -->
           @if (exporting) {
+            <!-- For a render that has stopped moving. A stall throws nothing,
+                 so the trace is never built by itself and this is the only
+                 moment the state of the export can be handed to anybody. -->
+            <button mat-button (click)="captureRunningRenderTrace()"
+              title="Copy everything about this export as it stands — for a render that is not moving">
+              Copy the trace
+            </button>
             <button mat-button (click)="stopExport()" title="Finish the clip being written and keep the file">
               Stop and keep
             </button>
@@ -1875,6 +1882,9 @@
         <div class="progresso-topo">
           <span class="progresso-item">Last export — {{ renderLog.length }} lines</span>
           <span class="progresso-acoes">
+            @if (renderLog.length) {
+              <button mat-button (click)="captureRunningRenderTrace()">Copy the trace</button>
+            }
             <button mat-button (click)="clearLog()">Clear</button>
           </span>
         </div>

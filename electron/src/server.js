@@ -111,16 +111,18 @@ async function send(res, file, stat, status = 200) {
 }
 
 /**
- * Starts the loopback server and resolves with `{ origin, close }`.
+ * Starts the loopback server and resolves with its origin, actual port and
+ * lifecycle methods. Production passes a remembered port so origin-scoped
+ * browser storage survives relaunches; tests and development may still use 0.
  *
- * Port 0: the operating system picks a free one, so two copies of the app can
- * run at once and nothing on the machine is ever displaced.
+ * If a preferred port is occupied, the caller may allow a random fallback.
  */
-function startServer(rootDir) {
+function startServer(rootDir, options = {}) {
   const root = path.resolve(rootDir);
   const shell = path.join(root, 'index.html');
   const media = new Map();
   const mediaPrefix = `/__sve_media_${randomBytes(16).toString('hex')}/`;
+  const preferredPort = Number.isInteger(options.port) ? options.port : 0;
 
   const server = http.createServer((req, res) => {
     isolate(res);
@@ -180,27 +182,56 @@ function startServer(rootDir) {
       });
   });
 
-  return new Promise((resolveStart, reject) => {
-    server.once('error', reject);
-    server.listen(0, '127.0.0.1', () => {
-      const address = server.address();
-      resolveStart({
-        origin: `http://127.0.0.1:${address.port}`,
-        registerMedia(file, stat, type) {
-          const id = randomBytes(18).toString('base64url');
-          media.set(id, { file, stat, type });
-          return `http://127.0.0.1:${address.port}${mediaPrefix}${id}/${encodeURIComponent(path.basename(file))}`;
-        },
-        releaseMedia(url) {
-          try {
-            const pathname = new URL(url).pathname;
-            if (pathname.startsWith(mediaPrefix)) media.delete(pathname.slice(mediaPrefix.length).split('/')[0]);
-          } catch {}
-        },
-        close: () => new Promise((done) => server.close(() => done()))
-      });
-    });
+  const listen = (port) => new Promise((resolveListen, rejectListen) => {
+    const failed = (error) => {
+      server.removeListener('listening', ready);
+      rejectListen(error);
+    };
+    const ready = () => {
+      server.removeListener('error', failed);
+      resolveListen();
+    };
+    server.once('error', failed);
+    server.once('listening', ready);
+    // A media request that never completes must not hold its socket for the
+    // life of the application: the connection pool is what the next reader
+    // needs back, and six abandoned ones is all it takes to stall everything.
+    server.keepAliveTimeout = 5_000;
+    server.headersTimeout = 10_000;
+    server.requestTimeout = 0; // a large range legitimately takes minutes
+    server.listen(port, '127.0.0.1');
   });
+
+  return (async () => {
+    let usedFallback = false;
+    try {
+      await listen(preferredPort);
+    } catch (error) {
+      if (preferredPort === 0 || error.code !== 'EADDRINUSE' || options.fallbackToRandom === false) throw error;
+      usedFallback = true;
+      await listen(0);
+    }
+
+    const address = server.address();
+    return {
+      origin: `http://127.0.0.1:${address.port}`,
+      port: address.port,
+      preferredPort,
+      usedFallback,
+      registerMedia(file, stat, type) {
+        const id = randomBytes(18).toString('base64url');
+        media.set(id, { file, stat, type });
+        return `http://127.0.0.1:${address.port}${mediaPrefix}${id}/${encodeURIComponent(path.basename(file))}`;
+      },
+      releaseMedia(url) {
+        try {
+          const pathname = new URL(url).pathname;
+          if (pathname.startsWith(mediaPrefix)) media.delete(pathname.slice(mediaPrefix.length).split('/')[0]);
+        } catch {}
+      },
+      close: () => new Promise((done) => server.close(() => done()))
+    };
+  })();
 }
 
 async function sendMedia(req, res, entry) {
@@ -226,7 +257,29 @@ async function sendMedia(req, res, entry) {
   res.setHeader('Content-Length', Math.max(0, end - start + 1));
   res.setHeader('Cache-Control', 'no-store');
   if (req.method === 'HEAD' || size === 0) { res.end(); return; }
-  await pipeline(fs.createReadStream(entry.file, { start, end }), res);
+
+  /*
+   * The stream dies with the response, explicitly.
+   *
+   * A client that stops reading without closing — a video element torn down
+   * mid-seek, a decoder that gave up — leaves this request open, and with it a
+   * socket and a file handle. Chrome allows six connections to this origin, so
+   * a few of those and the next request for the same file never gets a reply:
+   * `readyState 0`, `networkState 2`, nothing buffered, no error. That has now
+   * been seen twice, from a frame grab and from an export.
+   *
+   * `pipeline` tears down on error, but an abandoned response is not an error
+   * until something notices. This notices.
+   */
+  const stream = fs.createReadStream(entry.file, { start, end });
+  const stopReading = () => stream.destroy();
+  res.once('close', stopReading);
+  try {
+    await pipeline(stream, res);
+  } finally {
+    res.removeListener('close', stopReading);
+    if (!stream.destroyed) stream.destroy();
+  }
 }
 
 module.exports = { startServer };

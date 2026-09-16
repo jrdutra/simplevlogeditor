@@ -10366,7 +10366,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * Deliberately the same shape as the MCP diagnostic, so one habit covers
    * both and either can be pasted into the same conversation.
    */
-  private async captureRenderDiagnostic(error: unknown): Promise<RenderDiagnostic> {
+  private async captureRenderDiagnostic(error: unknown | null): Promise<RenderDiagnostic> {
     const incidentId = crypto.randomUUID();
     const createdAt = new Date().toISOString();
     const runtime: AgentRuntimeInfo = await this.desktop.getAgentRuntimeInfo().catch(() => ({}));
@@ -10429,12 +10429,23 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         ...(isTransitionClip(clip) ? { transition: clip.settings?.kind ?? null } : {})
       })),
       connection: this.desktop.agentControl(),
-      error: this.serializeAgentError(error),
+      error: error ? this.serializeAgentError(error) : null,
+      // A stall throws nothing, so the trace has to describe where it is
+      // rather than what went wrong.
+      inProgress: this.exporting !== null,
+      progress: this.progress
+        ? { stage: this.progress.stage, ratio: this.progress.ratio, clipIndex: this.progress.clipIndex,
+            clipCount: this.progress.clipCount, clipName: this.progress.clipName }
+        : null,
       stage: typed?.stage ?? null,
-      nextSteps: [
+      nextSteps: error ? [
         'Read the failing line at the end of renderLog below.',
         'Check silentSounds and awaitingClips: a placeholder input is present in the plan and absent from the file.',
         'Reproduce with the same output settings before changing anything.'
+      ] : [
+        'This export had not failed when the trace was taken — read `progress` for where it had reached.',
+        'Look for a "No progress for Ns" line at the end of renderLog: that is the watchdog saying it is stuck rather than slow.',
+        'Compare the container it is on against the clips array: an in/out point, a caption or a tag on that container is where to look first.'
       ],
       renderLog: this.renderLog.map((line) =>
         `[${line.clock}] [+${line.at}] [${line.kind}] ${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
@@ -10443,9 +10454,24 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return {
       incidentId,
       createdAt,
-      summary: `${typed?.name || 'Error'}${this.errorClip ? ` on ${this.errorClip}` : ''}: ${this.errorMessage || String(error)}`,
+      summary: error
+        ? `${typed?.name || 'Error'}${this.errorClip ? ` on ${this.errorClip}` : ''}: ${this.errorMessage || String(error)}`
+        : `Still running — ${this.progress?.stage ?? 'starting'}, container ${this.progress?.clipIndex ?? 0}/${this.progress?.clipCount ?? this.clips.length}`,
       fullText: `Simple Vlog Editor render diagnostic\n${JSON.stringify(diagnostic, null, 2)}`
     };
+  }
+
+  /**
+   * The trace for an export that has not finished.
+   *
+   * A stall throws nothing, so the ordinary path — build the trace when it
+   * fails — never runs, and the one moment the reader most needs to hand
+   * somebody the state of the render is the moment nothing is on offer.
+   */
+  async captureRunningRenderTrace(): Promise<void> {
+    this.renderDiagnostic = await this.captureRenderDiagnostic(null);
+    this.renderDiagnosticMessage = '';
+    await this.copyRenderDiagnostic();
   }
 
   async copyRenderDiagnostic(): Promise<void> {
