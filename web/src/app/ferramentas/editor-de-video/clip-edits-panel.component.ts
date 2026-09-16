@@ -18,6 +18,9 @@ import {
   speedLabel
 } from './video-editor-defaults';
 import { ClipAudioMode, ClipEdits } from './video-editor.models';
+import type { NoiseReport } from '../supressao-de-ruido/noise-analysis';
+import type { SuppressionProgress } from '../supressao-de-ruido/noise-suppression.models';
+import type { ClipNoiseSettings } from './clip-noise';
 
 /**
  * Every setting a clip can have, in one panel.
@@ -79,10 +82,19 @@ export class ClipEditsPanelComponent {
   @Input() speedLocked = false;
   /** The speed as words, when it is locked: the value, and where it came from. */
   @Input() speedLockedLabel = '';
+  /** Present only for a media container. Project settings deliberately pass null. */
+  @Input() noiseSettings: ClipNoiseSettings | null = null;
+  @Input() noiseReport: NoiseReport | null = null;
+  @Input() noiseWorking = false;
+  @Input() noiseProgress: SuppressionProgress | null = null;
+  @Input() noiseReady = false;
 
   @Output() readonly editsChange = new EventEmitter<ClipEdits>();
   /** The reader asking for the speed control back. */
   @Output() readonly speedRelease = new EventEmitter<void>();
+  @Output() readonly noiseEnabledChange = new EventEmitter<boolean>();
+  @Output() readonly noiseConfigure = new EventEmitter<void>();
+  @Output() readonly noiseProcess = new EventEmitter<void>();
 
   cutsOpen = false;
 
@@ -92,6 +104,14 @@ export class ClipEditsPanelComponent {
   readonly limits = SETTING_LIMITS;
   readonly presets = SILENCE_PRESETS;
   readonly speedLabel = speedLabel;
+
+  get noiseStatusClass(): string {
+    const status = this.noiseReport?.status;
+    return status === 'Relevant noise' ? 'ruido-alto' : status === 'Probable noise' ? 'ruido-medio' : 'ruido-baixo';
+  }
+
+  get noiseStatus(): string { return this.noiseReport?.status ?? ''; }
+  get noiseBackgroundDb(): number | null { return this.noiseReport?.backgroundDb ?? null; }
 
   get preset(): string {
     return presetFor(this.edits.silence);

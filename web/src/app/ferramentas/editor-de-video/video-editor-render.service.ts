@@ -127,6 +127,14 @@ export interface EditorRenderOptions {
    * container, never per frame.
    */
   onLog?: (entry: RenderLogEntry) => void;
+  /**
+   * Whether to write the code's own trace into the log, asked each time it matters.
+   *
+   * A function rather than a flag because the moment a reader wants the trace is
+   * the moment the export has already stopped moving — and an export that has
+   * stopped moving cannot be restarted to turn a flag on.
+   */
+  debugTrace?: () => boolean;
 }
 
 /** Minutes and seconds, for a position on the timeline. */
@@ -165,6 +173,43 @@ const STILL_FRAME_INTERVAL = 1;
 
 /** Below this a fragment is not worth encoding. */
 const EPSILON = 1e-6;
+
+/**
+ * How often a container may narrate itself while it works.
+ *
+ * The log used to speak once per container, which is fine for a container that
+ * takes four seconds and useless for one that takes fifteen minutes: between
+ * the first line and the last there was no way to tell a slow encode from a
+ * stuck one. These lines are the inside of that gap.
+ */
+const TRACE_EVERY_MS = 2_000;
+/** A single await worth a line of its own, rather than a number in a summary. */
+const SLOW_AWAIT_MS = 4_000;
+
+/**
+ * What the export is doing at this instant, named for whoever is waiting.
+ *
+ * `onProgress` moves when a frame is written, so it says nothing at all while
+ * one frame takes a minute - which is exactly the state a reader needs
+ * described. `mark` is called *before* each await and names what is being
+ * waited for, so the watchdog can say what is stuck instead of only that
+ * something is.
+ */
+interface RenderTrace {
+  mark(what: string, detail?: string, origin?: string): void;
+  log(kind: RenderLogEntry['kind'], text: string, origin?: string): void;
+  /**
+   * Milliseconds spent drawing frames, as opposed to encoding them.
+   *
+   * Compositing runs *inside* `VideoSampleSource.add`, because that is where the
+   * transform's `process` is called. Timing the call therefore times both, and
+   * reporting the total as "waiting on the encoder" blames the encoder for a
+   * segmentation pass. This is the half that belongs to the drawing.
+   */
+  composing: { ms: number };
+}
+
+const SILENT_TRACE: RenderTrace = { mark: () => {}, log: () => {}, composing: { ms: 0 } };
 
 /**
  * Writes the finished video.
@@ -238,6 +283,35 @@ export class VideoEditorRenderService {
     let lastProgress = { stage: 'starting', index: 0, name: '', percent: 0 };
     let stallAnnouncedAt = 0;
     const STALL_AFTER_MS = 45_000;
+    /*
+     * The sub-step, under the stage.
+     *
+     * `lastProgress` is only refreshed when a whole frame has been written, so
+     * during the minute a single frame can take it holds the frame before -
+     * and a watchdog that can only repeat it says "encoding, 84%" forever. This
+     * is set before every await that can be slow, so the same watchdog can say
+     * which await, on what, and for how long.
+     */
+    const activity = { what: 'starting', detail: '', since: Date.now(), origin: 'render' };
+    /*
+     * The same marks, written down.
+     *
+     * With the trace on, each change of step closes the one before it with how
+     * long it took and opens the next with where in the code it is. Repeats are
+     * swallowed: "handing a frame to the encoder" is a thousand marks in a row
+     * and one line is the useful form of it, so only a *different* step speaks.
+     */
+    const mark = (what: string, detail = '', origin = '') => {
+      const changed = what !== activity.what;
+      if (changed && options.debugTrace?.()) {
+        log('trace', `< ${activity.origin} · ${activity.what} — ${elapsed(Date.now() - activity.since)}`, activity.origin);
+        log('trace', `> ${origin || activity.origin} · ${what}${detail ? ` — ${detail}` : ''}`, origin || activity.origin);
+      }
+      activity.what = what;
+      activity.detail = detail;
+      activity.since = Date.now();
+      if (origin) activity.origin = origin;
+    };
     const report = (stage: RenderProgress['stage'], ratio: number | null, index: number, name: string) => {
       if (ratio !== null && Number.isFinite(ratio)) reached = Math.max(0, Math.min(100, Math.round(ratio * 100)));
       // Proof of life for the watchdog below, recorded before the callback so
@@ -270,10 +344,16 @@ export class VideoEditorRenderService {
       // burying the line that says where.
       if (stallAnnouncedAt && Date.now() - stallAnnouncedAt < 30_000) return;
       stallAnnouncedAt = Date.now();
+      const waitingFor = Math.round((Date.now() - activity.since) / 1000);
+      // Named with the function it is inside, so the line points at the code
+      // and not only at the percentage.
+      const where = `${activity.origin}()`;
       log('warn',
         `No progress for ${Math.round(silentForMs / 1000)}s — still on ${lastProgress.stage}, `
         + `container ${lastProgress.index}/${plan.clips.length}`
         + `${lastProgress.name ? ` (${lastProgress.name})` : ''} at ${lastProgress.percent}%. `
+        + `Waiting on: ${where} ${activity.what}${activity.detail ? ` — ${activity.detail}` : ''}`
+        + ` (${waitingFor}s on this step). `
         + 'The export has not failed; it is either slow or stuck. Copy the trace if it does not move.');
     }, 5_000);
 
@@ -294,8 +374,12 @@ export class VideoEditorRenderService {
 
     report('preparing', 0, 0, '');
 
-    const log = (kind: RenderLogEntry['kind'], text: string) =>
-      options.onLog?.(reached === null ? { kind, text } : { kind, text, percent: reached });
+    const log = (kind: RenderLogEntry['kind'], text: string, origin = 'render') =>
+      options.onLog?.(reached === null ? { kind, text, origin } : { kind, text, percent: reached, origin });
+
+    /** Handed down to every writer, so the inside of a container can speak. */
+    const composing = { ms: 0 };
+    const trace: RenderTrace = { mark, log, composing };
 
     log('step', `Export started — ${kind === 'video' ? 'video and sound' : 'sound only'}`);
     log('detail', `container ${format.label} (.${format.extension})`);
@@ -348,6 +432,34 @@ export class VideoEditorRenderService {
     // Full analysis resolution, always: the preview may trade detail for a
     // clock, the file the reader keeps may not.
     const subjectSegmentation = new SubjectSegmentationClient({ adaptive: false });
+
+    /*
+     * One reader per file, opened once and kept for the whole export.
+     *
+     * Each container used to open its own `Input` over its own `BlobSource` and
+     * dispose it on the way out. For a timeline whose containers are different
+     * files that is merely wasteful — a header parsed once per container. For a
+     * timeline that uses the *same* file twice, which is what a clip split in
+     * two is, it hangs: the second `BlobSource` acquires a second stream reader
+     * over a blob whose first reader was cancelled by the first dispose, and the
+     * read never comes back. Mediabunny documents the hazard under
+     * `BlobSourceOptions.useStreamReader` ("can lead to errors in some very rare
+     * cases due to browser bugs"); the export met it as a bar frozen at 84%,
+     * with `copyVideoRanges` waiting on the file header for as long as anyone
+     * cared to watch.
+     *
+     * Sharing the reader removes the second open altogether. Containers are
+     * written one after another, never at once, so one reader is all there is
+     * to share.
+     */
+    const readers = new Map<Blob, import('mediabunny').Input>();
+    const openInput = (file: Blob) => {
+      const open = readers.get(file);
+      if (open) return open;
+      const created = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+      readers.set(file, created);
+      return created;
+    };
     const effectContexts = new Set<FrameContext>();
     const cancelSegmentation = () => subjectSegmentation.dispose();
     signal.addEventListener('abort', cancelSegmentation, { once: true });
@@ -372,7 +484,7 @@ export class VideoEditorRenderService {
                 // Normalising the rate as well is what lets a still picture be
                 // written as one frame per second: the gaps are padded for us.
                 frameRate: plan.frameRate,
-                process: this.videoProcessor(plan, subjectSegmentation, signal, effectContexts, this.sectionAnnouncer(plan, log))
+                process: this.videoProcessor(plan, subjectSegmentation, signal, effectContexts, this.sectionAnnouncer(plan, log), composing)
               }
             })
           : null;
@@ -391,6 +503,7 @@ export class VideoEditorRenderService {
       });
       output.addAudioTrack(audioSource);
 
+      mark('starting the muxer', '', 'render');
       await output.start();
 
       const cursor = { video: -Infinity, audio: -Infinity };
@@ -481,7 +594,7 @@ export class VideoEditorRenderService {
 
         try {
           if (isMediaClip(entry.clip)) {
-            await this.writeMediaClip(library, entry, entry.clip, plan, options, videoSource, audioSource, cursor, tick, pictureEnd, sound);
+            await this.writeMediaClip(library, entry, entry.clip, plan, options, videoSource, audioSource, cursor, tick, pictureEnd, sound, trace, openInput);
           } else {
             await this.writeTextClip(library, entry, entry.clip, plan, videoSource, audioSource, cursor, signal, tick, pictureEnd, sound);
           }
@@ -525,6 +638,7 @@ export class VideoEditorRenderService {
       }
 
       report('muxing', 1, plan.clips.length, '');
+      mark('writing the index', '', 'render');
       log('step', `Assembling the container — ${elapsed(Date.now() - startedAt)} so far`);
 
       // Finalizing writes the index and, for a stream target, closes the
@@ -560,6 +674,10 @@ export class VideoEditorRenderService {
     } finally {
       clearInterval(watchdog);
       signal.removeEventListener('abort', cancelSegmentation);
+      // Every file the export read, closed once, at the end — the only moment
+      // no container can still want one of them.
+      for (const reader of readers.values()) reader.dispose();
+      readers.clear();
       subjectSegmentation.dispose();
       effectContexts.forEach(disposeFrameEffects);
     }
@@ -640,7 +758,11 @@ export class VideoEditorRenderService {
     /** Output time this clip's picture hands over to a transition, or Infinity. */
     pictureEnd = Infinity,
     /** Output times this clip's sound takes over and hands over. */
-    soundWindow: SoundWindow = OPEN_SOUND
+    soundWindow: SoundWindow = OPEN_SOUND,
+    trace: RenderTrace = SILENT_TRACE,
+    /** The export's shared reader for a file, opened at most once. */
+    openInput: (file: Blob) => import('mediabunny').Input =
+      (file) => new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS })
   ): Promise<void> {
     const { signal, envelopes, project } = options;
     const speed = clampSpeed(entry.edits.speed);
@@ -662,16 +784,16 @@ export class VideoEditorRenderService {
         + 'It was restored from a saved project and is still waiting for its file.'
       );
     }
-    const input = new library.Input({ source: new library.BlobSource(clip.file), formats: library.ALL_FORMATS });
+    trace.mark('opening the file', clip.summary.fileName, 'writeMediaClip');
+    const openedAt = Date.now();
+    const input = openInput(clip.file);
     const cleanedAudio = activeNoiseAudio(clip);
-    const audioInput = cleanedAudio
-      ? new library.Input({ source: new library.BlobSource(cleanedAudio), formats: library.ALL_FORMATS })
-      : input;
+    const audioInput = cleanedAudio ? openInput(cleanedAudio) : input;
 
-    try {
+    {
       if (videoSource) {
         cursor.video = clip.summary.videoUsable
-          ? await this.copyVideoRanges(library, input, videoSource, entry, speed, cursor.video, signal, tick, pictureEnd)
+          ? await this.copyVideoRanges(library, input, videoSource, entry, speed, cursor.video, signal, tick, pictureEnd, trace, openedAt)
           : await this.writeBlack(library, videoSource, entry.outputStart, picture, plan, cursor.video, signal);
       }
 
@@ -711,15 +833,15 @@ export class VideoEditorRenderService {
           signal,
           audioDrives ? tick : null,
           audible.start,
-          audible.end
+          audible.end,
+          trace
         );
       } else {
         cursor.audio = await this.writeSilence(library, audioSource, audible.start, audible.seconds, plan, cursor.audio, signal);
       }
-    } finally {
-      if (audioInput !== input) audioInput.dispose();
-      input.dispose();
     }
+    // No dispose here: these readers belong to the export, not to this
+    // container, and the next container may be the same file.
   }
 
   /**
@@ -818,16 +940,44 @@ export class VideoEditorRenderService {
     lastTimestamp: number,
     signal: AbortSignal,
     tick: (seconds: number) => void,
-    pictureEnd = Infinity
+    pictureEnd = Infinity,
+    trace: RenderTrace = SILENT_TRACE,
+    /** When the file was handed to the demuxer, so the wait for it can be timed. */
+    openedAt = Date.now()
   ): Promise<number> {
+    trace.mark('reading the file header', '', 'copyVideoRanges');
     const track = await input.getPrimaryVideoTrack();
     if (!track) return lastTimestamp;
+    trace.log('detail', `picture: decoder ready in ${elapsed(Date.now() - openedAt)}`, 'copyVideoRanges');
 
     const sink = new library.VideoSampleSink(track);
     let last = lastTimestamp;
     let cut = 0;
 
-    for (const range of entry.keepRanges) {
+    /*
+     * Everything below is narration, and it is here rather than in a summary at
+     * the end because the case worth describing is the one that never reaches
+     * the end. A container that hangs used to leave three lines behind: which
+     * ranges it meant to copy, and nothing about whether it got a single frame
+     * out of the decoder. These say which range, which frame, how fast, and how
+     * much of the wait belongs to the encoder rather than the decode.
+     */
+    const total = Math.max(EPSILON, entry.outputDuration);
+    const ranges = entry.keepRanges.length;
+    const startedAt = Date.now();
+    let frames = 0;
+    let encoderWaitMs = 0;
+    let composeMs = 0;
+    let notedAt = Date.now();
+
+    /** Where this container has got to, on its own clock rather than the file's. */
+    const share = (timestamp: number) =>
+      Math.round(Math.min(1, Math.max(0, (timestamp - entry.outputStart) / total)) * 100);
+
+    for (const [rangeIndex, range] of entry.keepRanges.entries()) {
+      trace.mark('seeking', `source ${range.start.toFixed(2)}s (range ${rangeIndex + 1}/${ranges})`, 'copyVideoRanges');
+      const seekingAt = Date.now();
+      let firstOfRange = true;
       for await (const sample of sink.samples(range.start, range.end)) {
         // A decoded frame holds a real GPU or system buffer, so it is closed in
         // a `finally`: an encoder that rejects mid-file must not leave frames
@@ -848,10 +998,53 @@ export class VideoEditorRenderService {
           if (timestamp >= pictureEnd) return last;
           if (timestamp <= last) continue;
 
+          if (firstOfRange) {
+            firstOfRange = false;
+            trace.log(
+              'detail',
+              `picture: range ${rangeIndex + 1}/${ranges} — source ${range.start.toFixed(2)}s to ` +
+              `${range.end.toFixed(2)}s, first frame after ${elapsed(Date.now() - seekingAt)}`,
+              'copyVideoRanges'
+            );
+          }
+
           sample.setTimestamp(timestamp);
+          // Named before the await, not after: this is the line the watchdog
+          // reads when a frame never comes back.
+          trace.mark('handing a frame to the encoder', `frame ${frames + 1}, source ${sample.timestamp.toFixed(2)}s`, 'copyVideoRanges');
+          const handedAt = Date.now();
+          const drawnBefore = trace.composing.ms;
           await source.add(sample);
+          const waited = Date.now() - handedAt;
+          // What the drawing took is not what the encoder took, even though one
+          // call covers both.
+          const drew = trace.composing.ms - drawnBefore;
+          composeMs += drew;
+          encoderWaitMs += Math.max(0, waited - drew);
+          // One frame taking as long as a whole container should is a fact
+          // about this export, not a rounding error in an average.
+          if (waited >= SLOW_AWAIT_MS) {
+            trace.log('warn', `picture: one frame took ${elapsed(waited)} at source ${sample.timestamp.toFixed(2)}s`, 'copyVideoRanges');
+          }
           last = timestamp;
+          frames++;
           tick(timestamp);
+
+          if (Date.now() - notedAt >= TRACE_EVERY_MS) {
+            notedAt = Date.now();
+            const spent = Math.max(1, Date.now() - startedAt);
+            const done = share(timestamp);
+            const fps = (frames / spent) * 1000;
+            const left = done > 0 ? (spent / done) * (100 - done) : 0;
+            trace.log(
+              'detail',
+              `picture: ${done}% of this container — ${frames} frames, ${fps.toFixed(1)} fps, ` +
+              `${Math.round((composeMs / spent) * 100)}% drawing and ` +
+              `${Math.round((encoderWaitMs / spent) * 100)}% waiting on the encoder` +
+              (left > 1500 ? `, about ${elapsed(left)} left here` : ''),
+              'copyVideoRanges'
+            );
+          }
         } finally {
           sample.close();
         }
@@ -859,6 +1052,13 @@ export class VideoEditorRenderService {
       cut += range.end - range.start;
     }
 
+    trace.log(
+      'detail',
+      `picture: ${frames} frames written in ${elapsed(Date.now() - startedAt)}` +
+      ` (${Math.round((composeMs / Math.max(1, Date.now() - startedAt)) * 100)}% drawing,` +
+      ` ${Math.round((encoderWaitMs / Math.max(1, Date.now() - startedAt)) * 100)}% encoding)`,
+      'copyVideoRanges'
+    );
     return last;
   }
 
@@ -886,10 +1086,15 @@ export class VideoEditorRenderService {
     /** Output time this clip's sound becomes audible. */
     audioStart = entry.outputStart,
     /** Output time this clip's sound hands over to the next, or Infinity. */
-    audioEnd = Infinity
+    audioEnd = Infinity,
+    trace: RenderTrace = SILENT_TRACE
   ): Promise<number> {
+    trace.mark('reading the sound track', '', 'copyAudioRanges');
     const track = await input.getPrimaryAudioTrack();
     if (!track) return lastTimestamp;
+    const soundStartedAt = Date.now();
+    let packets = 0;
+    let soundNotedAt = Date.now();
 
     const sink = new library.AudioSampleSink(track);
     const crossfade = entry.edits.silence.crossfadeMs / 1000;
@@ -918,8 +1123,18 @@ export class VideoEditorRenderService {
         end: range.start + (outputEnd - rangeOutputStart) * speed
       };
 
+      trace.mark('decoding sound', `source ${audibleRange.start.toFixed(2)}s (range ${index + 1}/${entry.keepRanges.length})`, 'copyAudioRanges');
       for await (const sample of sink.samples(audibleRange.start, audibleRange.end)) {
         let shaped: AudioSample | null = null;
+        packets++;
+        if (Date.now() - soundNotedAt >= TRACE_EVERY_MS) {
+          soundNotedAt = Date.now();
+          const kept = cut + Math.max(0, sample.timestamp - range.start);
+          const reachedShare = Math.round(
+            Math.min(1, Math.max(0, kept / Math.max(EPSILON, entry.keptDuration))) * 100
+          );
+          trace.log('detail', `sound: ${reachedShare}% of this container — ${packets} packets`, 'copyAudioRanges');
+        }
 
         try {
           if (signal.aborted) throw new EditorCanceledError();
@@ -979,6 +1194,7 @@ export class VideoEditorRenderService {
       cut += range.end - range.start;
     }
 
+    trace.log('detail', `sound: ${packets} packets written in ${elapsed(Date.now() - soundStartedAt)}`, 'copyAudioRanges');
     return last;
   }
 
@@ -1747,12 +1963,16 @@ export class VideoEditorRenderService {
     subjectSegmentation: SubjectSegmentationClient,
     signal: AbortSignal,
     effectContexts: Set<FrameContext>,
-    announce: (time: number) => void
+    announce: (time: number) => void,
+    /** Where the time spent drawing is added up, for the log to tell them apart. */
+    composing: { ms: number } = { ms: 0 }
   ): (sample: VideoSample) => Promise<VideoSample | CanvasImageSource> {
     let canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
     let context: FrameContext | null = null;
 
     return async (sample) => {
+      const drawingStartedAt = Date.now();
+      try {
       if (signal.aborted) throw new EditorCanceledError();
       // Before any early return, so a section is reported whether or not this
       // particular frame ends up being composed.
@@ -1814,6 +2034,9 @@ export class VideoEditorRenderService {
       if (frameEffectWarning(context)) throw new EditorError(frameEffectWarning(context));
 
       return canvas;
+      } finally {
+        composing.ms += Date.now() - drawingStartedAt;
+      }
     };
   }
 

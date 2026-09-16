@@ -1,0 +1,8 @@
+{
+  "updateUrl": "https://thebiglearn.org/",
+  "desktop": "1.0.0",
+  "plugins": {
+    "claude": "1.6.0",
+    "codex": "2.6.0"
+  }
+}

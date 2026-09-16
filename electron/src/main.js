@@ -28,6 +28,7 @@ const { preferredPort, rememberPort } = require('./stable-origin');
 const { editorLocationFile, rememberEditorLocation } = require('./editor-location');
 const { RootStore } = require('./mcp-roots');
 const { rootsFile, readRoots, writeRoots } = require('./roots-store-file');
+const { checkVersion, updateSentence } = require('./version-check');
 
 /**
  * Below this the console stops being one.
@@ -1513,6 +1514,42 @@ function wirePermissions(session) {
   }
 }
 
+/**
+ * Says so, once per start, when this application is behind the released one.
+ *
+ * The desktop application and the AI plugins are released together; a reader
+ * running one of each from different releases meets the mismatch as a tool that
+ * answers something the plugin did not expect, halfway through an edit. Better
+ * a sentence at the start.
+ *
+ * Nothing is said when the site cannot be reached: being offline is not being
+ * out of date, and an editor that works entirely on the reader's own machine
+ * must not nag about a network it does not otherwise need.
+ */
+async function announceOutdatedVersion() {
+  const report = await checkVersion({ installed: app.getVersion(), piece: 'desktop' });
+  if (!report || report.current) return;
+
+  log.warn('version_behind', { installed: report.installed, published: report.published });
+
+  const window = BrowserWindow.getAllWindows()[0] ?? null;
+  const options = {
+    type: 'warning',
+    title: 'A newer SimpleVlogEditor has been released',
+    message: `This application is version ${report.installed || 'unknown'}; the current release is ${report.published}.`,
+    detail: updateSentence(report, 'This application'),
+    buttons: ['Open the download page', 'Later'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true
+  };
+
+  const { response } = window
+    ? await dialog.showMessageBox(window, options)
+    : await dialog.showMessageBox(options);
+  if (response === 0) await shell.openExternal(report.updateUrl).catch(() => {});
+}
+
 if (gotSingleInstanceLock) app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
@@ -1557,6 +1594,10 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
   startEditorBridgeServer();
 
   createWindow();
+
+  // After the window, never before it: a dialog in front of an empty screen
+  // reads as a failure to start rather than as a notice about a download.
+  announceOutdatedVersion().catch((error) => log.warn('version_check_failed', { error: safeError(error) }));
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

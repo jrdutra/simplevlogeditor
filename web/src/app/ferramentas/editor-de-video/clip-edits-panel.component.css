@@ -240,6 +240,40 @@
 
 .ligacao:disabled { opacity: 0.5; cursor: default; }
 
+.grupo-ruido { border-color: rgba(77, 163, 255, 0.38); }
+.ruido-acoes { display: flex; flex-wrap: wrap; align-items: center; gap: 9px 12px; }
+.botao-ruido {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(20, 19, 28, 0.45);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.botao-ruido:hover:not(:disabled) { border-color: var(--aqua); color: var(--aqua); }
+.botao-ruido-agora { border-color: rgba(77, 163, 255, 0.6); color: var(--aqua); }
+.botao-ruido:disabled { opacity: 0.5; cursor: default; }
+.botao-ruido mat-icon { width: 18px; height: 18px; font-size: 18px; }
+.nota-ruido {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+.nota-ruido mat-icon { width: 16px; height: 16px; font-size: 16px; }
+.ruido-pronto, .ruido-baixo { color: #63d999; }
+.ruido-medio { color: #f2bd5b; }
+.ruido-alto { color: #ff7b8a; }
+.ruido-progresso { display: flex; justify-content: space-between; gap: 12px; color: var(--aqua); font-size: 0.76rem; }
+
 /* Project settings use columns when wide; clip dialogs keep their own layout.
 
    The groups on a row end at the same line: they are boxes read across, and one

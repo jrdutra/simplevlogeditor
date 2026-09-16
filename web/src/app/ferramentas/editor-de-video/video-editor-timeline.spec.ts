@@ -33,7 +33,11 @@ import {
   tagAt,
   transitionAt,
   transitionProgress,
-  trimmedDuration
+  trimmedDuration,
+  videoEffectAt,
+  videoEffectGain,
+  videoEffectSlotFor,
+  videoEffectsOverlap
 } from './video-editor-timeline';
 import {
   ClipEdits,
@@ -381,7 +385,10 @@ describe('buildProjectPlan', () => {
     const clip = mediaClip('a', 10, {
       captions: [
         { ...style, id: 'one', text: 'First', startSeconds: 1, durationSeconds: 2 },
-        { ...style, id: 'two', text: 'Second', startSeconds: 3, durationSeconds: 20 }
+        {
+          ...style, id: 'two', text: 'Second', startSeconds: 3, durationSeconds: 20,
+          style: 'behind-subject', stylePreset: 'behind-subject', positionX: 0.5, positionY: 0.5
+        }
       ]
     });
 
@@ -393,7 +400,66 @@ describe('buildProjectPlan', () => {
     ]);
     expect(captionAt(plan.captions, 2)?.caption.text).toBe('First');
     expect(captionAt(plan.captions, 3)?.caption.text).toBe('Second');
+    expect(captionAt(plan.captions, 3)?.caption.style).toBe('behind-subject');
     expect(captionAt(plan.captions, 10)).toBeNull();
+  });
+
+  it('places several Video Effects on the source clock and leaves gaps untouched', () => {
+    const clip = mediaClip('a', 10, { videoEffects: [
+      { id: 'one', effectId: 'cinematic', intensity: 0.5, startSeconds: 1, durationSeconds: 2 },
+      { id: 'two', effectId: 'vhs', intensity: 0.8, startSeconds: 5, durationSeconds: 2 }
+    ] });
+    const plan = buildProjectPlan([clip], project(), 'video');
+
+    expect(plan.videoEffects.map(segment => [segment.start, segment.end, segment.effect.id])).toEqual([
+      [1, 3, 'cinematic'], [5, 7, 'vhs']
+    ]);
+    expect(videoEffectAt(plan.videoEffects, 2)?.id).toBe('cinematic');
+    expect(videoEffectAt(plan.videoEffects, 4)).toBeNull();
+    expect(videoEffectAt(plan.videoEffects, 6)?.id).toBe('vhs');
+  });
+
+  it('translates effect segments through cuts, speed and trim', () => {
+    const cut = mediaClip('cut', 10, {
+      manualCuts: [range(3, 5)],
+      videoEffects: [{ effectId: 'film', intensity: 1, startSeconds: 2, durationSeconds: 5 }]
+    });
+    const fast = mediaClip('fast', 10, {
+      videoEffects: [{ effectId: 'vibrant', intensity: 1, startSeconds: 2, durationSeconds: 4 }]
+    });
+    const trimmed = mediaClip('trimmed', 10, {
+      inPoint: 2,
+      videoEffects: [{ effectId: 'noir', intensity: 1, startSeconds: 3, durationSeconds: 2 }]
+    });
+
+    const cutPlan = buildProjectPlan([cut], project(), 'video');
+    expect(cutPlan.videoEffects[0]).toEqual(jasmine.objectContaining({ start: 2, end: 5 }));
+    const fastPlan = buildProjectPlan([fast], project({ speed: 2 }), 'video');
+    expect(fastPlan.videoEffects[0]).toEqual(jasmine.objectContaining({ start: 1, end: 3 }));
+    const trimPlan = buildProjectPlan([trimmed], project(), 'video');
+    expect(trimPlan.videoEffects[0]).toEqual(jasmine.objectContaining({ start: 1, end: 3 }));
+  });
+
+  it('migrates a legacy whole-clip effect into the plan', () => {
+    const clip = mediaClip('legacy', 8, { videoEffect: { id: 'cinematic', intensity: 0.6 } });
+    const plan = buildProjectPlan([clip], project(), 'video');
+    expect(plan.videoEffects).toEqual([jasmine.objectContaining({
+      start: 0, end: 8, clipId: 'legacy', effect: { id: 'cinematic', intensity: 0.6 }
+    })]);
+  });
+
+  it('reports free effect slots and rejects overlapping source intervals', () => {
+    const clip = mediaClip('slots', 10, { videoEffects: [
+      { id: 'a', effectId: 'film', intensity: 1, startSeconds: 1, durationSeconds: 2 },
+      { id: 'b', effectId: 'vhs', intensity: 1, startSeconds: 5, durationSeconds: 2 }
+    ] });
+    expect(videoEffectSlotFor(clip, 0)).toBe(1);
+    expect(videoEffectSlotFor(clip, 2)).toBe(0);
+    expect(videoEffectSlotFor(clip, 3)).toBe(2);
+    expect(videoEffectsOverlap(clip)).toBeFalse();
+    expect(videoEffectsOverlap(clip, [...clip.videoEffects!, {
+      id: 'c', effectId: 'noir', intensity: 1, startSeconds: 2.5, durationSeconds: 1
+    }])).toBeTrue();
   });
 
   it('reports the clips that would play over black or over silence', () => {
@@ -421,6 +487,15 @@ describe('the sound of a clip', () => {
 
     expect(plan.clips[0].sound.kind).toBe('file');
     expect(plan.silentCount).toBe(0);
+  });
+
+  it('gives recognized timelapse footage the project default instead of accelerated source audio', () => {
+    const clip = mediaClip('timelapse', 60);
+    clip.summary.isTimelapse = true;
+    const plan = buildProjectPlan([clip], project({}, { defaultAudio: soundtrack('score.mp3') }), 'video');
+
+    expect(plan.clips[0].sound.kind).toBe('file');
+    if (plan.clips[0].sound.kind === 'file') expect(plan.clips[0].sound.label).toBe('score.mp3');
   });
 
   it('uses the project sound when silence cutting removes more than the configured share', () => {
@@ -969,6 +1044,9 @@ describe('captionAt', () => {
     expect(captionAt(captions, 10.5)?.opacity).toBeCloseTo(0.5, 6);
     expect(captionAt(captions, 15)?.opacity).toBe(1);
     expect(captionAt(captions, 19.5)?.opacity).toBeCloseTo(0.5, 6);
+    expect(captionAt(captions, 10)?.progress).toBe(0);
+    expect(captionAt(captions, 15)?.progress).toBeCloseTo(0.5, 6);
+    expect(captionAt(captions, 19.5)?.progress).toBeCloseTo(0.95, 6);
   });
 });
 
@@ -1576,6 +1654,15 @@ describe('slicePlan', () => {
     expect(rest.transitions.length).toBe(0);
     expect(rest.fades.every((fade) => fade.start >= -1e-6)).toBe(true);
   });
+
+  it('shifts timed effects together with captions', () => {
+    const second = mediaClip('b', 6, {
+      videoEffects: [{ effectId: 'film', intensity: 1, startSeconds: 1, durationSeconds: 2 }]
+    });
+    const whole = buildProjectPlan([mediaClip('a', 4), second], project(), 'video');
+    const rest = slicePlan(whole, 1);
+    expect(rest.videoEffects[0]).toEqual(jasmine.objectContaining({ start: 1, end: 3, clipId: 'b' }));
+  });
 });
 
 /**
@@ -1784,5 +1871,69 @@ describe('tags on the timeline', () => {
 
     expect(needsCompositing(plan, 0.5)).toBe(false);
     expect(needsCompositing(plan, 2)).toBe(true);
+  });
+});
+
+describe('a video effect section arrives hard or soft, as asked', () => {
+  const section = (fadeSeconds: number) => ({
+    start: 10, end: 14, clipId: 'a', fadeSeconds,
+    effect: { id: 'cinematic', intensity: 0.8 }
+  });
+
+  it('is fully on from the first frame when the edge is a cut', () => {
+    const cut = section(0);
+    for (const time of [10, 10.001, 12, 13.999]) expect(videoEffectGain(cut, time)).toBe(1);
+  });
+
+  it('rides in from nothing and back out again when the edge is soft', () => {
+    const soft = section(1);
+    expect(videoEffectGain(soft, 10)).toBe(0);
+    expect(videoEffectGain(soft, 10.5)).toBeCloseTo(0.5, 6);
+    expect(videoEffectGain(soft, 11)).toBe(1);
+    expect(videoEffectGain(soft, 12)).toBe(1);
+    expect(videoEffectGain(soft, 13.5)).toBeCloseTo(0.5, 6);
+    expect(videoEffectGain(soft, 14)).toBe(0);
+  });
+
+  it('never decreases on the way in, nor increases on the way out', () => {
+    const soft = section(1);
+    let previous = -1;
+    for (let time = 10; time <= 11.0001; time += 0.05) {
+      const gain = videoEffectGain(soft, time);
+      expect(gain).toBeGreaterThanOrEqual(previous - 1e-9);
+      previous = gain;
+    }
+    previous = 2;
+    for (let time = 13; time <= 14.0001; time += 0.05) {
+      const gain = videoEffectGain(soft, time);
+      expect(gain).toBeLessThanOrEqual(previous + 1e-9);
+      previous = gain;
+    }
+  });
+
+  it('clamps a ramp longer than half the section so the two ends cannot meet', () => {
+    const tiny = { start: 10, end: 10.4, clipId: 'a', fadeSeconds: 5, effect: { id: 'vhs', intensity: 1 } };
+    expect(videoEffectGain(tiny, 10)).toBe(0);
+    expect(videoEffectGain(tiny, 10.2)).toBe(1);
+    expect(videoEffectGain(tiny, 10.4)).toBe(0);
+  });
+
+  it('scales the effect intensity rather than adding a rendering path', () => {
+    // Intensity 0 is an exact bypass in the engine, so the ends of a soft
+    // section are the untouched picture by construction.
+    const segments = [section(1)];
+    expect(videoEffectAt(segments, 10)).toBeNull();
+    expect(videoEffectAt(segments, 10.5)?.intensity).toBeCloseTo(0.4, 6);
+    expect(videoEffectAt(segments, 12)?.intensity).toBe(0.8);
+    expect(videoEffectAt(segments, 12)?.id).toBe('cinematic');
+  });
+
+  it('measures the ramp in output seconds, so speed carries it', () => {
+    const clip = mediaClip('a', 10, {
+      videoEffects: [{ effectId: 'cinematic', intensity: 1, startSeconds: 0, durationSeconds: 10, fadeSeconds: 2 }]
+    });
+    const plan = buildProjectPlan([{ ...clip, edits: cloneEdits({ ...DEFAULT_EDITS, speed: 2 }) }], DEFAULT_PROJECT, 'video');
+    // A two-second ramp on a clip running at twice the speed is watched for one.
+    expect(plan.videoEffects[0].fadeSeconds).toBeCloseTo(1, 6);
   });
 });

@@ -52,6 +52,11 @@
   display: flex;
   min-width: 0;
   max-width: 100%;
+  /* Shrink-wrapped to the picture on purpose. Everything positioned inside is
+     a share of the rendered frame — the placement handles most of all — and a
+     wrapper wider than the canvas would put every one of them out by the
+     difference. */
+  width: fit-content;
 }
 
 .previa-tela {
@@ -65,6 +70,44 @@
   height: auto;
   border-radius: 6px;
 }
+
+.previa-efeito-status {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 7px 10px;
+  border: 1px solid rgba(118, 200, 255, 0.48);
+  border-radius: 8px;
+  color: #eaf8ff;
+  background: rgba(7, 17, 31, 0.86);
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.38);
+  font-size: 0.78rem;
+  line-height: 1.25;
+  text-align: center;
+  pointer-events: none;
+}
+
+.previa-efeito-status button {
+  flex: 0 0 auto;
+  padding: 4px 9px;
+  border: 1px solid rgba(115, 202, 255, 0.68);
+  border-radius: 6px;
+  color: #fff;
+  background: #145da0;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.previa-efeito-status button:hover { background: #1d75c5; }
+.previa-efeito-status button:focus-visible { outline: 2px solid #9dddff; outline-offset: 2px; }
 
 /* ------------------------------------------------ the handle under it --- */
 
@@ -820,13 +863,15 @@ textarea {
 
 /* ----------------------------------------------------- timed captions --- */
 
-.caption-lista {
+.caption-lista,
+.effect-lista {
   display: flex;
   flex-direction: column;
   gap: 12px;
 }
 
-.caption-item {
+.caption-item,
+.effect-item {
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -837,12 +882,16 @@ textarea {
   transition: border-color 160ms ease, background 160ms ease;
 }
 
-.caption-item.caption-truncado {
+.caption-item.caption-truncado,
+.effect-item.effect-truncado {
   border-color: rgba(255, 104, 116, 0.48);
   background: rgba(117, 29, 40, 0.11);
 }
 
-.caption-item.caption-recolhido { padding: 0; gap: 0; overflow: hidden; }
+.caption-item.caption-recolhido,
+.effect-item.effect-recolhido { padding: 0; gap: 0; overflow: hidden; }
+
+.effect-tempos { align-items: end; }
 
 .caption-resumo {
   display: grid;
@@ -883,6 +932,186 @@ textarea {
 .caption-resumo-aviso { color: #ff9ca5; }
 .caption-resumo-abrir { color: var(--text-muted); }
 
+/* An impossible placement is shown where it was typed. The editor no longer
+   moves the value to somewhere legal behind the reader's back, so the field has
+   to carry the fault itself. */
+.campo-conflito label { color: #ff9ca5; }
+.campo-conflito .com-unidade,
+.campo-conflito input {
+  border-color: rgba(255, 104, 116, 0.75) !important;
+  background: rgba(117, 29, 40, 0.14);
+}
+.campo-conflito input:focus-visible { outline-color: #ff6874; }
+
+.caption-resumo-linha {
+  display: flex;
+  align-items: center;
+}
+
+.caption-resumo-linha .caption-resumo { flex: 1 1 auto; min-width: 0; }
+
+/* Its own hit area and its own hover colour: deleting a caption must never be
+   a mis-aimed click on the row that opens it. */
+.caption-resumo-remover {
+  flex: 0 0 auto;
+  margin-right: 6px;
+  color: var(--text-muted);
+}
+
+.caption-resumo-remover:hover:not(:disabled) { color: #ff9ca5; }
+
+/* ------------------------------------------------- placing by hand on the frame --
+
+   Positioned in percentages of the frame box, which is what lets the same rule
+   hold while the reader drags the preview's height handle: the canvas is scaled
+   by CSS and the handles are scaled with it, for free. */
+
+.imagem-alcas {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1.5px dashed rgba(122, 214, 255, 0.85);
+  border-radius: 4px;
+  background: rgba(122, 214, 255, 0.06);
+  cursor: grab;
+  touch-action: none;
+}
+
+.imagem-alcas:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+.imagem-alcas-ativa { cursor: grabbing; background: rgba(122, 214, 255, 0.14); }
+
+.imagem-alca {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #0b1220;
+  background: #7ad6ff;
+  touch-action: none;
+}
+
+/* Bottom right for the size, top centre for the rotation — the arrangement
+   every drawing tool uses, so nobody has to be told which is which. */
+.imagem-alca-tamanho {
+  right: -7px;
+  bottom: -7px;
+  cursor: nwse-resize;
+}
+
+.imagem-alca-giro {
+  left: calc(50% - 7px);
+  top: -22px;
+  cursor: grab;
+  background: #ffd27a;
+}
+
+.imagem-alca-giro::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 1.5px;
+  height: 12px;
+  background: rgba(255, 210, 122, 0.8);
+}
+
+@media (max-width: 640px) {
+  .imagem-alca { width: 18px; height: 18px; }
+  .imagem-alca-tamanho { right: -9px; bottom: -9px; }
+  .imagem-alca-giro { left: calc(50% - 9px); top: -26px; }
+}
+
+.relogio-troca {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(12, 11, 18, 0.28);
+}
+
+.relogio-troca strong { color: var(--aqua); }
+
+/* --------------------------------------------------------- placed pictures --
+
+   The summary row grows a thumbnail, so this layout has one more column than
+   the caption and effect rows it otherwise shares. Declared here rather than by
+   widening the shared rule: a caption has nothing to put in that column and
+   would leave a gap where the picture is. */
+
+.imagem-item .caption-resumo {
+  grid-template-columns: minmax(96px, auto) auto minmax(0, 1fr) auto auto;
+}
+
+.imagem-resumo-miniatura {
+  width: 44px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid var(--line-soft);
+  background: rgba(12, 11, 18, 0.6);
+}
+
+.imagem-arquivo {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.imagem-previa {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 108px;
+  height: 72px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  /* A checker, so a transparent PNG reads as transparent rather than as white. */
+  background-color: rgba(12, 11, 18, 0.55);
+  background-image:
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.06) 75%),
+    linear-gradient(45deg, rgba(255, 255, 255, 0.06) 25%, transparent 25%, transparent 75%, rgba(255, 255, 255, 0.06) 75%);
+  background-size: 14px 14px;
+  background-position: 0 0, 7px 7px;
+}
+
+.imagem-previa img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.imagem-previa mat-icon { color: var(--text-muted); }
+
+.imagem-previa-ausente { border-color: rgba(255, 104, 116, 0.48); }
+
+.imagem-arquivo-texto {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.imagem-arquivo-texto strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .imagem-arquivo { flex-direction: column; align-items: stretch; }
+  .imagem-previa { width: 100%; height: 120px; }
+  .imagem-item .caption-resumo { grid-template-columns: minmax(0, 1fr) auto auto; }
+  .imagem-resumo-miniatura { display: none; }
+}
+.caption-resumo-remover:disabled { opacity: 0.6; cursor: default; }
+
 .caption-confirmar {
   display: flex;
   justify-content: flex-end;
@@ -900,6 +1129,41 @@ textarea {
   justify-content: space-between;
   color: var(--text-main);
 }
+
+.caption-style-first {
+  padding: 11px 12px;
+  border: 1px solid color-mix(in srgb, var(--aqua) 34%, var(--line-soft));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--aqua) 6%, transparent);
+}
+
+.caption-behind-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(75, 164, 255, 0.08);
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.caption-behind-note mat-icon { color: var(--aqua); font-size: 20px; width: 20px; height: 20px; }
+
+.caption-advanced {
+  padding: 9px 11px 11px;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+}
+
+.caption-advanced summary {
+  color: var(--text-main);
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.caption-advanced[open] summary { margin-bottom: 12px; }
 
 .caption-tempos { grid-template-columns: repeat(2, minmax(150px, 240px)); }
 

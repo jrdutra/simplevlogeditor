@@ -38,11 +38,18 @@ if (!fs.existsSync(path.join(ELECTRON, 'node_modules', 'electron-builder'))) {
 
 console.log('\nbuild-desktop: packing the Windows installer…\n');
 
-const result = spawnSync('npm', ['run', 'pack'], {
+const npmCli = process.env.npm_execpath;
+const command = npmCli ? process.execPath : 'npm';
+const args = npmCli ? [npmCli, 'run', 'pack'] : ['run', 'pack'];
+const result = spawnSync(command, args, {
   cwd: ELECTRON,
   stdio: 'inherit',
-  shell: process.platform === 'win32'
+  shell: false
 });
+
+if (result.error) {
+  console.error(`\nbuild-desktop: could not start npm — ${result.error.message}`);
+}
 
 if (result.status !== 0) {
   console.error('\nbuild-desktop: the installer failed to build. The site build itself is fine.');

@@ -22,6 +22,8 @@
             "assets": [
               "src/favicon.ico",
               "src/robots.txt",
+              "src/currentversion",
+              "src/currentversion.json",
               "src/sitemap.xml",
               "src/web.config",
               "src/assets",

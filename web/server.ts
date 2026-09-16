@@ -29,6 +29,26 @@ export function app(): express.Express {
   server.set('view engine', 'html');
   server.set('views', browserDistFolder);
 
+  /*
+   * The version manifest is the one address that must answer on whatever host
+   * it was asked of. The desktop application and the AI plugins fetch it at
+   * startup to find out whether they are current; a 301 to the canonical host
+   * turns that into a redirect the simplest possible client has to follow, and
+   * the check is not worth a redirect. Exempted before the canonical rules
+   * below, and nothing else is.
+   */
+  server.use((req, res, next) => {
+    if (req.path === '/currentversion' || req.path === '/currentversion.json') {
+      res.type('application/json');
+      // Short, because it is read on every start and a stale answer delays an
+      // update notice by minutes at most.
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      res.sendFile(join(browserDistFolder, 'currentversion'));
+      return;
+    }
+    next();
+  });
+
   server.use((req, res, next) => {
     const host = normalizeHost(req.get('x-forwarded-host') ?? req.get('host'));
     const isLocal = !host || LOCAL_HOSTS.has(host);

@@ -6,6 +6,7 @@
     "start": "node dist/server/server.mjs",
     "dev": "ng serve",
     "build": "npm run build:site && npm run build:desktop",
+    "prebuild:site": "node scripts/write-current-version.js && node scripts/pack-plugins.js",
     "build:site": "ng build",
     "build:desktop": "node scripts/build-desktop.js",
     "watch": "ng build --watch --configuration development",

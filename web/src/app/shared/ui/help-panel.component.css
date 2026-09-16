@@ -207,7 +207,18 @@
   text-decoration: none;
 }
 
-.sobre-link__mark { grid-row: span 2; display: inline-flex; align-items: center; }
+/* The mark spans both text rows and is centred against them, so the symbol
+   sits level with the link rather than against the top of its first line. The
+   zero line-height is what stops the inline box of the <svg> from adding a
+   descender's worth of space under it and tipping the centring. */
+.sobre-link__mark {
+  grid-row: span 2;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  align-self: center;
+  line-height: 0;
+}
 .sobre-link strong { font-size: 0.92rem; overflow-wrap: anywhere; }
 .sobre-link em { font-style: normal; font-size: 0.8rem; opacity: 0.72; }
 

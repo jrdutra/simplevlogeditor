@@ -4,9 +4,11 @@ import { DEFAULT_AUTO_ZOOM } from '../../shared/media/auto-zoom';
 import { DEFAULT_LOUDNESS } from '../../shared/media/loudness';
 import { AUDIO_FORMATS, VIDEO_FORMATS } from '../juntador-de-midias/media-merger-formats';
 import { settingsForPreset } from '../cortador-de-silencio/silence-cutter-presets';
+import { IMAGE_LIMITS, isImageStyle } from './clip-image';
 import {
   ClipCaption,
   ClipEdits,
+  ClipImage,
   FrameAspect,
   ManualZoom,
   ProjectSettings,
@@ -163,40 +165,210 @@ export const IMAGE_SECONDS = { default: 5, min: 0.1, max: 3600, step: 0.5 } as c
 
 /** Bounds for the caption, as shares of the frame height. */
 export const CAPTION_LIMITS = {
-  fontScale: { min: 0.02, max: 0.12, step: 0.005 },
+  fontScale: { min: 0.02, max: 0.4, step: 0.005 },
   bottomMargin: { min: 0, max: 0.3, step: 0.005 },
   outlinePercent: { min: 0, max: 30, step: 1 },
-  fadeSeconds: { min: 0.1, max: 5, step: 0.1 }
+  fadeSeconds: { min: 0.1, max: 5, step: 0.1 },
+  positionX: { min: 0.08, max: 0.92, step: 0.01 },
+  positionY: { min: 0.15, max: 0.85, step: 0.01 },
+  rotationDegrees: { min: -20, max: 20, step: 1 },
+  shadowBlurPercent: { min: 10, max: 120, step: 5 },
+  shadowOpacity: { min: 0, max: 1, step: 0.05 }
 } as const;
 
 export const CAPTION_FONTS: readonly { value: NonNullable<ClipCaption['fontFamily']>; label: string }[] = [
   { value: 'sans', label: 'Clean sans serif' },
   { value: 'rounded', label: 'Rounded' },
   { value: 'serif', label: 'Editorial serif' },
-  { value: 'mono', label: 'Monospace' }
+  { value: 'mono', label: 'Monospace' },
+  { value: 'impact', label: 'Condensed heavy' },
+  { value: 'display', label: 'Display' },
+  { value: 'geometric', label: 'Geometric' },
+  { value: 'slab', label: 'Slab serif' },
+  { value: 'handwritten', label: 'Handwritten' }
+];
+
+export const CAPTION_ANIMATIONS: readonly { value: NonNullable<ClipCaption['animation']>; label: string }[] = [
+  { value: 'none', label: 'Still' },
+  { value: 'zoom-in', label: 'Subtle zoom in' },
+  { value: 'zoom-out', label: 'Subtle zoom out' },
+  { value: 'scroll-left', label: 'Slow scroll left' },
+  { value: 'scroll-right', label: 'Slow scroll right' },
+  { value: 'scroll-up', label: 'Slow scroll up' },
+  { value: 'scroll-down', label: 'Slow scroll down' }
 ];
 
 export const CAPTION_WEIGHTS = [400, 500, 600, 700, 800, 900] as const;
 
-export const CAPTION_PRESETS: readonly { id: string; label: string; style: Partial<ClipCaption> }[] = [
-  { id: 'classic', label: 'Classic · white, black outline + shadow', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'white-clean', label: 'Clean · white, black outline', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: false, shadowColor: '#000000' } },
-  { id: 'yellow-shadow', label: 'Yellow · black outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'yellow-clean', label: 'Yellow · black outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
-  { id: 'black-white-shadow', label: 'Black · white outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'black-white-clean', label: 'Black · white outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
-  { id: 'cyan', label: 'Cyan · navy outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#54e7ff', outlineColor: '#071a38', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'pink', label: 'Pink · plum outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#ff82d8', outlineColor: '#3a082e', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'lime', label: 'Lime · black outline', style: { fontFamily: 'sans', fontWeight: 900, italic: false, textColor: '#baff3c', outlineColor: '#000000', outlinePercent: 18, shadowEnabled: false, shadowColor: '#000000' } },
-  { id: 'editorial', label: 'Editorial · warm white serif', style: { fontFamily: 'serif', fontWeight: 700, italic: false, textColor: '#fff4dc', outlineColor: '#24180e', outlinePercent: 10, shadowEnabled: true, shadowColor: '#000000' } },
-  { id: 'mono', label: 'Tech · green monospace', style: { fontFamily: 'mono', fontWeight: 700, italic: false, textColor: '#8dffad', outlineColor: '#07150c', outlinePercent: 13, shadowEnabled: true, shadowColor: '#000000' } }
+export type CaptionPresetGroupId = 'classic' | 'background';
+export interface CaptionPresetDefinition {
+  id: string;
+  label: string;
+  group: CaptionPresetGroupId;
+  style: Partial<ClipCaption>;
+}
+
+export const CAPTION_PRESET_GROUPS: readonly { id: CaptionPresetGroupId; label: string }[] = [
+  { id: 'classic', label: 'Classic captions' },
+  { id: 'background', label: 'Background captions · Behind subject' }
 ];
+
+export const CAPTION_PRESETS: readonly CaptionPresetDefinition[] = [
+  { id: 'classic', group: 'classic', label: 'Classic · white, black outline + shadow', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'white-clean', group: 'classic', label: 'Clean · white, black outline', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'yellow-shadow', group: 'classic', label: 'Yellow · black outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'yellow-clean', group: 'classic', label: 'Yellow · black outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#ffd928', outlineColor: '#000000', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'black-white-shadow', group: 'classic', label: 'Black · white outline + shadow', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'black-white-clean', group: 'classic', label: 'Black · white outline', style: { fontFamily: 'sans', fontWeight: 800, italic: false, textColor: '#000000', outlineColor: '#ffffff', outlinePercent: 17, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'cyan', group: 'classic', label: 'Cyan · navy outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#54e7ff', outlineColor: '#071a38', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'pink', group: 'classic', label: 'Pink · plum outline + shadow', style: { fontFamily: 'rounded', fontWeight: 800, italic: false, textColor: '#ff82d8', outlineColor: '#3a082e', outlinePercent: 18, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'lime', group: 'classic', label: 'Lime · black outline', style: { fontFamily: 'sans', fontWeight: 900, italic: false, textColor: '#baff3c', outlineColor: '#000000', outlinePercent: 18, shadowEnabled: false, shadowColor: '#000000' } },
+  { id: 'editorial', group: 'classic', label: 'Editorial · warm white serif', style: { fontFamily: 'serif', fontWeight: 700, italic: false, textColor: '#fff4dc', outlineColor: '#24180e', outlinePercent: 10, shadowEnabled: true, shadowColor: '#000000' } },
+  { id: 'mono', group: 'classic', label: 'Tech · green monospace', style: { fontFamily: 'mono', fontWeight: 700, italic: false, textColor: '#8dffad', outlineColor: '#07150c', outlinePercent: 13, shadowEnabled: true, shadowColor: '#000000' } },
+  {
+    id: 'behind-subject',
+    group: 'background',
+    label: 'Upper center · Clean white',
+    style: {
+      style: 'behind-subject', fontFamily: 'sans', fontWeight: 600, italic: false,
+      fontScale: 0.28, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#000000', shadowBlurPercent: 70, shadowOpacity: 0.9,
+      positionX: 0.5, positionY: 0.25, rotationDegrees: 0, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-upper-left', group: 'background', label: 'Upper left · Warm editorial',
+    style: {
+      style: 'behind-subject', fontFamily: 'serif', fontWeight: 600, italic: false,
+      fontScale: 0.25, textColor: '#fff4dc', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#160f09', shadowBlurPercent: 55, shadowOpacity: 0.82,
+      positionX: 0.3, positionY: 0.24, rotationDegrees: -2, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-upper-right', group: 'background', label: 'Upper right · Cyan rounded',
+    style: {
+      style: 'behind-subject', fontFamily: 'rounded', fontWeight: 600, italic: false,
+      fontScale: 0.26, textColor: '#67e8f9', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#071a38', shadowBlurPercent: 60, shadowOpacity: 0.85,
+      positionX: 0.7, positionY: 0.24, rotationDegrees: 2, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-center', group: 'background', label: 'Center · Cinematic white',
+    style: {
+      style: 'behind-subject', fontFamily: 'sans', fontWeight: 600, italic: false,
+      fontScale: 0.3, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#000000', shadowBlurPercent: 75, shadowOpacity: 0.88,
+      positionX: 0.5, positionY: 0.5, rotationDegrees: 0, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-center-left', group: 'background', label: 'Center left · Golden',
+    style: {
+      style: 'behind-subject', fontFamily: 'sans', fontWeight: 600, italic: false,
+      fontScale: 0.27, textColor: '#fde047', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#1c1500', shadowBlurPercent: 60, shadowOpacity: 0.86,
+      positionX: 0.34, positionY: 0.5, rotationDegrees: -1, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-center-right', group: 'background', label: 'Center right · Soft pink',
+    style: {
+      style: 'behind-subject', fontFamily: 'rounded', fontWeight: 600, italic: false,
+      fontScale: 0.27, textColor: '#f9a8d4', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#3a082e', shadowBlurPercent: 60, shadowOpacity: 0.84,
+      positionX: 0.66, positionY: 0.5, rotationDegrees: 1, uppercase: true
+    }
+  },
+  {
+    id: 'behind-subject-zoom-in-display', group: 'background', label: 'Center · Display zoom in',
+    style: {
+      style: 'behind-subject', fontFamily: 'display', fontWeight: 600, italic: false,
+      fontScale: 0.3, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#06152d', shadowBlurPercent: 65, shadowOpacity: 0.88,
+      positionX: 0.5, positionY: 0.5, rotationDegrees: 0, uppercase: true, animation: 'zoom-in'
+    }
+  },
+  {
+    id: 'behind-subject-zoom-out-slab', group: 'background', label: 'Center · Slab gold zoom out',
+    style: {
+      style: 'behind-subject', fontFamily: 'slab', fontWeight: 600, italic: false,
+      fontScale: 0.29, textColor: '#fcd34d', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#241803', shadowBlurPercent: 60, shadowOpacity: 0.86,
+      positionX: 0.5, positionY: 0.5, rotationDegrees: 0, uppercase: true, animation: 'zoom-out'
+    }
+  },
+  {
+    id: 'behind-subject-scroll-left-geometric', group: 'background', label: 'Upper center · Geometric scroll left',
+    style: {
+      style: 'behind-subject', fontFamily: 'geometric', fontWeight: 500, italic: false,
+      fontScale: 0.26, textColor: '#a5f3fc', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#062735', shadowBlurPercent: 55, shadowOpacity: 0.82,
+      positionX: 0.5, positionY: 0.25, rotationDegrees: 0, uppercase: true, animation: 'scroll-left'
+    }
+  },
+  {
+    id: 'behind-subject-scroll-right-handwritten', group: 'background', label: 'Upper center · Handwritten scroll right',
+    style: {
+      style: 'behind-subject', fontFamily: 'handwritten', fontWeight: 600, italic: false,
+      fontScale: 0.25, textColor: '#fdf2f8', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#4a1236', shadowBlurPercent: 58, shadowOpacity: 0.84,
+      positionX: 0.5, positionY: 0.25, rotationDegrees: -2, uppercase: false, animation: 'scroll-right'
+    }
+  },
+  {
+    id: 'behind-subject-scroll-up-mono', group: 'background', label: 'Center left · Mono scroll up',
+    style: {
+      style: 'behind-subject', fontFamily: 'mono', fontWeight: 600, italic: false,
+      fontScale: 0.25, textColor: '#86efac', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#052e16', shadowBlurPercent: 52, shadowOpacity: 0.82,
+      positionX: 0.34, positionY: 0.5, rotationDegrees: 0, uppercase: true, animation: 'scroll-up'
+    }
+  },
+  {
+    id: 'behind-subject-scroll-down-serif', group: 'background', label: 'Upper right · Serif scroll down',
+    style: {
+      style: 'behind-subject', fontFamily: 'serif', fontWeight: 500, italic: true,
+      fontScale: 0.25, textColor: '#ffedd5', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#431407', shadowBlurPercent: 55, shadowOpacity: 0.82,
+      positionX: 0.7, positionY: 0.24, rotationDegrees: 1, uppercase: false, animation: 'scroll-down'
+    }
+  },
+  {
+    id: 'behind-subject-upper-left-display-zoom', group: 'background', label: 'Upper left · Display zoom out',
+    style: {
+      style: 'behind-subject', fontFamily: 'display', fontWeight: 700, italic: false,
+      fontScale: 0.26, textColor: '#fca5a5', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#450a0a', shadowBlurPercent: 62, shadowOpacity: 0.86,
+      positionX: 0.3, positionY: 0.24, rotationDegrees: -1, uppercase: true, animation: 'zoom-out'
+    }
+  },
+  {
+    id: 'behind-subject-center-right-geometric-zoom', group: 'background', label: 'Center right · Geometric zoom in',
+    style: {
+      style: 'behind-subject', fontFamily: 'geometric', fontWeight: 600, italic: false,
+      fontScale: 0.27, textColor: '#c4b5fd', outlineColor: '#000000', outlinePercent: 0,
+      shadowEnabled: true, shadowColor: '#2e1065', shadowBlurPercent: 60, shadowOpacity: 0.84,
+      positionX: 0.66, positionY: 0.5, rotationDegrees: 1, uppercase: true, animation: 'zoom-in'
+    }
+  }
+];
+
+export function captionPresetIsBackground(presetId: string | null | undefined): boolean {
+  return presetId === 'custom-background' || CAPTION_PRESETS.some((preset) => preset.id === presetId && preset.group === 'background');
+}
+
+export function isBackgroundCaption(caption: { style?: string; stylePreset?: string }): boolean {
+  return caption.style === 'behind-subject' || captionPresetIsBackground(caption.stylePreset);
+}
 
 export const DEFAULT_CAPTION: ClipCaption = {
   text: '',
   fontScale: 0.045,
   bottomMargin: 0.06,
   stylePreset: 'classic',
+  style: 'classic',
   fontFamily: 'sans',
   fontWeight: 700,
   italic: false,
@@ -205,6 +377,7 @@ export const DEFAULT_CAPTION: ClipCaption = {
   outlinePercent: 16,
   shadowEnabled: true,
   shadowColor: '#000000',
+  animation: 'none',
   fadeIn: true,
   fadeOut: true,
   fadeSeconds: 0.5
@@ -361,13 +534,66 @@ export function clampSpeed(value: number): number {
 export function clampCaption(caption: ClipCaption): ClipCaption {
   const clamp = (value: number, limits: { min: number; max: number }) =>
     Number.isFinite(value) ? Math.min(limits.max, Math.max(limits.min, value)) : limits.min;
+  const behindSubject = isBackgroundCaption(caption);
 
   return {
     ...caption,
-    fontScale: clamp(caption.fontScale, CAPTION_LIMITS.fontScale),
+    style: behindSubject ? 'behind-subject' : 'classic',
+    fontScale: clamp(caption.fontScale, behindSubject ? { min: 0.2, max: 0.4 } : { min: 0.02, max: 0.12 }),
     bottomMargin: clamp(caption.bottomMargin, CAPTION_LIMITS.bottomMargin),
     outlinePercent: clamp(caption.outlinePercent ?? DEFAULT_CAPTION.outlinePercent ?? 16, CAPTION_LIMITS.outlinePercent),
-    fadeSeconds: clamp(caption.fadeSeconds, CAPTION_LIMITS.fadeSeconds)
+    fadeSeconds: clamp(caption.fadeSeconds, CAPTION_LIMITS.fadeSeconds),
+    positionX: clamp(caption.positionX ?? 0.5, CAPTION_LIMITS.positionX),
+    positionY: clamp(caption.positionY ?? (behindSubject ? 0.25 : 0.5), CAPTION_LIMITS.positionY),
+    rotationDegrees: clamp(caption.rotationDegrees ?? 0, CAPTION_LIMITS.rotationDegrees),
+    shadowBlurPercent: clamp(caption.shadowBlurPercent ?? 70, CAPTION_LIMITS.shadowBlurPercent),
+    shadowOpacity: clamp(caption.shadowOpacity ?? 0.9, CAPTION_LIMITS.shadowOpacity),
+    animation: CAPTION_ANIMATIONS.some((item) => item.value === caption.animation) ? caption.animation : 'none'
+  };
+}
+
+/**
+ * Every placement value of a picture brought inside its limits.
+ *
+ * Applied on the way in from a document and on the way in from an MCP call, for
+ * the same reason the captions are: a value that arrived out of range should
+ * become the nearest legal one rather than quietly draw nothing.
+ */
+export function clampClipImage(image: ClipImage): ClipImage {
+  const clamp = (value: number | undefined, limits: { min: number; max: number }, fallback: number) =>
+    Number.isFinite(value) ? Math.min(limits.max, Math.max(limits.min, value as number)) : fallback;
+
+  return {
+    ...image,
+    style: isImageStyle(image.style) ? image.style : 'overlay',
+    positionX: clamp(image.positionX, IMAGE_LIMITS.position, 0.5),
+    positionY: clamp(image.positionY, IMAGE_LIMITS.position, 0.5),
+    scale: clamp(image.scale, IMAGE_LIMITS.scale, IMAGE_LIMITS.scale.default),
+    rotationDegrees: clamp(image.rotationDegrees, IMAGE_LIMITS.rotationDegrees, 0),
+    opacity: clamp(image.opacity, IMAGE_LIMITS.opacity, IMAGE_LIMITS.opacity.default),
+    fadeSeconds: clamp(image.fadeSeconds, IMAGE_LIMITS.fadeSeconds, IMAGE_LIMITS.fadeSeconds.default)
+  };
+}
+
+/** Shared style switching for the editor and partial MCP mutations. */
+export function captionPresetPatch(caption: ClipCaption, presetId: string): Partial<ClipCaption> | null {
+  const customBackground = presetId === 'custom-background';
+  const alreadyBackground = isBackgroundCaption(caption);
+  const preset = CAPTION_PRESETS.find((item) => item.id === presetId) ??
+    (customBackground && !alreadyBackground ? CAPTION_PRESETS.find((item) => item.id === 'behind-subject') : undefined);
+  if (!preset && presetId !== 'custom' && !customBackground) return null;
+  const behind = preset?.group === 'background' || customBackground;
+  const leavingBehind = !behind && isBackgroundCaption(caption);
+  return {
+    ...(leavingBehind ? {
+      ...CAPTION_PRESETS[0].style,
+      fontScale: DEFAULT_CAPTION.fontScale,
+      bottomMargin: DEFAULT_CAPTION.bottomMargin
+    } : {}),
+    ...preset?.style,
+    ...(preset ? { animation: preset.style.animation ?? 'none' } : {}),
+    style: behind ? 'behind-subject' : 'classic',
+    stylePreset: customBackground ? 'custom-background' : presetId
   };
 }
 

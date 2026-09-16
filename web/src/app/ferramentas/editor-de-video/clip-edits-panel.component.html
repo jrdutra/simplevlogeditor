@@ -150,6 +150,52 @@
     </div>
   </fieldset>
 
+  @if (noiseSettings; as noise) {
+    <fieldset class="grupo grupo-ruido">
+      <legend class="grupo-titulo">Noise Suppression</legend>
+
+      <div class="ruido-acoes">
+        <label class="check">
+          <input type="checkbox" [checked]="noise.enabled" [disabled]="disabled || noiseWorking"
+            (change)="noiseEnabledChange.emit($any($event.target).checked)">
+          <span>Remove background noise on export</span>
+        </label>
+
+        <button type="button" class="botao-ruido" [disabled]="disabled || noiseWorking"
+          (click)="noiseConfigure.emit()">
+          <mat-icon>tune</mat-icon> Settings
+        </button>
+
+        @if (noise.enabled) {
+          <button type="button" class="botao-ruido botao-ruido-agora" [disabled]="disabled || noiseWorking"
+            (click)="noiseProcess.emit()">
+            <mat-icon>{{ noiseWorking ? 'hourglass_top' : noiseReady ? 'replay' : 'hearing' }}</mat-icon>
+            {{ noiseWorking ? 'Removing…' : noiseReady ? 'Remove again' : 'Remove now' }}
+          </button>
+        }
+      </div>
+
+      <p class="nota-ruido">
+        Checking this does not process the file now. It schedules {{ noise.engine === 'gtcrn' ? 'Voice model' : 'Classic' }}
+        · {{ noise.strength }} for export.
+      </p>
+
+      @if (noiseProgress; as progress) {
+        <div class="ruido-progresso" role="status">
+          <span>{{ progress.detail || progress.stage }}</span>
+          @if (progress.ratio !== null) { <span>{{ (progress.ratio * 100) | number:'1.0-0' }}%</span> }
+        </div>
+      } @else if (noiseReady) {
+        <p class="nota-ruido ruido-pronto"><mat-icon>check_circle</mat-icon>Cleaned preview ready.</p>
+      } @else if (noiseReport) {
+        <p class="nota-ruido" [class]="'nota-ruido ' + noiseStatusClass">
+          <mat-icon>analytics</mat-icon>{{ noiseStatus }}
+          @if (noiseBackgroundDb !== null) { · {{ noiseBackgroundDb | number:'1.1-1' }} dBFS }
+        </p>
+      }
+    </fieldset>
+  }
+
   @if (showCuts) {
     <fieldset class="grupo bloco-corte">
       <legend class="grupo-titulo">Cuts and Silence Removal</legend>

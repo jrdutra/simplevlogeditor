@@ -1267,6 +1267,76 @@
   .render-modal .registro-console { min-height: 9rem; }
 }
 
+/* --------------------------------------------------- the minimized render
+ *
+ * The same panel, folded down to a strip. It keeps the number, the bar and the
+ * buttons, because those are the three things a reader minimizes it *to* keep:
+ * anything less and the only way to check on an export is to open it again.
+ * Bottom-right, above the board but below the dialogs, and never in the way of
+ * the timeline it exists to let you look at.
+ */
+.render-dock {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 4100;
+  display: flex;
+  flex-direction: column;
+  width: min(30rem, calc(100vw - 32px));
+  padding: 10px 12px;
+  gap: 8px;
+  background: linear-gradient(145deg, rgba(17, 25, 48, 0.98), rgba(5, 11, 26, 0.98));
+  border: 1px solid rgba(167, 139, 250, 0.58);
+  border-radius: 14px;
+  box-shadow: 0 18px 44px rgba(0, 0, 0, 0.6), inset 0 1px 0 rgba(255, 255, 255, 0.12), 0 0 22px rgba(124, 58, 237, 0.22);
+}
+
+.render-dock-corpo {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  color: var(--text-main);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  min-width: 0;
+}
+.render-dock-corpo:hover .render-dock-linha1 { color: #cfe4ff; }
+.render-dock-corpo:focus-visible { outline: 2px solid rgba(167, 139, 250, 0.8); outline-offset: 3px; border-radius: 8px; }
+
+.render-dock-seta { flex: 0 0 auto; color: #a78bfa; }
+
+.render-dock-texto { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.render-dock-linha1 { font-size: 0.85rem; }
+.render-dock-linha1 strong { color: #a78bfa; font-variant-numeric: tabular-nums; }
+
+/* One line of it, whatever it says. The dock is a status, not a console: the
+   log is two clicks away and the tail is only here to prove it is moving. */
+.render-dock-linha2 {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.render-dock-barra { border-radius: 999px; overflow: hidden; }
+
+.render-dock-acoes {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+@media (max-width: 640px) {
+  .render-dock { right: 8px; bottom: 8px; width: calc(100vw - 16px); }
+}
+
 /* --------------------------------------------------------------- messages */
 
 .mensagem {
@@ -2616,6 +2686,25 @@ ul.reconectar-nomes li {
 
 .registro-zoom .registro-marca,
 .registro-zoom .registro-texto { color: #ffab70; }
+
+/* The trace is the quietest thing in the console on purpose: it is the only
+   kind a reader turns on deliberately, and it arrives in runs of lines. */
+.registro-trace .registro-marca,
+.registro-trace .registro-texto { color: #6b7f99; }
+
+/* The function that wrote the line, in the column before the text. */
+.registro-origem {
+  flex: 0 0 auto;
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #7c5cc4;
+}
+
+/* A button that is holding something on, rather than offering to do it. */
+.progresso-acoes .acao-ativa,
+.render-dock-acoes .acao-ativa { color: #a78bfa; }
 
 /* Lime, not pink. Red and its neighbours are reserved for failure here, and a
    tag sitting next to a failed line in the same log read as one. */

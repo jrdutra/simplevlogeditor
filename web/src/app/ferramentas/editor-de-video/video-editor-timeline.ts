@@ -26,6 +26,8 @@ import {
 import { ClipTag, tagLifetime } from './tag-overlay';
 import {
   CaptionSegment,
+  ClipImage,
+  ClipVideoEffect,
   ClipEdits,
   ClipPlan,
   ClipSoundPlan,
@@ -33,6 +35,7 @@ import {
   EditorClip,
   FadeSegment,
   FrameAspect,
+  ImageSegment,
   ManualZoom,
   MediaClip,
   ProjectPlan,
@@ -44,6 +47,7 @@ import {
   TransitionClip,
   TransitionPlan,
   TransitionSettings,
+  VideoEffectSegment,
   isMediaClip,
   isPlayable,
   isTransitionClip,
@@ -51,6 +55,7 @@ import {
   soundUsableDuration
 } from './video-editor.models';
 import { TRANSITION_SECONDS } from './video-transitions';
+import { VideoEffect, normalizeVideoEffect } from './video-effects';
 
 /** Frame rate used when not a single clip declares one. */
 const FALLBACK_FRAME_RATE = 30;
@@ -291,6 +296,8 @@ export function buildProjectPlan(
   const audioFades: FadeSegment[] = [];
   const zooms: ZoomSegment[] = [];
   const captions: CaptionSegment[] = [];
+  const images: ImageSegment[] = [];
+  const videoEffects: VideoEffectSegment[] = [];
   const tags: TagSegment[] = [];
   /**
    * Where each uninterrupted stretch of one supplied file begins and ends.
@@ -397,7 +404,13 @@ export function buildProjectPlan(
       isMediaClip(clip) &&
       clip.summary.audioUsable &&
       silenceCutRatio(clip, edits) > clampSilentCutReplacementThreshold(project.silentCutReplacementThreshold);
-    const silent = !isMediaClip(clip) || !clip.summary.audioUsable || mostlySilent;
+    // Timelapse footage is intentionally treated like silent footage when a
+    // project soundtrack exists. Even when the source happened to contain a
+    // microphone track, playing it at 10x–80x is not useful program audio and
+    // was the remaining reason accelerated clips could stay unexpectedly
+    // silent (or squeal) after a project soundtrack had been selected.
+    const timelapse = isMediaClip(clip) && clip.summary.isTimelapse === true;
+    const silent = !isMediaClip(clip) || !clip.summary.audioUsable || mostlySilent || timelapse;
 
     /** True when this clip picked up a track rather than starting one. */
     let continuing = false;
@@ -546,6 +559,8 @@ export function buildProjectPlan(
     if (kind === 'video') {
       appendZooms(zooms, clip, edits, keepRanges, outputStart, speed);
       appendCaption(captions, clip, keepRanges, outputStart, outputDuration, speed);
+      appendImage(images, clip, keepRanges, outputStart, outputDuration, speed);
+      appendVideoEffect(videoEffects, clip, keepRanges, outputStart, outputDuration, speed);
     }
 
     // Outside the picture guard on purpose: a tag belongs to a *clip*, not to
@@ -566,6 +581,8 @@ export function buildProjectPlan(
   audioFades.sort(byStart);
   zooms.sort(byStart);
   captions.sort(byStart);
+  images.sort(byStart);
+  videoEffects.sort(byStart);
   tags.sort(byStart);
 
   return {
@@ -595,6 +612,8 @@ export function buildProjectPlan(
     audioFades,
     zooms,
     captions,
+    images,
+    videoEffects,
     tags,
     soundFades: planSoundFades(runs, project.soundFade),
     transitions,
@@ -1243,6 +1262,72 @@ function appendCaption(
   }
 }
 
+/**
+ * Every picture this clip carries, translated onto the output timeline.
+ *
+ * Written against `appendCaption` deliberately: a placement is timed on the
+ * container's own source clock exactly as a caption is, so a cut inside the
+ * clip pulls both of them earlier by the same amount and a speed change
+ * divides both by the same number.
+ */
+function appendImage(
+  images: ImageSegment[],
+  clip: EditorClip,
+  keepRanges: readonly TimeRange[],
+  start: number,
+  duration: number,
+  speed: number
+): void {
+  if (!isMediaClip(clip) || duration <= 0) return;
+  const bounds = clipBounds(clip);
+  const timed: readonly ClipImage[] = clip.images ?? [];
+
+  for (const image of timed) {
+    if (!image.source) continue;
+    const sourceStart = Math.max(bounds.start, image.startSeconds ?? bounds.start);
+    const sourceEnd = Math.min(bounds.end, sourceStart + Math.max(0, image.durationSeconds ?? bounds.end - sourceStart));
+    const segmentStart = start + cutTimeOf(keepRanges, sourceStart) / speed;
+    const segmentEnd = Math.min(start + duration, start + cutTimeOf(keepRanges, sourceEnd) / speed);
+    if (segmentEnd - segmentStart > EPSILON) {
+      const fadeSeconds = Math.max(0, image.fadeSeconds ?? 0) / speed;
+      images.push({ start: segmentStart, end: segmentEnd, image, clipId: clip.id, fadeSeconds });
+    }
+  }
+}
+
+function appendVideoEffect(
+  videoEffects: VideoEffectSegment[],
+  clip: EditorClip,
+  keepRanges: readonly TimeRange[],
+  start: number,
+  duration: number,
+  speed: number
+): void {
+  if (!isMediaClip(clip) || duration <= 0) return;
+  const bounds = clipBounds(clip);
+  const legacy = normalizeVideoEffect(clip.videoEffect);
+  const timed: readonly ClipVideoEffect[] = clip.videoEffects?.length
+    ? clip.videoEffects
+    : legacy.id !== 'none' && legacy.intensity > 0
+      ? [{ effectId: legacy.id, intensity: legacy.intensity }]
+      : [];
+
+  for (const item of timed) {
+    const effect = normalizeVideoEffect({ id: item.effectId, intensity: item.intensity });
+    if (effect.id === 'none' || effect.intensity <= 0) continue;
+    const sourceStart = Math.max(bounds.start, item.startSeconds ?? bounds.start);
+    const sourceEnd = Math.min(bounds.end, sourceStart + Math.max(0, item.durationSeconds ?? bounds.end - sourceStart));
+    const segmentStart = start + cutTimeOf(keepRanges, sourceStart) / speed;
+    const segmentEnd = Math.min(start + duration, start + cutTimeOf(keepRanges, sourceEnd) / speed);
+    if (segmentEnd - segmentStart > EPSILON) {
+      // The ramp is written in source seconds and watched in output seconds, so
+      // it is divided by the speed exactly as the section's own edges were.
+      const fadeSeconds = Math.max(0, item.fadeSeconds ?? 0) / speed;
+      videoEffects.push({ start: segmentStart, end: segmentEnd, effect, clipId: clip.id, fadeSeconds });
+    }
+  }
+}
+
 /** The nearest rate the chosen codec actually accepts. */
 function sampleRateFor(codec: string | null, declared: number): number {
   // Opus is a 48 kHz codec. Handing it anything else is not a preference the
@@ -1306,7 +1391,7 @@ export function tagAt(
 export function captionAt(
   captions: readonly CaptionSegment[],
   time: number
-): { caption: CaptionSegment['caption']; opacity: number } | null {
+): { caption: CaptionSegment['caption']; opacity: number; progress: number } | null {
   for (const segment of captions) {
     if (time < segment.start) break;
     if (time >= segment.end) continue;
@@ -1318,9 +1403,123 @@ export function captionAt(
     if (fade > 0 && caption.fadeIn) opacity = Math.min(opacity, (time - segment.start) / fade);
     if (fade > 0 && caption.fadeOut) opacity = Math.min(opacity, (segment.end - time) / fade);
 
-    return { caption, opacity: Math.min(1, Math.max(0, opacity)) };
+    return {
+      caption,
+      opacity: Math.min(1, Math.max(0, opacity)),
+      progress: Math.min(1, Math.max(0, (time - segment.start) / Math.max(EPSILON, segment.end - segment.start)))
+    };
   }
   return null;
+}
+
+/** The effect active at one output instant. Boundaries are deliberate hard cuts. */
+export function videoEffectAt(
+  segments: readonly VideoEffectSegment[],
+  time: number,
+  clipId?: string
+): VideoEffect | null {
+  for (const segment of segments) {
+    if (time < segment.start) break;
+    if (time >= segment.end || (clipId && segment.clipId !== clipId)) continue;
+    const gain = videoEffectGain(segment, time);
+    if (gain <= 0) return null;
+    return gain >= 1 ? segment.effect : { id: segment.effect.id, intensity: segment.effect.intensity * gain };
+  }
+  return null;
+}
+
+/**
+ * The section covering an instant, with the intensity the reader chose.
+ *
+ * The difference from {@link videoEffectAt} is the whole point of it existing:
+ * that one applies the fade, so at the two soft ends of a section it answers
+ * with an intensity near zero — or with nothing at all. That is exactly right
+ * for drawing, and exactly wrong for deciding whether this section is the kind
+ * of effect that needs a subject matte, because the answer flips at the edges
+ * and the matte disappears for the frames that most need it.
+ *
+ * So callers asking "what is planned here" use this; callers asking "how much
+ * of it do I draw" use `videoEffectAt`.
+ */
+export function videoEffectSectionAt(
+  segments: readonly VideoEffectSegment[] | undefined,
+  time: number,
+  clipId?: string
+): VideoEffectSegment | null {
+  for (const segment of segments ?? []) {
+    if (time < segment.start) break;
+    if (time >= segment.end || (clipId && segment.clipId !== clipId)) continue;
+    return segment;
+  }
+  return null;
+}
+
+/**
+ * How much of the effect is on at this instant, from 0 to 1.
+ *
+ * A hard edge is `fadeSeconds` 0 and answers 1 throughout: the effect is simply
+ * there, and then it is not. A soft edge rides the effect's own intensity up
+ * from nothing and back down, which needs no new rendering path anywhere —
+ * the engine already mixes the untouched frame with the processed one by
+ * intensity, and intensity 0 is an exact bypass, so the two ends of a section
+ * are the original picture by construction rather than by approximation.
+ *
+ * Smoothstep rather than a straight line: a linear ramp of a grade has a
+ * visible corner at each end, where the rate of change stops abruptly.
+ *
+ * The ramp is clamped to half the section so the two ends cannot overlap. A
+ * section shorter than twice its fade therefore peaks below the intensity the
+ * reader asked for, which is the honest reading of what they described.
+ */
+export function videoEffectGain(segment: VideoEffectSegment, time: number): number {
+  const fade = Math.min(Math.max(0, segment.fadeSeconds ?? 0), (segment.end - segment.start) / 2);
+  if (fade <= EPSILON) return 1;
+  const reached = Math.min(time - segment.start, segment.end - time) / fade;
+  const position = Math.max(0, Math.min(1, reached));
+  return position * position * (3 - 2 * position);
+}
+
+/**
+ * Maximum unoccupied source time beginning at `startSeconds`.
+ * Zero means the playhead is already inside another effect. The optional id is
+ * excluded while an existing item is resized, so it does not collide with itself.
+ */
+export function videoEffectSlotFor(clip: MediaClip, startSeconds: number, excludeId?: string): number {
+  const bounds = clipBounds(clip);
+  const start = Math.max(bounds.start, Math.min(bounds.end, startSeconds));
+  const items = effectiveClipVideoEffects(clip)
+    .filter(item => item.id !== excludeId)
+    .map(item => {
+      const itemStart = Math.max(bounds.start, item.startSeconds ?? bounds.start);
+      const itemEnd = Math.min(bounds.end, itemStart + Math.max(0, item.durationSeconds ?? bounds.end - itemStart));
+      return { start: itemStart, end: itemEnd };
+    })
+    .sort((a, b) => a.start - b.start);
+  if (items.some(item => start >= item.start - EPSILON && start < item.end - EPSILON)) return 0;
+  const next = items.find(item => item.start >= start - EPSILON);
+  return Math.max(0, (next?.start ?? bounds.end) - start);
+}
+
+/** Canonical list used by UI, validation and migration of the legacy field. */
+export function effectiveClipVideoEffects(clip: MediaClip): ClipVideoEffect[] {
+  if (clip.videoEffects?.length) return clip.videoEffects;
+  const legacy = normalizeVideoEffect(clip.videoEffect);
+  return legacy.id === 'none' || legacy.intensity <= 0
+    ? []
+    : [{ effectId: legacy.id, intensity: legacy.intensity }];
+}
+
+/** True when source-time intervals overlap. Touching boundaries are allowed. */
+export function videoEffectsOverlap(clip: MediaClip, items: readonly ClipVideoEffect[] = effectiveClipVideoEffects(clip)): boolean {
+  const bounds = clipBounds(clip);
+  const ranges = items.map(item => {
+    const start = Math.max(bounds.start, item.startSeconds ?? bounds.start);
+    return {
+      start,
+      end: Math.min(bounds.end, start + Math.max(0, item.durationSeconds ?? bounds.end - start))
+    };
+  }).filter(range => range.end - range.start > EPSILON).sort((a, b) => a.start - b.start);
+  return ranges.some((range, index) => index > 0 && range.start < ranges[index - 1].end - EPSILON);
 }
 
 /**
@@ -1422,7 +1621,7 @@ export function slicePlan(plan: ProjectPlan, fromIndex: number): ProjectPlan {
   if (start === 0) return plan;
 
   const kept = plan.clips.slice(start);
-  if (!kept.length) return { ...plan, clips: [], totalDuration: 0, transitions: [], fades: [], audioFades: [], zooms: [], captions: [], tags: [], soundFades: [] };
+  if (!kept.length) return { ...plan, clips: [], totalDuration: 0, transitions: [], fades: [], audioFades: [], zooms: [], captions: [], images: [], videoEffects: [], tags: [], soundFades: [] };
 
   const offset = kept[0].outputStart;
   const shift = <T extends { start: number; end: number }>(segments: readonly T[]): T[] =>
@@ -1443,6 +1642,8 @@ export function slicePlan(plan: ProjectPlan, fromIndex: number): ProjectPlan {
     audioFades: shift(plan.audioFades),
     zooms: shift(plan.zooms),
     captions: shift(plan.captions),
+    images: shift(plan.images ?? []),
+    videoEffects: shift(plan.videoEffects ?? []),
     tags: shift(plan.tags),
     soundFades: shift(plan.soundFades),
     transitions: plan.transitions

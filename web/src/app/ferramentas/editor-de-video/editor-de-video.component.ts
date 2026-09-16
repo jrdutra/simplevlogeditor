@@ -722,6 +722,8 @@ interface RenderLogLine {
   text: string;
   /** Where the export had got to, as a whole number, or null before it could tell. */
   percent: number | null;
+  /** The function in the renderer that wrote it, shown while the trace is on. */
+  origin: string | null;
 }
 
 type AgentLogKind = 'command' | 'action' | 'done' | 'fail';
@@ -1015,6 +1017,23 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   renderLog: RenderLogLine[] = [];
   /** The log is what the reader watches while a render runs, so it opens with it. */
   logOpen = true;
+  /**
+   * Out of the way, still running.
+   *
+   * The panel covers the editor, and an export is measured in minutes: a reader
+   * who wants to look at the timeline while it works had nothing to press but
+   * Cancel. Minimized it keeps the percentage, the bar and the buttons in the
+   * corner, and the render never notices - nothing here touches the encoder.
+   */
+  renderMinimized = false;
+  /**
+   * The code's own trace, in the render log.
+   *
+   * Off by default and switchable while an export runs, which is the only
+   * setting that would help: a render that hangs cannot be started again with
+   * the flag on, so the flag has to be reachable from the hang.
+   */
+  renderDebug = false;
 
   @ViewChild('logConsole') private logConsole?: ElementRef<HTMLDivElement>;
   private logSeq = 0;
@@ -8360,7 +8379,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
             this.zone.run(() => {
               this.pushLog(entry);
               this.cdr.markForCheck();
-            })
+            }),
+          // Read at each step rather than captured at the start, so the switch
+          // works on an export that is already running.
+          debugTrace: () => this.renderDebug
         })
       );
 
@@ -10101,6 +10123,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // Every export starts expanded, including one that follows an export the
     // reader had collapsed: the panel is there to be read while it fills.
     this.logOpen = true;
+    // The same reasoning for the panel itself: a new export announces itself,
+    // and the reader can put it back in the corner whenever they like.
+    this.renderMinimized = false;
   }
 
   /**
@@ -10116,9 +10141,42 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const at = `${String(minutes).padStart(2, '0')}:${(seconds - minutes * 60).toFixed(1).padStart(4, '0')}`;
     const clock = this.formatAgentTimestamp(new Date().toISOString());
 
-    this.renderLog.push({ seq: this.logSeq++, at, clock, kind: entry.kind, text: entry.text, percent: entry.percent ?? null });
+    this.renderLog.push({
+      seq: this.logSeq++, at, clock, kind: entry.kind, text: entry.text,
+      percent: entry.percent ?? null, origin: entry.origin ?? null
+    });
     if (this.renderLog.length > LOG_LIMIT) this.renderLog.splice(0, this.renderLog.length - LOG_LIMIT);
     this.logDirty = true;
+  }
+
+  /**
+   * Turns the renderer's own trace on or off, mid-export included.
+   *
+   * The line it writes is the reader's marker: everything under it is traced
+   * and everything above it is not, which matters when the log is read back by
+   * somebody who was not here when it was switched.
+   */
+  toggleRenderDebug(): void {
+    this.renderDebug = !this.renderDebug;
+    this.pushLog({
+      kind: 'trace',
+      text: this.renderDebug
+        ? 'Debug trace on — every change of step will be named with the function it is in.'
+        : 'Debug trace off.',
+      origin: 'editor'
+    });
+    this.logDirty = true;
+  }
+
+  /** Moves the render panel between the middle of the screen and the corner. */
+  toggleRenderMinimized(): void {
+    this.renderMinimized = !this.renderMinimized;
+    // Coming back should show the newest line rather than wherever the console
+    // was left when it went away.
+    if (!this.renderMinimized && this.logOpen) {
+      this.logFollowing = true;
+      this.logDirty = true;
+    }
   }
 
   toggleLog(): void {
@@ -10448,7 +10506,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         'Compare the container it is on against the clips array: an in/out point, a caption or a tag on that container is where to look first.'
       ],
       renderLog: this.renderLog.map((line) =>
-        `[${line.clock}] [+${line.at}] [${line.kind}] ${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
+        `[${line.clock}] [+${line.at}] [${line.kind}] ${line.origin ? `[${line.origin}] ` : ''}` +
+        `${line.percent === null ? '' : `${line.percent}% `}${line.text}`)
     };
 
     return {
@@ -10540,6 +10599,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'done': return '*';
       case 'warn': return '!';
       case 'fail': return 'x';
+      // A dot: the trace is a running commentary and must not shout over the
+      // lines that describe the export itself.
+      case 'trace': return '.';
       // One glyph per kind of timed thing, so the console reads as a list of
       // what happened even where colour is not available.
       case 'effect': return '~';

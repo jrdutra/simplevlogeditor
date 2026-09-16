@@ -1841,6 +1841,45 @@
   }
 
   @if (progress || renderLog.length) {
+    @if (renderMinimized) {
+      <!-- Minimized, not closed. An export runs for as long as it runs and the
+           reader has a timeline to look at in the meantime; taking the whole
+           screen for a progress bar is what made "Cancel" the only way back to
+           the edit. The dock keeps the number, the bar and every button that
+           can still be pressed. -->
+      <div class="render-dock" appBodyPortal role="status" aria-label="Render progress, minimized">
+        <button type="button" class="render-dock-corpo" (click)="toggleRenderMinimized()"
+          title="Open the render panel again">
+          <mat-icon class="render-dock-seta">unfold_more</mat-icon>
+          <span class="render-dock-texto">
+            <span class="render-dock-linha1">
+              @if (progress) {
+                <strong>{{ progressPercent }}</strong> {{ stageLabel }}
+                @if (progress.clipName) {
+                  <span class="progresso-item">· clip {{ progress.clipIndex }}/{{ progress.clipCount }}</span>
+                }
+              } @else {
+                <strong>Last export</strong>
+                <span class="progresso-item">· {{ renderLog.length }} lines</span>
+              }
+            </span>
+            @if (logTail) { <span class="render-dock-linha2">{{ logTail }}</span> }
+          </span>
+        </button>
+        @if (progress; as report) {
+          <mat-progress-bar class="render-dock-barra"
+            [mode]="report.ratio === null ? 'indeterminate' : 'determinate'"
+            [value]="(report.ratio ?? 0) * 100"></mat-progress-bar>
+        }
+        <span class="render-dock-acoes">
+          @if (exporting) {
+            <button mat-button (click)="captureRunningRenderTrace()" title="Copy everything about this export as it stands">Copy</button>
+            <button mat-button (click)="stopExport()" title="Finish the clip being written and keep the file">Stop and keep</button>
+          }
+          <button mat-button (click)="cancel()">Cancel</button>
+        </span>
+      </div>
+    } @else {
     <div class="render-fundo" appBodyPortal>
     <section class="progresso render-modal" role="dialog" aria-modal="true" aria-label="Rendering progress">
       @if (progress; as report) {
@@ -1870,6 +1909,15 @@
               Stop and keep
             </button>
           }
+          <button mat-button (click)="toggleRenderDebug()"
+            [class.acao-ativa]="renderDebug"
+            title="Write the renderer's own steps into the log, with the function each one is in">
+            {{ renderDebug ? 'Trace on' : 'Trace' }}
+          </button>
+          <button mat-button (click)="toggleRenderMinimized()"
+            title="Put this in the corner and keep rendering">
+            Minimize
+          </button>
           <button mat-button (click)="cancel()">Cancel</button>
         </span>
       </div>
@@ -1885,6 +1933,10 @@
             @if (renderLog.length) {
               <button mat-button (click)="captureRunningRenderTrace()">Copy the trace</button>
             }
+            <button mat-button (click)="toggleRenderDebug()" [class.acao-ativa]="renderDebug">
+              {{ renderDebug ? 'Trace on' : 'Trace' }}
+            </button>
+            <button mat-button (click)="toggleRenderMinimized()">Minimize</button>
             <button mat-button (click)="clearLog()">Clear</button>
           </span>
         </div>
@@ -1910,6 +1962,16 @@
                   <span class="registro-data">{{ line.clock }}</span>
                   <span class="registro-hora">+{{ line.at }}</span>
                   <span class="registro-marca" aria-hidden="true">{{ logMark(line.kind) }}</span>
+                  <!-- How far the whole export had got when the line was
+                       written. A log read after the fact is a sequence of
+                       events with no scale on it otherwise. -->
+                  <span class="registro-pct">{{ line.percent === null ? '' : line.percent + '%' }}</span>
+                  <!-- Only while the trace is on: on an ordinary export every
+                       line would carry the same three or four names and say
+                       nothing by carrying them. -->
+                  @if (renderDebug && line.origin) {
+                    <span class="registro-origem">{{ line.origin }}</span>
+                  }
                   <span class="registro-texto">{{ line.text }}</span>
                 </div>
               }
@@ -1919,6 +1981,7 @@
       }
     </section>
     </div>
+    }
   }
 
   @if (notice) {

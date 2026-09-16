@@ -890,7 +890,17 @@ export interface RenderProgress {
 export type RenderLogKind =
   | 'step' | 'clip' | 'detail' | 'done' | 'warn' | 'fail'
   /** Timed things inside one container, each with a colour of its own. */
-  | 'effect' | 'caption' | 'image' | 'zoom' | 'tag';
+  | 'effect' | 'caption' | 'image' | 'zoom' | 'tag'
+  /**
+   * The code's own account of itself, off unless the reader asks for it.
+   *
+   * Every other kind is written for somebody watching an export. This one is
+   * written for somebody debugging one: each line names the function it came
+   * from and how long the step before it took, which is the difference between
+   * "it stopped at 84%" and "it stopped in copyVideoRanges, waiting for the
+   * encoder, on the first frame after a seek".
+   */
+  | 'trace';
 
 /**
  * One line, as the renderer says it.
@@ -909,6 +919,14 @@ export interface RenderLogEntry {
    * line of the opening summary.
    */
   percent?: number;
+  /**
+   * The function that wrote the line.
+   *
+   * Carried on every line rather than only on trace lines: a log read back from
+   * a bug report is worth more when each line can be found in the source, and
+   * it costs one short string.
+   */
+  origin?: string;
 }
 
 export interface RenderResult {
