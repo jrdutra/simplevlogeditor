@@ -13,6 +13,28 @@ function project(threshold: number): ProjectSettings {
 }
 
 describe('video editor project persistence', () => {
+  it('keeps a known media path after a handle reconnects it as a plain File', () => {
+    const clip = {
+      kind: 'media', id: 'clip-path', file: new File(['video'], 'vlog.mp4'),
+      sourcePath: 'C:\\Videos\\vlog.mp4',
+      summary: { fileName: 'vlog.mp4', fileSize: 5, kind: 'video', durationSeconds: 10 },
+      overrides: null, detected: [], manualCuts: [{ start: 1, end: 2 }],
+      analysis: null, analyzedWith: null, replacementAudio: null, caption: null
+    } as unknown as MediaClip;
+    const restored = restoreProject(serializeProject([clip], project(0.65), 1)).clips[0] as MediaClip;
+    expect(restored.sourcePath).toBe(clip.sourcePath);
+    expect(restored.manualCuts).toEqual(clip.manualCuts);
+
+    // Legacy state may carry the path only in fileRef. Saving an available
+    // file must not discard that metadata a second time.
+    restored.file = clip.file;
+    restored.awaitingFile = false;
+    restored.sourcePath = undefined;
+    const reopened = restoreProject(serializeProject([restored], project(0.65), 1)).clips[0] as MediaClip;
+    expect(reopened.sourcePath).toBe(clip.sourcePath);
+    expect(reopened.manualCuts).toEqual(clip.manualCuts);
+  });
+
   it('keeps the mostly-silent replacement threshold in a saved project', () => {
     const stored = serializeProject([], project(0.65), 0);
 
@@ -26,6 +48,22 @@ describe('video editor project persistence', () => {
     expect(restoreProject(stored).project.silentCutReplacementThreshold).toBe(
       SILENT_CUT_REPLACEMENT.default
     );
+  });
+
+  it('keeps automatic Video Packaging switched off once the reader switches it off', () => {
+    const stored = serializeProject([], { ...project(0.65), autoVideoPackaging: false }, 0);
+    const restored = restoreProject(JSON.parse(JSON.stringify(stored)));
+
+    expect(stored.settings.autoVideoPackaging).toBeFalse();
+    expect(restored.project.autoVideoPackaging).toBeFalse();
+  });
+
+  it('opens projects written before the setting existed with automatic Video Packaging on', () => {
+    const stored = serializeProject([], { ...project(0.65), autoVideoPackaging: false }, 0);
+    delete stored.settings.autoVideoPackaging;
+
+    expect(DEFAULT_PROJECT.autoVideoPackaging).toBeTrue();
+    expect(restoreProject(stored).project.autoVideoPackaging).toBeTrue();
   });
 
   it('preserves the MCP project revision across save, restart and recovery', () => {

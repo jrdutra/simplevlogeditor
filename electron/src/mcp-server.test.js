@@ -307,12 +307,15 @@ test('a client that offers roots is asked for them once it has initialized', asy
   assert.ok(asked, 'the server must ask the client for its roots');
   assert.match(String(asked.id), /^sve-/, 'an outbound id must not be able to collide with a client id');
 
+  // Built from the running platform's own absolute path: a hard-coded
+  // file:///home/... is not an absolute path on Windows and cannot be mapped.
+  const videos = require('node:path').resolve('/home/joao/Videos');
   mcp.write({ jsonrpc: '2.0', id: asked.id, result: { roots: [
-    { uri: 'file:///home/joao/Videos', name: 'Videos' },
+    { uri: require('node:url').pathToFileURL(videos).href, name: 'Videos' },
     { uri: 'https://example.com/not-a-folder' }
   ] } });
   await mcp.settle(() => mcp.reported.length > 0);
-  assert.deepEqual(mcp.reported[0], ['/home/joao/Videos'], 'only file:// roots are folders');
+  assert.deepEqual(mcp.reported[0], [videos], 'only file:// roots are folders');
   mcp.close();
 });
 

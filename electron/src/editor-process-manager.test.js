@@ -198,3 +198,40 @@ test('closing stops the healthcheck as well as the watchdog', async () => {
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.deepEqual(socket.written, [], 'a closed manager must write nothing');
 });
+
+test('an older editor holding the pipe is closed and replaced by this host\'s own', async () => {
+  const { compareVersions } = require('./editor-process-manager');
+  assert.equal(compareVersions('1.0.0', '1.1.0'), -1);
+  assert.equal(compareVersions('1.1.0', '1.1.0'), 0);
+  assert.equal(compareVersions('2.0.0', '1.9.9'), 1);
+  assert.equal(compareVersions(null, '1.0.0'), -1);
+
+  class HelloSocket extends FakeSocket {
+    constructor(version) { super(true); this.version = version; }
+    write(value, callback) {
+      callback?.();
+      const envelope = JSON.parse(value);
+      if (envelope.type === 'hello') {
+        setImmediate(() => this.emit('data', JSON.stringify({ type: 'hello', pid: 1, windowCount: 1, ...(this.version ? { editorVersion: this.version } : {}) }) + '\n'));
+      } else if (envelope.request?.name === '__editor_lifecycle') {
+        setImmediate(() => {
+          this.emit('data', JSON.stringify({ id: envelope.id, result: { apiVersion: 2, projectRevision: 1, result: { closing: true } } }) + '\n');
+          setImmediate(() => this.destroy());
+        });
+      }
+      return true;
+    }
+  }
+  const versions = [undefined, '1.1.0'];
+  let spawns = 0;
+  const manager = new EditorProcessManager({
+    endpoint: 'fake', checkVersion: true, ownVersion: '1.1.0',
+    connectSocket: () => new HelloSocket(spawns ? versions[1] : versions[0]),
+    spawnEditor: () => { spawns++; return { unref() {} }; },
+    logger: { info() {}, warn() {}, error() {} }
+  });
+  await manager.ensureEditorRunning();
+  assert.equal(spawns, 1, 'the old editor was replaced');
+  assert.equal(manager.diagnostics().replacedOlderEditor, true);
+  manager.close();
+});

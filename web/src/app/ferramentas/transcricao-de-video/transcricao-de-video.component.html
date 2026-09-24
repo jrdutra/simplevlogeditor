@@ -4,7 +4,7 @@
   <section class="painel painel-fonte">
     <h2>The recording</h2>
 
-    <div class="fonte">
+    <div class="fonte" [class.fonte-vazia]="!fileName">
       <button mat-stroked-button type="button" (click)="picker.click()" [disabled]="sourceBusy">
         <span class="btn-conteudo"><mat-icon>upload_file</mat-icon> Choose a video or audio file</span>
       </button>
@@ -23,6 +23,13 @@
       Nothing is uploaded: the file is decoded and listened to inside this tab. Up to {{ maxMinutes }} minutes.
       You can import audio or video recordings exported from Zoom, Teams, Meet or another meeting app.
     </p>
+
+    <footer class="painel-fonte__footer">
+      <button mat-stroked-button type="button" class="clear-project"
+        [disabled]="sourceBusy || !hasProject" (click)="clearProject()">
+        <span class="btn-conteudo"><mat-icon>delete_sweep</mat-icon> Clear project</span>
+      </button>
+    </footer>
   </section>
 
   <section class="painel painel-reuniao">

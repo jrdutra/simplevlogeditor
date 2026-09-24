@@ -35,9 +35,9 @@ export const TOOLS: readonly Tool[] = [
     rota: 'video-editor',
     image: '/assets/tools/video-editor-card.jpg',
     imageAlt:
-      'Illustration of a video editing workspace: a media library, a preview player with transport controls, a properties panel and a timeline of clips with a title and a music track',
+      'Neon illustration of a complete video editing workspace with timeline, media library and Claude and Codex AI integrations',
     imageWidth: 1200,
-    imageHeight: 629,
+    imageHeight: 675,
     novo: true
   },
   {
@@ -63,9 +63,9 @@ export const TOOLS: readonly Tool[] = [
     rota: 'media-merger',
     image: '/assets/tools/media-merger-card.jpg',
     imageAlt:
-      'Illustration of a video and an audio waveform flowing into an editor with a preview and a timeline, and out again as one finished video',
+      'Neon illustration of multiple video clips flowing into an editor and merging into one finished video',
     imageWidth: 1200,
-    imageHeight: 628,
+    imageHeight: 675,
     novo: true
   },
   {
@@ -77,7 +77,7 @@ export const TOOLS: readonly Tool[] = [
     rota: 'background-noise-remover',
     image: '/assets/tools/background-noise-remover-card.jpg',
     imageAlt:
-      'Neon illustration of a noisy audio and video waveform, tagged room, fan, street, wind and hum, passing through a noise-removal model and coming out as a clean voice',
+      'Neon illustration comparing noisy input media with clean video and audio after AI noise removal',
     imageWidth: 1200,
     imageHeight: 675,
     novo: true
@@ -91,7 +91,7 @@ export const TOOLS: readonly Tool[] = [
     rota: 'video-transcription',
     image: '/assets/tools/video-transcription-card.jpg',
     imageAlt:
-      'Neon illustration of audio and video files flowing into a transcription panel that shows a waveform and timed caption lines, and out again as a transcript with TXT, SRT and VTT downloads',
+      'Neon illustration of a video passing through AI speech recognition and becoming a timestamped text transcript',
     imageWidth: 1200,
     imageHeight: 675,
     novo: true
@@ -105,9 +105,37 @@ export const TOOLS: readonly Tool[] = [
     rota: 'text-video-maker',
     image: '/assets/tools/text-video-maker-card.jpg',
     imageAlt:
-      'Illustration of text, pictures and an audio waveform flowing into an editor with a preview and separate text, picture and sound tracks, and out again as one finished video',
+      'Neon illustration of a text document flowing into a video editor and becoming a finished vertical video',
     imageWidth: 1200,
-    imageHeight: 628,
+    imageHeight: 675,
+    novo: true
+  },
+  {
+    titulo: 'Video Packaging',
+    descricao: 'Create thumbnails and title ideas for horizontal videos.',
+    resumo:
+      'Generate thumbnails and title ideas designed for horizontal long-form videos.',
+    icone: 'image_search',
+    rota: 'video-packaging',
+    image: '/assets/tools/video-packaging-card.jpg',
+    imageAlt:
+      'Neon illustration of an AI workspace generating three video thumbnails, title ideas and a description',
+    imageWidth: 1200,
+    imageHeight: 675,
+    novo: true
+  },
+  {
+    titulo: 'Shorts Generator',
+    descricao: 'Turn horizontal videos into vertical short-form clips.',
+    resumo:
+      'Transform horizontal long-form videos into vertical shorts with reframing, captions and highlight extraction.',
+    icone: 'view_day',
+    rota: 'shorts-generator',
+    image: '/assets/tools/shorts-generator-card.jpg',
+    imageAlt:
+      'Neon illustration of a horizontal video being reframed by AI into three vertical short-form videos',
+    imageWidth: 1200,
+    imageHeight: 675,
     novo: true
   }
 ];

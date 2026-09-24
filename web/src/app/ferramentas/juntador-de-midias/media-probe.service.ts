@@ -268,6 +268,30 @@ export class MediaProbeService {
   }
 
   /**
+   * The same timelapse question, for a file that was probed somewhere else.
+   *
+   * Media imported through MCP is probed by FFprobe in the desktop process,
+   * which reports tracks and codecs but never looks for a timelapse. This asks
+   * the one question that probe skipped, with the same two rules the browser
+   * probe uses — the camera naming the mode, or a file written over far longer
+   * than it plays — and changes `summary` in place. Never throws.
+   */
+  async detectTimelapseFor(file: File, summary: MediaSummary): Promise<void> {
+    if (summary.isTimelapse || summary.hasAudioTrack || summary.kind !== 'video') return;
+    try {
+      const library = await loadMediabunny();
+      const input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+      try {
+        await this.detectTimelapse(input, file, summary);
+      } finally {
+        input.dispose();
+      }
+    } catch {
+      // Unreadable metadata is simply "not marked", as in the browser probe.
+    }
+  }
+
+  /**
    * The camera's own word for the mode, if it wrote one down.
    *
    * `raw` is where the answer lives, and it is a different shape per format.

@@ -22,6 +22,31 @@ function safeError(error, seen = new Set()) {
   };
 }
 
+/*
+ * stderr may belong to a process that is already gone.
+ *
+ * The editor window outlives the MCP session that opened it, and a pipe whose
+ * reader has exited fails every later write with EPIPE — asynchronously, as an
+ * 'error' event on the stream, which no try/catch around write() can catch.
+ * Unhandled, Electron shows it as "A JavaScript error occurred in the main
+ * process", once per log line. So the error is absorbed here, and once the
+ * pipe is known to be broken this process stops writing to it; the log file,
+ * when there is one, keeps everything.
+ */
+let stderrBroken = false;
+function guardStream(stream) {
+  if (!stream || stream.__sveGuarded) return;
+  stream.__sveGuarded = true;
+  stream.on('error', (error) => {
+    if (stream === process.stderr) stderrBroken = true;
+    if (error && error.code !== 'EPIPE' && error.code !== 'ERR_STREAM_DESTROYED' && error.code !== 'EOF') {
+      // Anything else is still not worth a crash dialog for a log line.
+    }
+  });
+}
+guardStream(process.stderr);
+guardStream(process.stdout);
+
 /** JSON lines go to stderr and, when configured, a bounded append-only file. */
 function createLogger(component, options = {}) {
   const file = options.file || process.env.SVE_MCP_LOG_FILE;
@@ -32,7 +57,9 @@ function createLogger(component, options = {}) {
       ...fields,
       ...(fields.error instanceof Error ? { error: safeError(fields.error) } : {})
     });
-    try { process.stderr.write(record + '\n'); } catch {}
+    if (!stderrBroken) {
+      try { process.stderr.write(record + '\n'); } catch { stderrBroken = true; }
+    }
     if (file) {
       try {
         const resolved = path.resolve(file);
@@ -55,4 +82,4 @@ function createLogger(component, options = {}) {
   };
 }
 
-module.exports = { createLogger, safeError };
+module.exports = { createLogger, safeError, guardStream };

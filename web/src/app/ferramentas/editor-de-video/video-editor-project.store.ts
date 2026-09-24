@@ -219,12 +219,14 @@ export interface StoredProject {
     timelapseTargetSeconds?: number;
     videoFormatId: string;
     audioFormatId: string;
+    /** Absent in documents written before it could be switched off. Absent is on. */
+    autoVideoPackaging?: boolean;
   };
   clips: StoredClip[];
 }
 
-function refOf(file: File): StoredFileRef {
-  const sourcePath = pathBackedPath(file);
+function refOf(file: File, fallbackPath?: string): StoredFileRef {
+  const sourcePath = pathBackedPath(file) || fallbackPath;
   return { name: file.name, size: file.size, lastModified: file.lastModified, ...(sourcePath ? { path: sourcePath } : {}) };
 }
 
@@ -296,7 +298,8 @@ export function serializeProject(
       reframe: project.reframe,
       timelapseTargetSeconds: project.timelapseTargetSeconds,
       videoFormatId: project.videoFormatId,
-      audioFormatId: project.audioFormatId
+      audioFormatId: project.audioFormatId,
+      autoVideoPackaging: project.autoVideoPackaging
     },
     clips: clips.map((clip) =>
       isTransitionClip(clip)
@@ -313,7 +316,7 @@ export function serializeProject(
             // writing *that* out would store a length of zero — so the next
             // reload would never recognise the real file again. The reference
             // it was restored with is the one that has to survive.
-            file: clip.awaitingFile && clip.fileRef ? clip.fileRef : refOf(clip.file),
+            file: clip.awaitingFile && clip.fileRef ? clip.fileRef : refOf(clip.file, clip.sourcePath || clip.fileRef?.path),
             summary: { ...clip.summary },
             overrides: clip.overrides ? cloneEdits(clip.overrides) : null,
             detected: clip.detected.map((range) => ({ ...range })),
@@ -397,7 +400,9 @@ export function restoreProject(stored: StoredProject): RestoredProject {
     // before this existed was doing.
     timelapseTargetSeconds: clampTimelapseTarget(settings.timelapseTargetSeconds ?? 0),
     videoFormatId: settings.videoFormatId,
-    audioFormatId: settings.audioFormatId
+    audioFormatId: settings.audioFormatId,
+    // Absent means on: every project written before this existed was packaged.
+    autoVideoPackaging: settings.autoVideoPackaging !== false
   };
 
   const clips: EditorClip[] = stored.clips.map((clip) =>

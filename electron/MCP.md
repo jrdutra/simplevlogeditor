@@ -83,10 +83,45 @@ app selects and remembers a safe replacement rather than failing to open.
 
 Every desktop start also records the current executable and, when available,
 the source MCP host in `%LOCALAPPDATA%\SimpleVlogEditor\editor-location.json`.
-The Codex plugin uses this record through its portable launcher instead of
-embedding a user-specific repository path. The supported override is
-`SVE_EDITOR_PROJECT_ROOT`, pointing at the folder that contains `electron` and
-`web`.
+The plugins use this record, among other places (installer registry, default
+install folders, portable copies), to find the editor; they never carry one
+inside them, and a copy found inside an AI client's plugin folder is ignored as
+stale. Overrides:
+`SVE_EDITOR_EXECUTABLE` (an installed or portable copy) and
+`SVE_EDITOR_PROJECT_ROOT` (the folder that contains `electron` and `web`).
+
+## Packaged MCP host (`--mcp-stdio`)
+
+The same host runs from the packaged application, with no Node installation and no
+checkout:
+
+```powershell
+SimpleVlogEditor.exe --mcp-stdio --controller codex
+```
+
+In that mode `main.js` creates no window and takes no single-instance lock: it
+starts the executable again as Node (`ELECTRON_RUN_AS_NODE=1`) on
+`resources/app.asar/src/mcp-host.js`, hands it its own stdin, stdout and stderr, and
+exits with it. The plugins skip that hop and start the host directly
+(`SimpleVlogEditor.exe <app.asar>/src/mcp-host.js --mcp-stdio --controller …` with
+`ELECTRON_RUN_AS_NODE=1`), then proxy stdio byte for byte.
+
+The host is still the supervisor. When a tool first needs the editor it opens the
+window as a separate, detached process — `SimpleVlogEditor.exe --mcp-open` when it is
+itself the packaged executable, the development Electron otherwise — so
+`restart_editor` and `close_editor` replace or close the window while the MCP
+session stays up. Closing stdin ends the host (after a 1.5 s flush) but never the
+window, which is the user's editor.
+
+stdout is reserved for MCP: `console.log`, `console.info` and `console.debug` are
+redirected to stderr before anything else loads, and a broken stdout pipe exits the
+host quietly. The pipe name is now per user rather than per install folder, so a
+host from any copy — installed or portable — reaches a window
+opened from any other; they already shared one single-instance lock.
+`SVE_EDITOR_ENDPOINT` and `SVE_USER_DATA_DIR` give a test (or a second profile) a
+pipe and a profile of its own. The program's own folder is refused as a media
+folder even when it sits inside an allowed one, and `resources/bin/ffprobe.exe` is
+used when the build packed one (see `vendor/ffprobe/README.md`).
 
 ## Editing workflow
 

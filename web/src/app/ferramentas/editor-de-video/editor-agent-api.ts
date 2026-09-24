@@ -20,6 +20,20 @@ export interface EditorAgentResponse {
   result: unknown;
 }
 
+/**
+ * Failures that are a moment, not a verdict: the same request is expected to
+ * succeed once the editor has had a breath, a reconnection or a restart. The
+ * editor reports them as warnings rather than incidents, and the MCP host
+ * retries them (restarting the editor when that is what it takes).
+ */
+export const RECOVERABLE_AGENT_CODES: ReadonlySet<string> = new Set([
+  'media_timeout', 'editor_timeout', 'renderer_unresponsive', 'editor_reconnecting', 'editor_unavailable',
+  // The project moved on since the caller read its revision (a thumbnail, a
+  // transcript, an autosave, the previous import). The caller re-reads the
+  // revision and repeats; nothing was lost and nothing is wrong.
+  'revision_conflict'
+]);
+
 export class EditorAgentError extends Error {
   constructor(
     message: string,
@@ -39,6 +53,8 @@ export interface EditorAgentProjectPatch {
   videoFormatId?: string;
   audioFormatId?: string;
   timelapseTargetSeconds?: number;
+  /** Whether an AI edit ends by producing its Video Packaging. */
+  autoVideoPackaging?: boolean;
   silentCutReplacementThreshold?: number;
   soundFade?: { fadeIn?: boolean; fadeOut?: boolean; seconds?: number };
   loudness?: Record<string, unknown>;

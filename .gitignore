@@ -164,3 +164,4 @@ web/src/assets/download/*
 !web/src/assets/download/simple-vlog-editor-claude.zip
 !web/src/assets/download/simple-vlog-editor-codex.zip
 web/dist/browser/assets/download/
+electron/vendor/ffprobe/win32-x64/avcodec-63.dll 

@@ -1,0 +1,84 @@
+@if (packaging.pickerOpen()) {
+  <div class="estilo-fundo" appBodyPortal role="dialog" aria-modal="true" aria-labelledby="estilo-titulo">
+    <section class="estilo-modal">
+      <header class="estilo-cabecalho">
+        <div>
+          <p class="estilo-sobrancelha">{{ waiting ? 'The assistant is waiting' : 'Cover lettering' }}</p>
+          <h2 id="estilo-titulo">Choose the tag style</h2>
+          <p class="estilo-linha">
+            {{ waiting
+              ? 'Pick the lettering this run should draw the covers in.'
+              : 'The style you pick here is saved and used every time, until you change it.' }}
+          </p>
+        </div>
+        <button type="button" class="estilo-fechar" (click)="close()" aria-label="Close without choosing">
+          <mat-icon aria-hidden="true">close</mat-icon>
+        </button>
+      </header>
+
+      @if (error()) {
+        <p class="estilo-erro" role="alert">{{ error() }}</p>
+      }
+
+      <section class="estilo-atual" aria-label="Current style configuration">
+        <span class="estilo-atual__icone"><mat-icon aria-hidden="true">brush</mat-icon></span>
+        <div class="estilo-atual__texto">
+          <p>Cover lettering</p>
+          <h3>Tag style — {{ packaging.tagStyle().name }}</h3>
+          <label class="estilo-atual__escolha">
+            <input type="checkbox" [checked]="askEveryTime"
+              (change)="toggleAsk($any($event.target).checked)">
+            <span>Ask me which style to use before each set of covers</span>
+          </label>
+          <p class="estilo-atual__nota">
+            {{ askEveryTime
+              ? 'The assistant will wait for your choice before it draws anything.'
+              : 'Every run uses this saved style.' }}
+          </p>
+        </div>
+        <img class="estilo-atual__imagem" [src]="packaging.tagStyle().url" alt="Current lettering reference">
+      </section>
+
+      <div class="estilo-grade">
+        @if (packaging.customStyle(); as own) {
+          <button type="button" class="estilo-item estilo-item--proprio"
+            [class.estilo-item--ativo]="packaging.tagStyle().id === customId"
+            [disabled]="busy()" (click)="choose(customId)">
+            <span class="estilo-imagem"><img [src]="own.url" alt=""></span>
+            <span class="estilo-nome">Your own style</span>
+            <span class="estilo-resumo">{{ own.name }}</span>
+            @if (packaging.tagStyle().id === customId) {
+              <span class="estilo-marca"><mat-icon aria-hidden="true">check_circle</mat-icon></span>
+            }
+          </button>
+        }
+        @for (style of packaging.styles; track style.id) {
+          <button type="button" class="estilo-item"
+            [class.estilo-item--ativo]="packaging.tagStyle().id === style.id"
+            [disabled]="busy()" (click)="choose(style.id)">
+            <span class="estilo-imagem"><img [src]="style.url" [alt]="style.name + ' tag style'"></span>
+            <span class="estilo-nome">{{ style.name }}</span>
+            <span class="estilo-resumo">{{ style.summary }}</span>
+            @if (packaging.tagStyle().id === style.id) {
+              <span class="estilo-marca"><mat-icon aria-hidden="true">check_circle</mat-icon></span>
+            }
+          </button>
+        }
+      </div>
+
+      <footer class="estilo-rodape">
+        <input #estiloProprio type="file" accept="image/*" hidden (change)="load(estiloProprio)">
+        <button type="button" class="estilo-acao" [disabled]="busy()" (click)="estiloProprio.click()">
+          <mat-icon aria-hidden="true">upload</mat-icon>
+          {{ packaging.customStyle() ? 'Replace my style' : 'Load my own style' }}
+        </button>
+        @if (packaging.customStyle()) {
+          <button type="button" class="estilo-acao" [disabled]="busy()" (click)="removeCustom()">
+            <mat-icon aria-hidden="true">delete_outline</mat-icon> Remove my style
+          </button>
+        }
+        <span class="estilo-nota">Your own style is kept by the application until you replace it.</span>
+      </footer>
+    </section>
+  </div>
+}

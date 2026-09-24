@@ -22,6 +22,7 @@ import { effectDefinition, effectNeedsSubject } from './video-effects';
 import { disposeFrameEffects, frameEffectWarning } from './frame-compositor';
 import { TransitionPainter } from './video-transitions';
 import { activeNoiseAudio } from './clip-noise';
+import { createRenderInput, readRenderAudio } from './render-media';
 import { imageBehindSubject, imagesAt, loadPlanImages } from './clip-image';
 import { EMPTY_SIDE, FootageSide, SceneSide, StillSide, TransitionSide } from './transition-sides';
 import {
@@ -174,6 +175,9 @@ const STILL_FRAME_INTERVAL = 1;
 /** Below this a fragment is not worth encoding. */
 const EPSILON = 1e-6;
 
+/** Output seconds of missing picture that count as rounding rather than a hole. */
+const MISSING_PICTURE_TOLERANCE = 0.25;
+
 /**
  * How often a container may narrate itself while it works.
  *
@@ -196,7 +200,7 @@ const SLOW_AWAIT_MS = 4_000;
  * something is.
  */
 interface RenderTrace {
-  mark(what: string, detail?: string, origin?: string): void;
+  mark(what: string, detail?: string, origin?: string, narrate?: boolean): void;
   log(kind: RenderLogEntry['kind'], text: string, origin?: string): void;
   /**
    * Milliseconds spent drawing frames, as opposed to encoding them.
@@ -301,9 +305,9 @@ export class VideoEditorRenderService {
      * swallowed: "handing a frame to the encoder" is a thousand marks in a row
      * and one line is the useful form of it, so only a *different* step speaks.
      */
-    const mark = (what: string, detail = '', origin = '') => {
+    const mark = (what: string, detail = '', origin = '', narrate = true) => {
       const changed = what !== activity.what;
-      if (changed && options.debugTrace?.()) {
+      if (changed && narrate && options.debugTrace?.()) {
         log('trace', `< ${activity.origin} · ${activity.what} — ${elapsed(Date.now() - activity.since)}`, activity.origin);
         log('trace', `> ${origin || activity.origin} · ${what}${detail ? ` — ${detail}` : ''}`, origin || activity.origin);
       }
@@ -433,30 +437,13 @@ export class VideoEditorRenderService {
     // clock, the file the reader keeps may not.
     const subjectSegmentation = new SubjectSegmentationClient({ adaptive: false });
 
-    /*
-     * One reader per file, opened once and kept for the whole export.
-     *
-     * Each container used to open its own `Input` over its own `BlobSource` and
-     * dispose it on the way out. For a timeline whose containers are different
-     * files that is merely wasteful — a header parsed once per container. For a
-     * timeline that uses the *same* file twice, which is what a clip split in
-     * two is, it hangs: the second `BlobSource` acquires a second stream reader
-     * over a blob whose first reader was cancelled by the first dispose, and the
-     * read never comes back. Mediabunny documents the hazard under
-     * `BlobSourceOptions.useStreamReader` ("can lead to errors in some very rare
-     * cases due to browser bugs"); the export met it as a bar frozen at 84%,
-     * with `copyVideoRanges` waiting on the file header for as long as anyone
-     * cared to watch.
-     *
-     * Sharing the reader removes the second open altogether. Containers are
-     * written one after another, never at once, so one reader is all there is
-     * to share.
-     */
+    // Cache parsed headers across split clips. These inputs use bounded reads:
+    // retaining an input must not retain an idle HTTP stream in Electron.
     const readers = new Map<Blob, import('mediabunny').Input>();
     const openInput = (file: Blob) => {
       const open = readers.get(file);
       if (open) return open;
-      const created = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+      const created = createRenderInput(library, file);
       readers.set(file, created);
       return created;
     };
@@ -762,7 +749,7 @@ export class VideoEditorRenderService {
     trace: RenderTrace = SILENT_TRACE,
     /** The export's shared reader for a file, opened at most once. */
     openInput: (file: Blob) => import('mediabunny').Input =
-      (file) => new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS })
+      (file) => createRenderInput(library, file)
   ): Promise<void> {
     const { signal, envelopes, project } = options;
     const speed = clampSpeed(entry.edits.speed);
@@ -793,7 +780,7 @@ export class VideoEditorRenderService {
     {
       if (videoSource) {
         cursor.video = clip.summary.videoUsable
-          ? await this.copyVideoRanges(library, input, videoSource, entry, speed, cursor.video, signal, tick, pictureEnd, trace, openedAt)
+          ? await this.copyVideoRanges(library, input, videoSource, entry, speed, cursor.video, signal, tick, plan, pictureEnd, trace, openedAt)
           : await this.writeBlack(library, videoSource, entry.outputStart, picture, plan, cursor.video, signal);
       }
 
@@ -940,6 +927,7 @@ export class VideoEditorRenderService {
     lastTimestamp: number,
     signal: AbortSignal,
     tick: (seconds: number) => void,
+    plan: ProjectPlan,
     pictureEnd = Infinity,
     trace: RenderTrace = SILENT_TRACE,
     /** When the file was handed to the demuxer, so the wait for it can be timed. */
@@ -978,6 +966,7 @@ export class VideoEditorRenderService {
       trace.mark('seeking', `source ${range.start.toFixed(2)}s (range ${rangeIndex + 1}/${ranges})`, 'copyVideoRanges');
       const seekingAt = Date.now();
       let firstOfRange = true;
+      let ofRange = 0;
       for await (const sample of sink.samples(range.start, range.end)) {
         // A decoded frame holds a real GPU or system buffer, so it is closed in
         // a `finally`: an encoder that rejects mid-file must not leave frames
@@ -1028,6 +1017,7 @@ export class VideoEditorRenderService {
           }
           last = timestamp;
           frames++;
+          ofRange++;
           tick(timestamp);
 
           if (Date.now() - notedAt >= TRACE_EVERY_MS) {
@@ -1049,7 +1039,47 @@ export class VideoEditorRenderService {
           sample.close();
         }
       }
+
+      /*
+       * A range that decoded nothing used to be written as nothing at all.
+       *
+       * The loop above simply ended, the next range carried on at its own
+       * output time, and the seconds in between were never handed to the
+       * encoder: the player then holds the previous frame — or shows black —
+       * for as long as the missing stretch lasts, and the export reports
+       * success. A decoder can fail this way on one range and work on the next
+       * (a seek that lands badly, a reader that gave up), so the file is
+       * finished rather than abandoned: the range is asked for once more, and
+       * if it still yields nothing its first frame is held across it. The
+       * picture is then wrong only in that it does not move, the sound and
+       * every later clip stay on time, and the render log says so instead of
+       * staying silent.
+       */
+      if (ofRange === 0 && range.end - range.start > EPSILON) {
+        last = await this.fillMissingPicture(
+          library, track, source, plan, entry, speed, range, cut, last, pictureEnd, signal, trace
+        );
+      }
       cut += range.end - range.start;
+    }
+
+    /*
+     * And the same guarantee for a decoder that stopped partway.
+     *
+     * A range that gives up after a few frames leaves a tail with nothing in
+     * it, which the player holds the last frame across. A quarter of a second
+     * is rounding; more than that is a hole, and it is filled the same way —
+     * one frame, held, and a line saying so.
+     */
+    const pictureFinish = entry.outputStart + Math.min(entry.outputDuration, Math.max(0, pictureEnd - entry.outputStart));
+    const lastRange = entry.keepRanges[entry.keepRanges.length - 1];
+    if (frames > 0 && lastRange && last < pictureFinish - MISSING_PICTURE_TOLERANCE) {
+      last = await this.fillMissingPicture(
+        library, track, source, plan, entry, speed,
+        { start: Math.max(lastRange.start, lastRange.end - 1 / plan.frameRate), end: lastRange.end },
+        Math.max(0, (last - entry.outputStart) * speed), last, pictureEnd, signal, trace,
+        pictureFinish - last, true
+      );
     }
 
     trace.log(
@@ -1060,6 +1090,110 @@ export class VideoEditorRenderService {
       'copyVideoRanges'
     );
     return last;
+  }
+
+  /**
+   * Writes a stretch of picture the decoder would not give up.
+   *
+   * One more pass over the range first, with a decoder of its own — most of
+   * these are transient. Whatever that yields (or, failing that, the single
+   * frame at the start of the range, or black) is then held for exactly as long
+   * as the range should have lasted, so nothing after it moves.
+   */
+  private async fillMissingPicture(
+    library: MediabunnyLib,
+    track: import('mediabunny').InputVideoTrack,
+    source: import('mediabunny').VideoSampleSource,
+    plan: ProjectPlan,
+    entry: ClipPlan,
+    speed: number,
+    range: { start: number; end: number },
+    cut: number,
+    lastTimestamp: number,
+    pictureEnd: number,
+    signal: AbortSignal,
+    trace: RenderTrace,
+    /** Output seconds to cover, when it is not simply the range's own length. */
+    outputSpan?: number,
+    /** Skip the second read and go straight to holding a frame. */
+    holdOnly = false
+  ): Promise<number> {
+    const start = entry.outputStart + cut / speed;
+    const span = Math.min(outputSpan ?? (range.end - range.start) / speed, Math.max(0, pictureEnd - start));
+    if (span <= EPSILON) return lastTimestamp;
+
+    trace.log(
+      'warn',
+      holdOnly
+        ? `picture: the decoder stopped ${span.toFixed(2)}s before the end of this clip`
+        : `picture: nothing decoded for source ${range.start.toFixed(2)}s–${range.end.toFixed(2)}s; reading it again`,
+      'copyVideoRanges'
+    );
+
+    let last = lastTimestamp;
+    let written = 0;
+    let retry: import('mediabunny').VideoSampleSink | null = null;
+    try { retry = new library.VideoSampleSink(track); } catch { retry = null; }
+
+    if (retry && !holdOnly) {
+      let cursor = 0;
+      try {
+        for await (const sample of retry.samples(range.start, range.end)) {
+          try {
+            if (signal.aborted) throw new EditorCanceledError();
+            const timestamp = start + Math.max(0, sample.timestamp - range.start) / speed;
+            if (timestamp >= pictureEnd) break;
+            if (timestamp <= last) continue;
+            sample.setTimestamp(timestamp);
+            await source.add(sample);
+            last = timestamp;
+            written++;
+            cursor = timestamp;
+          } finally {
+            sample.close();
+          }
+        }
+      } catch (error) {
+        if (error instanceof EditorCanceledError) throw error;
+        // The second failure is the answer: hold a frame instead.
+      }
+      if (written > 0) {
+        trace.log('detail', `picture: recovered ${written} frames on the second read`, 'copyVideoRanges');
+        if (cursor >= start + span - 1 / plan.frameRate) return last;
+      }
+    }
+
+    // Still short: hold one frame — the range's own, when it can be had.
+    const canvas = canvasOfSize(plan.width, plan.height);
+    const context = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D | CanvasRenderingContext2D | null;
+    if (!context) return last;
+    context.fillStyle = '#000000';
+    context.fillRect(0, 0, plan.width, plan.height);
+
+    let held = 'black';
+    if (retry) {
+      try {
+        const sample = await retry.getSample(range.start);
+        if (sample) {
+          try {
+            sample.draw(context, 0, 0, plan.width, plan.height);
+            held = 'its first frame';
+          } finally {
+            sample.close();
+          }
+        }
+      } catch { /* black it is */ }
+    }
+
+    const from = Math.max(start, last);
+    const remaining = start + span - from;
+    if (remaining <= EPSILON) return last;
+    trace.log(
+      'warn',
+      `picture: holding ${held} for ${remaining.toFixed(2)}s of output rather than leaving a gap`,
+      'copyVideoRanges'
+    );
+    return this.holdFrame(library, source, canvas, from, remaining, plan, last, signal);
   }
 
   /**
@@ -1124,7 +1258,8 @@ export class VideoEditorRenderService {
       };
 
       trace.mark('decoding sound', `source ${audibleRange.start.toFixed(2)}s (range ${index + 1}/${entry.keepRanges.length})`, 'copyAudioRanges');
-      for await (const sample of sink.samples(audibleRange.start, audibleRange.end)) {
+      const label = `source ${audibleRange.start.toFixed(2)}s, range ${index + 1}/${entry.keepRanges.length}`;
+      for await (const sample of readRenderAudio(sink.samples(audibleRange.start, audibleRange.end), input, signal, label)) {
         let shaped: AudioSample | null = null;
         packets++;
         if (Date.now() - soundNotedAt >= TRACE_EVERY_MS) {
@@ -1162,6 +1297,7 @@ export class VideoEditorRenderService {
             sample.timestamp + sample.duration <= audibleRange.end + EPSILON
           ) {
             sample.setTimestamp(timestamp);
+            trace.mark('handing sound to the encoder', label, 'copyAudioRanges', false);
             await source.add(sample);
             last = timestamp;
             tick?.(timestamp);
@@ -1182,12 +1318,14 @@ export class VideoEditorRenderService {
           });
           if (!shaped) continue;
 
+          trace.mark('handing sound to the encoder', label, 'copyAudioRanges', false);
           await source.add(shaped);
           last = timestamp;
           tick?.(timestamp);
         } finally {
           if (shaped && shaped !== sample) shaped.close();
           sample.close();
+          trace.mark('decoding sound', label, 'copyAudioRanges', false);
         }
       }
 
@@ -1487,7 +1625,7 @@ export class VideoEditorRenderService {
       );
     }
 
-    const input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+    const input = createRenderInput(library, file);
 
     let last = lastTimestamp;
     // Where the sound genuinely stops. A packet is not cut at the range bound,
@@ -1509,7 +1647,7 @@ export class VideoEditorRenderService {
       if (track) {
         const sink = new library.AudioSampleSink(track);
 
-        for await (const sample of sink.samples(sourceStart, sourceEnd)) {
+        for await (const sample of readRenderAudio(sink.samples(sourceStart, sourceEnd), input, signal, file.name)) {
           let conformed: AudioSample | null = null;
 
           try {
@@ -1688,7 +1826,7 @@ export class VideoEditorRenderService {
         + 'It was restored from a saved project and is still waiting for its file.'
       );
     }
-    const input = new library.Input({ source: new library.BlobSource(clip.file), formats: library.ALL_FORMATS });
+    const input = createRenderInput(library, clip.file);
 
       // Everything from here on can throw, and the outer `catch` cannot give the
       // decoder back because it cannot see it. A join that fails to open one side

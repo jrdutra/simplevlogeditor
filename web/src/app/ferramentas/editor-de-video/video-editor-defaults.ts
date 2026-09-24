@@ -436,7 +436,10 @@ export const DEFAULT_PROJECT: ProjectSettings = {
   // they want it to be.
   timelapseTargetSeconds: TIMELAPSE_TARGET.default,
   videoFormatId: VIDEO_FORMATS[0].id,
-  audioFormatId: AUDIO_FORMATS[0].id
+  audioFormatId: AUDIO_FORMATS[0].id,
+  // On: an AI edit already ended with its covers, titles, description and
+  // tags, and switching that off is the reader's decision to make.
+  autoVideoPackaging: true
 };
 
 export function clampSilentCutReplacementThreshold(value: number): number {

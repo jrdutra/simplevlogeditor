@@ -228,8 +228,9 @@ test('a drifted revision is re-read and the file goes in, rather than failing th
   assert.ok(reads.length >= 1, 'the queue must re-read the revision it lost track of');
 });
 
-test('a project that really was replaced still fails, rather than retrying forever', async () => {
+test('a revision that keeps racing is retried a few times, then appended without the guard — never forever', async () => {
   let attempts = 0;
+  let lastExpected = 'unset';
   const service = new MediaImportService({
     admit: (candidate) => path.resolve(candidate),
     fs: fakeFs(),
@@ -239,6 +240,7 @@ test('a project that really was replaced still fails, rather than retrying forev
       if (request.name === 'get_project') return { apiVersion: 2, projectRevision: 99, result: { clipCount: 0 } };
       if (request.name === '__import_media_path') {
         attempts++;
+        lastExpected = request.arguments.expectedRevision;
         throw Object.assign(new Error('The project changed before this media file could be committed.'), { code: 'revision_conflict' });
       }
       return { apiVersion: 2, projectRevision: 99, result: {} };
@@ -246,9 +248,10 @@ test('a project that really was replaced still fails, rather than retrying forev
   });
 
   const job = await service.queue({ requestId: 'r2', paths: [path.join(ROOT, 'a.mp4')] });
-  for (let tries = 0; tries < 200 && service.jobs.get(job.jobId)?.state === 'running'; tries++) {
-    await new Promise((resolve) => setTimeout(resolve, 5));
+  for (let tries = 0; tries < 400 && service.jobs.get(job.jobId)?.state !== 'failed' && service.jobs.get(job.jobId)?.state !== 'completed' && service.jobs.get(job.jobId)?.state !== 'partial'; tries++) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
   }
-  assert.equal(attempts, 2, 'one refresh, one retry, then the truth');
+  assert.equal(attempts, 6, 'four refreshed retries, then one unguarded append, then the truth');
+  assert.equal(lastExpected, undefined, 'the last attempt carries no revision guard');
   assert.equal(service.jobs.get(job.jobId).files[0].status, 'failed');
 });

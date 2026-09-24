@@ -174,7 +174,7 @@ const EDIT_OPERATIONS = [
   editOperation('set_project_settings', {
     settings: {
       type: 'object',
-      description: 'Aspect, reframe, resolution, formats, loudness, soundtrack fades, default transition/tag and default clip edits.',
+      description: 'Aspect, reframe, resolution, formats, loudness, soundtrack fades, default transition/tag, default clip edits, and autoVideoPackaging (boolean: whether an AI edit ends with Video Packaging; change it only when the user asks).',
       additionalProperties: true
     }
   }, ['settings'])
@@ -182,6 +182,61 @@ const EDIT_OPERATIONS = [
 
 const TOOLS = [
   tool('get_editor_capabilities', 'Discover every MCP editing operation and the current catalogues of tags, transitions, text styles and output formats.', {}),
+  tool('show_tool', 'Bring one SimpleVlogEditor tool tab to the front. Use this to move between editing and packaging without asking the user to click a tab.', {
+    tool: { type: 'string', enum: ['video-editor', 'free-silence-cutter', 'media-merger', 'background-noise-remover', 'video-transcription', 'text-video-maker', 'video-packaging', 'shorts-generator'] }
+  }, ['tool']),
+  tool('set_ai_control_log', 'Open, minimize or hide the global AI control log. It remains available on every tool tab. Normally minimize it after an edit or Video Packaging delivery is complete.', {
+    view: { type: 'string', enum: ['open', 'minimized', 'hidden'] }
+  }, ['view']),
+  tool('set_video_packaging', 'Place up to three generated horizontal-video thumbnails, titles, a complete multiline description and searchable tags in the visible Video Packaging tool. Cover files are copied into real in-memory image bytes so preview and download are identical. Use exact edited-video frames as the background, record each source frame path and final-timeline timestamp, and follow get_packaging_tag_style for lettering. Omitted fields keep their current values; supplied arrays replace that section. The editor opens and focuses the result page.', {
+    thumbnails: {
+      type: 'array', maxItems: 3,
+      items: {
+        type: 'object', additionalProperties: false,
+        properties: {
+          path: { type: 'string', description: 'Absolute path to a locally generated PNG, JPEG, WebP or GIF inside an allowed folder.' },
+          altText: { type: 'string', description: 'Short accessible description of the cover.' },
+          sourceTimestamp: { type: 'number', minimum: 0, description: 'Timestamp in seconds on the final edited timeline of the exact frame used as this cover background.' },
+          sourceFramePath: { type: 'string', description: 'Absolute path returned by save_frames for the exact edited-video frame used as the cover background.' }
+        },
+        required: ['path', 'sourceTimestamp', 'sourceFramePath']
+      }
+    },
+    titles: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 240 } },
+    description: { type: 'string', minLength: 1, maxLength: 30000, description: 'Complete description with real newline characters, including summary, chapters, QR links and hashtags.' },
+    tags: {
+      oneOf: [
+        { type: 'array', maxItems: 100, items: { type: 'string', minLength: 1, maxLength: 120 } },
+        { type: 'string', minLength: 1, description: 'Comma-separated tags.' }
+      ]
+    },
+    requestId: { type: 'string', description: 'Unique mutation id; reuse it only to retry the exact same uncertain request.' }
+  }, ['requestId']),
+  tool('get_video_packaging', 'Verify the thumbnails and metadata currently displayed in Video Packaging. Each thumbnail reports byteLength plus its saved source frame and final-timeline timestamp; a positive byteLength confirms the preview/download payload is present.', {}),
+  tool('clear_video_packaging', 'Clear every thumbnail, title, description and tag from the Video Packaging tool and focus that page.', {
+    requestId: { type: 'string', description: 'Unique mutation id; reuse it only to retry the exact same uncertain request.' }
+  }, ['requestId']),
+  tool('get_packaging_sources', 'Everything Video Packaging can work from, in one read: whether a project is loaded, which clips have sound, which already have a transcript or saved cover backgrounds, what was understood on an earlier pass, the links the QR tags carry, and where covers may be written. Call it first in any packaging run. Requires the Video Editor page to be open.', {}),
+  tool('save_frames', 'Write chosen frames of the FINISHED picture (as get_frames composited draws it: cuts, speed, zooms, captions, placed pictures, effects, tags) to disk at full size, beside the footage, as cover backgrounds. Returns each file path, its source timestamp and its outputTime on the finished video; use that path as sourceFramePath and that outputTime as sourceTimestamp in set_video_packaging. Refuses, before writing anything, instants that were cut out, fall inside a transition, or need a person cut-out this machine cannot compute (unfaithful_frame, with a suggestedTimestamp). Files are tied to the current edit; after a later change they no longer count.', {
+    clipId: { type: 'string' },
+    timestamps: { type: 'array', items: { type: 'number' }, minItems: 1, maxItems: 12 },
+    width: { type: 'number', minimum: 640, maximum: 3840, description: 'Defaults to 1920.' },
+    quality: { type: 'number', minimum: 0.5, maximum: 1, description: 'Defaults to 0.95.' },
+    label: { type: 'string', description: 'Stem for the written file names. Defaults to the clip file name.' },
+    requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while the frames are written.' }
+  }, ['clipId', 'timestamps']),
+  tool('get_packaging_tag_style', 'Write out the lettering a cover has to copy and return its path, its id and a description of it. The editor ships eleven styles (Classic is the default) and the reader may have loaded their own; whichever is current is what comes back. If the reader asked to be consulted, this opens the style picker on screen and waits for them before answering, so call it before drawing anything. Attach the returned image to every cover prompt.', {}),
+  tool('set_packaging_tag_style', 'Save an image on disk as the reader\'s own cover lettering and select it. The application keeps it across restarts, so this is only for a file the reader hands you — they choose among the shipped styles themselves, in Video Packaging.', {
+    path: { type: 'string' }
+  }, ['path']),
+  tool('set_video_understanding', 'Store what you understood about the video — summary, topics, chapters, highlights, language — so a later packaging run reuses it instead of reading the transcript and the frames again. Omitted fields keep their stored values.', {
+    summary: { type: 'string' },
+    topics: { type: 'array', items: { type: 'string' }, maxItems: 100 },
+    chapters: { type: 'array', maxItems: 200, items: { type: 'object', properties: { start: { type: 'number' }, title: { type: 'string' } }, required: ['start', 'title'], additionalProperties: false } },
+    highlights: { type: 'array', maxItems: 200, items: { type: 'object', properties: { clipId: { type: 'string' }, timestamp: { type: 'number' }, note: { type: 'string' } }, required: ['clipId', 'timestamp', 'note'], additionalProperties: false } },
+    language: { type: 'string' }
+  }),
+  tool('get_video_understanding', 'Read back what was stored about the video.', {}),
   tool('get_project', 'Read the complete versioned editor project.', {}),
   tool('list_assets', 'List every unique media asset and the clips that use it.', {}),
   tool('get_timeline', 'Read clips, source/output timing, cuts, captions and audio state.', {}),
@@ -219,7 +274,7 @@ const TOOLS = [
   }, ['path', 'requestId']),
   tool('close_editor', 'Save a recovery checkpoint and close the visible Electron editor process.', {}),
   tool('restart_editor', 'Save, restart, reopen and focus the visible Electron editor, restoring its recovery checkpoint when needed.', {}),
-  tool('finish_editing', 'Mark the AI edit complete and show the user a modal offering preview or immediate video rendering.', {
+  tool('finish_editing', 'Mark the AI edit complete and show the user a modal offering preview or immediate video rendering. The result carries videoPackaging.automatic, the project setting that decides what happens next: true, run the create-video-packaging workflow now; false, the edit is the whole job and no covers, titles, description or tags are made unless the user asks.', {
     summary: { type: 'string' }, requestId: { type: 'string' }
   }),
   tool('open_project', 'Open a saved editor project or settings document from an allowed path.', {
@@ -261,17 +316,18 @@ const TOOLS = [
     language: { type: 'string', description: 'Whisper language name, ISO alias such as pt/pt-BR/en, or auto. Omit/auto for spoken-language detection.' },
     denoise: { type: 'boolean' }, noiseEngine: { enum: ['gtcrn', 'rnnoise'], description: 'Defaults to gtcrn (Voice model).' },
     noiseStrength: { enum: ['gentle', 'balanced', 'maximum'] }, requestId: { type: 'string' },
-    timeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Whole-operation timeout.' },
-    stageTimeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Watchdog reset whenever decode, denoise, model-load or recognition advances to a new stage.' }
+    timeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Whole-operation timeout. Defaults to 600000 ms (10 minutes); smaller values are raised to 600000 ms.' },
+    stageTimeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Stage watchdog. Defaults to 600000 ms (10 minutes); smaller values are raised to 600000 ms. Resets when decode, denoise, model-load or recognition advances to a new stage.' }
   }, ['clipId']),
   tool('get_frames', 'Extract frames at exact timestamps for visual understanding. Source frames by default; set composited for the finished picture as the export will write it. The operation reports progress and can be cancelled through cancel_operation.', {
     clipId: { type: 'string' }, timestamps: { type: 'array', items: { type: 'number' }, minItems: 1, maxItems: 64 },
     width: { type: 'number', minimum: 96, maximum: 1280 }, quality: { type: 'number', minimum: 0.25, maximum: 0.95 },
-    composited: { type: 'boolean', description: 'Return the frame as exported, with zoom, captions, effects and placed pictures applied, at the project frame ratio. The only way to verify that a placed picture lands whole and in the right place. Reports subjectLayerRendered so an unavailable segmentation model is never mistaken for a correct middle layer.' },
+    composited: { type: 'boolean', description: 'Return the frame as exported, with zoom, captions, effects and placed pictures applied, at the project frame ratio. The only way to verify that a placed picture lands whole and in the right place. Each frame reports faithful (false for a source instant that was cut out, one inside a transition, or one whose person cut-out or effect could not be drawn) and subjectLayer; subjectLayerRendered is true only when every frame that needed the matte got it.' },
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while extraction runs.' }
   }, ['clipId', 'timestamps']),
   tool('get_contact_sheet', 'Sample a source interval uniformly for broad visual coverage. The operation reports progress and can be cancelled through cancel_operation.', {
     clipId: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, interval: { type: 'number', minimum: 0.25 }, width: { type: 'number' },
+    composited: { type: 'boolean', description: 'Sample the finished picture, as get_frames composited does. Each frame reports whether it is faithful to the export.' },
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while extraction runs.' }
   }, ['clipId']),
   tool('apply_edit_batch', 'Atomically simulate or apply up to 500 edits, including timed dynamic push-ins for emphasis. The result carries a `created` array, one entry per operation in order, naming whatever that operation made — captionId, imageId, videoEffectId, zoomId/pushInId, clipId. Read it instead of guessing an id: a dry run assigns the same ids the commit will, so they can be planned against.', {
@@ -370,7 +426,10 @@ function startMcpServer(callEditor, streams = {}) {
   const priorityTools = new Set([
     'health_check', 'get_operation_status', 'cancel_operation',
     'get_import_status', 'cancel_import', 'get_diagnostics', 'get_recovery_state',
-    'close_editor', 'restart_editor'
+    'close_editor', 'restart_editor',
+    // Only moves the log panel. It must work while another call is waiting on
+    // the reader — the style picker holds the ordered lane for minutes.
+    'set_ai_control_log'
   ]);
   let mutationQueue = Promise.resolve();
 
@@ -386,8 +445,8 @@ function startMcpServer(callEditor, streams = {}) {
               ? message.params.protocolVersion
               : supported[0],
             capabilities: { tools: { listChanged: false } },
-            serverInfo: { name: 'simple-vlog-editor', version: '2.1.0' },
-            instructions: 'The visible editor is controlled through this server and checkpoints manual and MCP edits. Control tools remain responsive during long edits. Poll operation/import status, inspect transcripts and frames before editing, preserve projectRevision, give every project mutation a unique requestId, reuse that id only to retry the exact same uncertain request, and attach unspecified music as the project default soundtrack. Noise analysis never grants consent to alter audio: suppress noise only when the user explicitly asks, and only per media clip.'
+            serverInfo: { name: 'simple-vlog-editor', version: '2.2.0' },
+            instructions: 'The visible editor is controlled through this server and checkpoints manual and MCP edits. When the user asks for video thumbnails, titles, a description or tags, generate them and deliver them with set_video_packaging so they appear in the visible Video Packaging tool. Control tools remain responsive during long edits. Poll operation/import status, inspect transcripts and frames before editing, preserve projectRevision, give every mutation a unique requestId, reuse that id only to retry the exact same uncertain request, and attach unspecified music as the project default soundtrack. Noise analysis never grants consent to alter audio: suppress noise only when the user explicitly asks, and only per media clip.'
           };
           break;
         }

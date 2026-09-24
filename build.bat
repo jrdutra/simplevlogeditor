@@ -2,14 +2,22 @@
 setlocal enabledelayedexpansion
 
 rem ===========================================================================
-rem  SimpleVlogEditor - build completo (site + instalador Windows)
+rem  SimpleVlogEditor - build completo
 rem
-rem  Um comando so. O build do site chama o empacotamento do desktop no final,
-rem  e o instalador recem-gerado volta para dentro do site - entao ao terminar
-rem  as duas metades estao atualizadas e "web\dist\browser" ja pode subir.
+rem  Um comando so, nesta ordem:
+rem    1. plugins do Claude Code e do Codex (zips pequenos, sem o editor
+rem       embutido: procuram o editor instalado no computador)
+rem    2. site (web\dist\browser)
+rem    3. aplicativo desktop: instalador .exe + portatil .zip (electron-builder)
 rem
-rem  Uso:  build.bat          site + instalador
-rem        build.bat site     apenas o site (sem esperar o empacotamento)
+rem  A pasta ai-client\simplevlogeditor-codex-plugin e a raiz do repositorio GitHub do plugin
+rem  do Codex (marketplace + plugins\simple-vlog-editor): nao ha copia para
+rem  atualizar, basta fazer commit dela depois do build.
+rem
+rem  Ao terminar, "web\dist\browser" ja pode subir com tudo dentro.
+rem
+rem  Uso:  build.bat          tudo (site + instalador + os 2 plugins)
+rem        build.bat site     apenas o site (sem empacotar o desktop)
 rem ===========================================================================
 
 cd /d "%~dp0"
@@ -20,7 +28,11 @@ if /i "%MODO%"=="site" (set "ALVO=build:site") else (set "ALVO=build")
 echo.
 echo ===============================================
 echo   SimpleVlogEditor
-if /i "%MODO%"=="site" (echo   site apenas) else (echo   site + instalador Windows)
+if /i "%MODO%"=="site" (
+  echo   site apenas
+) else (
+  echo   site + instalador + plugins
+)
 echo ===============================================
 echo.
 
@@ -66,6 +78,10 @@ set "FALHA=!errorlevel!"
 popd
 if not "!FALHA!"=="0" goto :fim_erro
 
+set "CODEX_VER="
+for /f tokens^=2^ delims^=:^,^"^  %%V in ('findstr /c:version "ai-client\simplevlogeditor-codex-plugin\plugins\simple-vlog-editor\.codex-plugin\plugin.json"') do if not defined CODEX_VER set "CODEX_VER=%%V"
+if not defined CODEX_VER set "CODEX_VER=?"
+
 rem --- resumo -----------------------------------------------------------------
 
 echo.
@@ -98,9 +114,34 @@ if exist "%ZIP%" (
   echo   Portatil:         !MBZ! MB  ^(SimpleVlogEditor-Portable.zip^)
 )
 
-if /i not "%MODO%"=="site" echo   Saida bruta:      %~dp0electron\release
+echo.
+echo   Plugins de IA:
+call :tamanho "%PASTA%\simple-vlog-editor-claude.zip" "Claude Code  "
+call :tamanho "%PASTA%\simple-vlog-editor-codex.zip" "Codex        "
+echo.
+echo   GitHub ^(Codex^):   %~dp0ai-client\simplevlogeditor-codex-plugin  ^(plugin !CODEX_VER!^)
+
+if /i not "%MODO%"=="site" (
+  echo.
+  echo   Saida bruta:      %~dp0electron\release
+)
 echo.
 pause
+exit /b 0
+
+:tamanho
+if exist "%~1" (
+  for %%F in ("%~1") do set "BYTESP=%%~zF"
+  set /a KBP=!BYTESP!/1024
+  if !KBP! GEQ 1024 (
+    set /a MBP=!KBP!/1024
+    echo     %~2 !MBP! MB  ^(%~nx1^)
+  ) else (
+    echo     %~2 !KBP! KB  ^(%~nx1^)
+  )
+) else (
+  echo     %~2 nao gerado  ^(%~nx1^)
+)
 exit /b 0
 
 :fim_erro

@@ -59,7 +59,8 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
     },
     commands: [
       'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'add_media', 'open_project', 'save_project', 'set_project_soundtrack', 'finish_editing', 'preview',
-      'analyze_silence', 'analyze_noise', 'suppress_noise', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export'
+      'analyze_silence', 'analyze_noise', 'suppress_noise', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export',
+      'get_packaging_sources', 'save_frames', 'get_packaging_tag_style'
     ],
     operationTypes: [
       'remove_clip', 'move_clip', 'duplicate_clip', 'add_text_clip', 'update_text_clip', 'set_text_background',

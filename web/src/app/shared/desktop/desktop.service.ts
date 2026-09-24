@@ -12,7 +12,7 @@ export interface AgentControlState {
   active: boolean;
   visible?: boolean;
   connectionStatus?: 'idle' | 'connected' | 'disconnected' | 'reconnecting';
-  controller: 'codex' | 'chatgpt' | 'mcp';
+  controller: 'codex' | 'chatgpt' | 'claude-code' | 'mcp';
   controllers: string[];
   sessionId?: string;
   lastConnectionAt?: string | null;
@@ -41,6 +41,7 @@ export interface AgentRuntimeInfo {
 interface DesktopBridge {
   platform: string;
   minimize(): void;
+  focus?(): void;
   toggleMaximize(): void;
   close(): void | Promise<void>;
   getState(): Promise<DesktopWindowState>;
@@ -50,6 +51,7 @@ interface DesktopBridge {
   getAgentRuntimeInfo?(): Promise<AgentRuntimeInfo>;
   checkpointProject?(payload: { document: unknown; projectRevision: number; reason: string }): Promise<unknown>;
   clearProjectCheckpoint?(payload: { projectRevision: number; reason: string }): Promise<unknown>;
+  purgeProjectRecovery?(payload: { projectRevision: number; reason: string }): Promise<unknown>;
   registerBeforeCloseHandler?(handler: () => Promise<void>): () => void;
   /** Added after the first release; absent in a window built before it. */
   reconnectFiles?(): Promise<boolean>;
@@ -61,6 +63,8 @@ interface DesktopBridge {
   reportAgentProgress?(progress: Record<string, unknown>): void;
   /** Resolves admitted paths to small descriptors; bytes stay on disk. */
   readAgentFiles?(paths: string[]): Promise<DesktopFileDescriptor[]>;
+  /** Creates an output folder inside an allowed root. Absent in a window built before Video Packaging. */
+  ensureAgentFolder?(path: string): Promise<string>;
   openAgentOutput?(path: string): Promise<string>;
   writeAgentOutput?(id: string, position: number, data: ArrayBuffer): Promise<number>;
   closeAgentOutput?(id: string): Promise<void>;
@@ -70,11 +74,15 @@ interface DesktopBridge {
   rememberFolders?(paths: string[]): Promise<RootState & { granted: string[] }>;
   ensureRoots?(paths: string[]): Promise<RootState & { missing: MissingRoot[] }>;
   listRoots?(): Promise<RootState>;
-  addRoot?(): Promise<RootState & { granted: string | null; cancelled: boolean }>;
+  addRoot?(purpose?: 'packaging'): Promise<RootState & { granted: string | null; cancelled: boolean }>;
   removeRoot?(folder: string): Promise<RootState & { removed: boolean }>;
   requestRootConsent?(request: { path: string; folder?: string }): Promise<RootConsentResult>;
   onRootState?(listener: (state: RootState) => void): () => void;
 }
+
+/** A persistent shell handler can decline a command so the active tool may handle it. */
+export const AGENT_REQUEST_NOT_HANDLED = Symbol('agent-request-not-handled');
+type AgentRequestHandler = (request: unknown) => Promise<unknown> | unknown;
 
 /** A path the editor may not reach yet, and the folder that would allow it. */
 export interface MissingRoot { path: string; folder: string; }
@@ -126,6 +134,10 @@ export class DesktopService {
   private readonly zone = inject(NgZone);
   private readonly bridge: DesktopBridge | undefined =
     typeof window === 'undefined' ? undefined : window.desktop;
+  private readonly agentHandlers = new Set<AgentRequestHandler>();
+  private agentBridgeStop: (() => void) | null = null;
+  private agentHandlerVersion = 0;
+  private readonly agentHandlerWaiters = new Set<() => void>();
 
   /** True only inside the desktop shell. */
   readonly isDesktop = !!this.bridge;
@@ -269,9 +281,9 @@ export class DesktopService {
     return result;
   }
 
-  async addRoot(): Promise<{ granted: string | null; cancelled: boolean } | null> {
+  async addRoot(purpose?: 'packaging'): Promise<{ granted: string | null; cancelled: boolean } | null> {
     if (!this.bridge?.addRoot) return null;
-    const result = await this.bridge.addRoot();
+    const result = await this.bridge.addRoot(purpose);
     this.zone.run(() => this.roots.set(result));
     return result;
   }
@@ -340,9 +352,13 @@ export class DesktopService {
     }
   }
 
-  registerAgentHandler(handler: (request: unknown) => Promise<unknown>): () => void {
-    return this.bridge?.registerAgentHandler?.((request, respond) => {
-      handler(request).then(
+  registerAgentHandler(handler: AgentRequestHandler): () => void {
+    this.agentHandlers.add(handler);
+    this.agentHandlerVersion++;
+    for (const wake of [...this.agentHandlerWaiters]) wake();
+
+    if (!this.agentBridgeStop) this.agentBridgeStop = this.bridge?.registerAgentHandler?.((request, respond) => {
+      this.dispatchAgentRequest(request).then(
         (result) => respond({ result }),
         (error) => respond({
           error: {
@@ -362,7 +378,46 @@ export class DesktopService {
           }
         })
       );
-    }) ?? (() => undefined);
+    }) ?? null;
+
+    return () => {
+      this.agentHandlers.delete(handler);
+      this.agentHandlerVersion++;
+    };
+  }
+
+  private async dispatchAgentRequest(request: unknown): Promise<unknown> {
+    const deadline = Date.now() + 10_000;
+    while (true) {
+      const version = this.agentHandlerVersion;
+      for (const handler of [...this.agentHandlers]) {
+        try {
+          const result = await handler(request);
+          if (result !== AGENT_REQUEST_NOT_HANDLED) return result;
+        } catch (error) {
+          const code = error && typeof error === 'object' && 'code' in error
+            ? String((error as { code?: unknown }).code ?? '') : '';
+          if (code !== 'unknown_command') throw error;
+        }
+      }
+      if (Date.now() >= deadline) {
+        const name = request && typeof request === 'object' && 'name' in request
+          ? String((request as { name?: unknown }).name ?? '') : '';
+        throw Object.assign(new Error(`No active tool handles "${name || 'this command'}".`), { code: 'unknown_command' });
+      }
+      await new Promise<void>((resolve) => {
+        let timer = 0;
+        const wake = () => done();
+        const done = () => {
+          window.clearTimeout(timer);
+          this.agentHandlerWaiters.delete(wake);
+          resolve();
+        };
+        timer = window.setTimeout(done, 250);
+        this.agentHandlerWaiters.add(wake);
+        if (this.agentHandlerVersion !== version) done();
+      });
+    }
   }
 
   registerAgentCancelHandler(handler: (operationId: string) => void): () => void {
@@ -395,6 +450,19 @@ export class DesktopService {
     if (!this.bridge?.clearProjectCheckpoint) return false;
     await this.bridge.clearProjectCheckpoint({ projectRevision, reason });
     return true;
+  }
+
+  /**
+   * "Clear all": removes every recovery checkpoint and AI temporary the desktop
+   * editor left in any folder, not only the current one. Falls back to the
+   * single checkpoint on an older desktop build.
+   */
+  async purgeProjectRecovery(projectRevision: number, reason = 'Clear all'): Promise<boolean> {
+    if (this.bridge?.purgeProjectRecovery) {
+      await this.bridge.purgeProjectRecovery({ projectRevision, reason });
+      return true;
+    }
+    return this.clearProjectCheckpoint(projectRevision, reason);
   }
 
   registerBeforeCloseHandler(handler: () => Promise<void>): () => void {
@@ -451,6 +519,21 @@ export class DesktopService {
     }
   }
 
+  /**
+   * Makes sure a folder exists before anything is written into it.
+   *
+   * Video Packaging keeps its covers and its lettering reference beside the
+   * footage, in a folder that will not exist the first time. Older windows have
+   * no such bridge, and say so rather than failing later on the first write.
+   */
+  async ensureAgentFolder(path: string): Promise<string> {
+    if (!this.bridge?.ensureAgentFolder) {
+      throw new Error('This version of the desktop app cannot create the output folder. Install the current editor.');
+    }
+    await this.ensureAllowed([path], 'write into this folder');
+    return this.bridge.ensureAgentFolder(path);
+  }
+
   async openAgentOutput(path: string): Promise<{
     write(chunk: { data?: BufferSource; position?: number } | BufferSource): Promise<void>;
     close(): Promise<void>;
@@ -481,6 +564,10 @@ export class DesktopService {
 
   minimize(): void {
     this.bridge?.minimize();
+  }
+
+  focus(): void {
+    this.bridge?.focus?.();
   }
 
   toggleMaximize(): void {

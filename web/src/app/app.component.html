@@ -13,6 +13,9 @@
     <a class="brand" routerLink="/" aria-label="SimpleVlogEditor home">
       <img class="brand__mark" src="/assets/icons/icon-256.png" alt="" width="34" height="34">
       <span class="brand__name">SimpleVlogEditor</span>
+      @if (appVersion) {
+        <span class="brand__version" title="Version {{ appVersion }}">v{{ appVersion }}</span>
+      }
     </a>
 
     <!-- Which of the six is open, beside the name of the site — the way a
@@ -112,24 +115,24 @@
           <a
             class="download-menu__item download-menu__item--plugin download-menu__item--codex"
             role="menuitem"
-            [href]="download.codexPluginPath"
-            download
-            (click)="closeDownloadMenu()">
+            [href]="download.codexPluginRepository"
+            (click)="openPluginGuide('codex', $event)">
             <img class="download-menu__mark" src="/assets/icons/codex-mark.svg" alt="" aria-hidden="true">
             <span class="download-menu__name">Codex plugin</span>
-            <span class="download-menu__detail">.zip · import it, or unzip and import the folder</span>
+            <span class="download-menu__detail">GitHub · copies the address to add in Codex</span>
           </a>
 
           <a
             class="download-menu__item download-menu__item--plugin download-menu__item--claude"
             role="menuitem"
-            [href]="download.claudePluginPath"
-            download
-            (click)="closeDownloadMenu()">
+            [href]="download.claudePluginRepository"
+            (click)="openPluginGuide('claude', $event)">
             <img class="download-menu__mark" src="/assets/icons/claude-mark.svg" alt="" aria-hidden="true">
             <span class="download-menu__name">Claude Code plugin</span>
-            <span class="download-menu__detail">.zip · import it, or unzip and import the folder</span>
+            <span class="download-menu__detail">GitHub · copies the address and shows installation steps</span>
           </a>
+
+
         </div>
       </div>
     }
@@ -267,8 +270,8 @@
     }
   </nav>
 
-  <main class="stage" #stage>
-    <router-outlet></router-outlet>
+  <main class="stage" #stage tabindex="-1">
+    <router-outlet (detach)="setToolVisible($event, false)" (attach)="setToolVisible($event, true)"></router-outlet>
   </main>
 
   <app-privacy-panel />
@@ -277,6 +280,129 @@
        inside the desktop shell the reader already has both. -->
   @if (!desktop.isDesktop) {
     <app-about-panel />
+  }
+
+  @if (pluginGuide.client(); as client) {
+    <div class="plugin-guide-backdrop" (click)="closePluginGuide()">
+      <section
+        class="plugin-guide"
+        [class.plugin-guide--codex]="client === 'codex'"
+        [class.plugin-guide--claude]="client === 'claude'"
+        role="dialog"
+        aria-modal="true"
+        [attr.aria-labelledby]="'plugin-guide-title-' + client"
+        (click)="$event.stopPropagation()">
+        <header class="plugin-guide__header">
+          <img
+            class="plugin-guide__mark"
+            [src]="client === 'codex' ? '/assets/icons/codex-mark.svg' : '/assets/icons/claude-mark.svg'"
+            alt="">
+          <div>
+            <p class="plugin-guide__eyebrow">SimpleVlogEditor + AI</p>
+            <h2 [id]="'plugin-guide-title-' + client">
+              Use with {{ client === 'codex' ? 'Codex' : 'Claude Code' }}
+            </h2>
+          </div>
+          <button type="button" class="plugin-guide__close" aria-label="Close installation guide" (click)="closePluginGuide()">
+            <mat-icon aria-hidden="true">close</mat-icon>
+          </button>
+        </header>
+
+        <div class="plugin-guide__body">
+          <section class="plugin-guide__step">
+            <div class="plugin-guide__step-heading">
+              <span class="plugin-guide__step-number">Step 1</span>
+              <h3>Install the latest editor</h3>
+            </div>
+            <p>
+              Download and run the Windows installer before installing the AI plugin.
+              The editor and its plugins are updated together.
+            </p>
+            <div class="plugin-guide__version">
+              <span>Latest editor version</span>
+              <strong>v{{ download.info()?.version || appVersion }}</strong>
+              <a class="plugin-guide__action" [href]="download.installerPath" download>
+                <mat-icon aria-hidden="true">download</mat-icon>
+                Download installer
+              </a>
+            </div>
+            <div class="plugin-guide__warning" role="note">
+              <mat-icon aria-hidden="true">warning</mat-icon>
+              <p>
+                <strong>Important:</strong> verify that SimpleVlogEditor is on the latest version shown above.
+                An older editor can cause errors while editing or rendering videos.
+              </p>
+            </div>
+            <ol class="plugin-guide__list">
+              <li>Close SimpleVlogEditor if it is open.</li>
+              <li>Uninstall the currently installed version of SimpleVlogEditor.</li>
+              <li>Restart your computer.</li>
+              <li>Run the new installer and keep the default installation folder.</li>
+              <li>Open the editor once after installation to confirm the update.</li>
+            </ol>
+          </section>
+
+          <section class="plugin-guide__step">
+            <div class="plugin-guide__step-heading">
+              <span class="plugin-guide__step-number">Step 2</span>
+              <h3>Install the {{ client === 'codex' ? 'Codex' : 'Claude Code' }} plugin</h3>
+            </div>
+            @if (client === 'codex') {
+              <p>
+                In Codex, open the <strong>Plugins</strong> menu, add the GitHub repository as a marketplace,
+                then install <strong>Simple Vlog Editor</strong>.
+              </p>
+            } @else {
+              <p>
+                In Claude Code, open the plugin menu, add the GitHub repository as a marketplace,
+                then install <strong>Simple Vlog Editor</strong>.
+              </p>
+            }
+
+            <div class="plugin-guide__plugin-version">
+              <mat-icon aria-hidden="true">extension</mat-icon>
+              <span>Current {{ client === 'codex' ? 'Codex' : 'Claude Code' }} plugin version</span>
+              <strong>v{{ pluginVersions[client] }}</strong>
+            </div>
+
+            <div class="plugin-guide__repository">
+              <code>{{ client === 'codex' ? download.codexPluginRepository : download.claudePluginRepository }}</code>
+              <button type="button" class="plugin-guide__copy" (click)="copyPluginRepository(client)">
+                <mat-icon aria-hidden="true">{{ pluginGuide.repositoryCopied() ? 'check' : 'content_copy' }}</mat-icon>
+                {{ pluginGuide.repositoryCopied() ? 'Copied' : 'Copy GitHub URL' }}
+              </button>
+            </div>
+
+            <div class="plugin-guide__shortcut">
+              <mat-icon aria-hidden="true">auto_awesome</mat-icon>
+              <p>
+                <strong>Easiest option:</strong> copy the URL above, paste it into a new
+                {{ client === 'codex' ? 'Codex task' : 'Claude Code chat' }}, and ask:
+                “Install the Simple Vlog Editor plugin directly from this GitHub repository.”
+              </p>
+            </div>
+
+            @if (client === 'codex') {
+              <div class="plugin-guide__commands" aria-label="Codex command alternative">
+                <span>Command alternative</span>
+                <code>codex plugin marketplace add {{ download.codexPluginRepository }}</code>
+                <code>codex plugin add simple-vlog-editor&#64;simple-vlog-editor</code>
+              </div>
+            } @else {
+              <div class="plugin-guide__commands" aria-label="Claude Code command alternative">
+                <span>Command alternative</span>
+                <code>/plugin marketplace add {{ download.claudePluginRepository }}</code>
+                <code>/plugin install simple-vlog-editor&#64;simplevlogeditor</code>
+              </div>
+            }
+            <p class="plugin-guide__restart">
+              Restart {{ client === 'codex' ? 'Codex and start a new task' : 'Claude Code and start a new session' }}
+              so the newly installed plugin is loaded.
+            </p>
+          </section>
+        </div>
+      </section>
+    </div>
   }
 
   <footer class="rack">
@@ -296,3 +422,9 @@
   </footer>
 
 </div>
+
+<!-- Rendered once, by the shell: a packaging run can be waiting on this
+     answer, and where the reader happens to be standing should not decide
+     whether they are asked. -->
+<app-tag-style-picker />
+<app-agent-activity />

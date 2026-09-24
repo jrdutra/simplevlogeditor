@@ -1,0 +1,64 @@
+  private async agentSaveFrames(
+    args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.summary.videoUsable && clip.summary.kind !== 'image') {
+      throw new EditorAgentError('This clip has no decodable picture.', 'media_unavailable');
+    }
+    const raw = args['timestamps'];
+    if (!Array.isArray(raw) || !raw.length || raw.length > 12) {
+      throw new EditorAgentError('timestamps must contain between 1 and 12 source times.', 'invalid_arguments');
+    }
+    const timestamps = raw.map((value, index) => finiteNumber(value, `timestamps[${index}]`));
+    const width = Math.round(Math.max(640, Math.min(3840,
+      args['width'] === undefined ? 1920 : finiteNumber(args['width'], 'width'))));
+    const quality = Math.max(0.5, Math.min(1,
+      args['quality'] === undefined ? 0.95 : finiteNumber(args['quality'], 'quality')));
+    const label = args['label'] === undefined
+      ? clip.summary.fileName
+      : stringValue(args['label'], 'label');
+
+    // Everything that can refuse does so before anything is written: the
+    // folder is only created once every frame has been composed faithfully.
+    const composed = await this.captureComposedFrames(
+      clip, timestamps, width, quality, signal, operationId, { strict: true }
+    ) as { frames: readonly { timestamp: number; outputTime: number; width: number; height: number; dataUrl: string }[] };
+
+    const folder = joinPath(this.packagingFolder(), 'frames');
+    await this.desktop.ensureAgentFolder(folder);
+
+    // The fingerprint pins each file to the edit it was composed from. A later
+    // cut, zoom, caption or effect changes it, and the file stops counting as
+    // a background of *this* video. See `editFingerprint`.
+    const fingerprint = editFingerprint(this.plan);
+    const stem = safeStem(label.replace(/\.[^.]+$/, ''));
+    const written: PackagingFrame[] = [];
+    for (const frame of composed.frames) {
+      const { bytes, mimeType } = bytesFromDataUrl(frame.dataUrl);
+      // Named after where the frame sits in the finished video, which is the
+      // clock the thumbnail's sourceTimestamp is checked against.
+      const name = `${stem}-t${stampOf(frame.outputTime)}.${extensionForMime(mimeType)}`;
+      written.push({
+        path: await this.writePackagingFile(folder, name, bytes),
+        clipId: clip.id,
+        timestamp: roundSeconds(frame.timestamp),
+        outputTime: frame.outputTime,
+        width: frame.width,
+        height: frame.height,
+        composited: true,
+        editFingerprint: fingerprint
+      });
+    }
+
+    this.packaging.recordFrames(written);
+    this.pushAgentLog('action', `Saved ${written.length} edited-video background(s) beside the footage`, 'save_frames', 'INFO');
+    return {
+      clipId: clip.id,
+      assetId: this.agentAssetId(clip),
+      folder,
+      composited: true,
+      frames: written,
+      nextStep: 'Hand these paths to the image generator as the background, with the tag style from get_packaging_tag_style. In set_video_packaging, give each cover the sourceFramePath of its background and its outputTime as sourceTimestamp.'
+    };
+  }
+

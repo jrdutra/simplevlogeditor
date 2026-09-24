@@ -30,8 +30,8 @@ const DOWNLOADS = path.resolve(__dirname, '..', 'src', 'assets', 'download');
 
 /** Source tree → the name the site links to. Both are relative to the repo. */
 const PLUGINS = [
-  { from: path.join('ai-client', 'claude', 'plugins', 'simple-vlog-editor'), to: 'simple-vlog-editor-claude.zip' },
-  { from: path.join('ai-client', 'codex', 'plugins', 'simple-vlog-editor'), to: 'simple-vlog-editor-codex.zip' }
+  { from: path.join('ai-client', 'simplevlogeditor-claude-plugin', 'plugins', 'simple-vlog-editor'), to: 'simple-vlog-editor-claude.zip' },
+  { from: path.join('ai-client', 'simplevlogeditor-codex-plugin', 'plugins', 'simple-vlog-editor'), to: 'simple-vlog-editor-codex.zip' }
 ];
 
 /** Never worth carrying to somebody else's machine. */

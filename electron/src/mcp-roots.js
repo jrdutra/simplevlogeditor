@@ -83,6 +83,10 @@ function deniedRoot(candidate, options = {}) {
   if (typeof candidate !== 'string' || !candidate.trim()) return 'a path is required';
   const resolved = impl.resolve(candidate);
   if (impl.dirname(resolved) === resolved) return 'it is a drive or filesystem root';
+  // Refused before the allowances are consulted: nothing re-admits these.
+  for (const entry of options.denied || []) {
+    if (entry && inside(impl, impl.resolve(entry), resolved)) return `it is inside the editor's own program folder, ${impl.resolve(entry)}`;
+  }
   for (const allowed of options.allowances || []) {
     if (allowed && inside(impl, impl.resolve(allowed), resolved)) return null;
   }
@@ -138,13 +142,20 @@ function defaultRoots(options = {}) {
 class RootStore {
   /**
    * @param {{platform?: string, env?: object, getPath?: (name: string) => string,
-   *          projectRoot?: string|null, allowances?: string[], onChange?: Function}} options
+   *          projectRoot?: string|null, allowances?: string[], denied?: string[],
+   *          onChange?: Function}} options
    */
   constructor(options = {}) {
     this.platform = options.platform || process.platform;
     this.env = options.env || process.env;
     this.impl = pathFor(this.platform);
     this.allowances = (options.allowances || []).filter(Boolean).map((entry) => this.impl.resolve(entry));
+    /**
+     * Extra refusals on top of the denylist — the running program's own
+     * folder. A plugin unpacked under Downloads carries the whole editor with
+     * it, and Downloads is allowed by default; its runtime is not media.
+     */
+    this.denied = (options.denied || []).filter(Boolean).map((entry) => this.impl.resolve(entry));
     this.listeners = new Set();
     if (options.onChange) this.listeners.add(options.onChange);
 
@@ -161,7 +172,7 @@ class RootStore {
     const kept = [];
     for (const candidate of candidates) {
       const resolved = this.impl.resolve(candidate);
-      const reason = deniedRoot(resolved, { platform: this.platform, env: this.env, allowances: this.allowances });
+      const reason = deniedRoot(resolved, { platform: this.platform, env: this.env, allowances: this.allowances, denied: this.denied });
       if (reason) {
         this.refusedByPolicy = [...new Set([...(this.refusedByPolicy || []), `${resolved} (${reason})`])];
         continue;
@@ -204,7 +215,7 @@ class RootStore {
   add(candidate, layer = 'consent') {
     if (!this.layers.has(layer)) throw new Error(`Unknown root layer: ${layer}`);
     const resolved = this.impl.resolve(String(candidate || ''));
-    const reason = deniedRoot(resolved, { platform: this.platform, env: this.env, allowances: this.allowances });
+    const reason = deniedRoot(resolved, { platform: this.platform, env: this.env, allowances: this.allowances, denied: this.denied });
     if (reason) return { added: false, root: resolved, reason };
     const current = this.layers.get(layer);
     if (current.some((entry) => this.#same(entry, resolved))) return { added: false, root: resolved, reason: null };
@@ -272,6 +283,8 @@ class RootStore {
   admits(candidate) {
     if (typeof candidate !== 'string' || !candidate.trim()) return false;
     const resolved = this.impl.resolve(candidate);
+    // A denied folder inside an allowed one stays denied.
+    if (this.denied.some((entry) => inside(this.impl, entry, resolved))) return false;
     return this.roots().some((root) => inside(this.impl, root, resolved));
   }
 

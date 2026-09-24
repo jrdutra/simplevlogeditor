@@ -57,7 +57,7 @@
 /* ------------------------------------------------------------------- grid */
 
 .grid-wrap {
-  max-width: 1180px;
+  max-width: 1500px;
   margin: clamp(2.5rem, 6vw, 4rem) auto 0;
 }
 
@@ -72,7 +72,7 @@
 }
 
 /*
- * Three across, then two, then one — and centred at every step.
+ * Four across on wide screens, then fewer columns as the viewport narrows.
  *
  * `auto-fit` with a max of 1fr would stretch the last row's cards to fill the
  * width, so a row of one would be a card three times the width of its
@@ -81,7 +81,7 @@
  */
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(280px, 340px));
+  grid-template-columns: repeat(auto-fit, minmax(260px, 340px));
   justify-content: center;
   gap: clamp(1rem, 2vw, 1.6rem);
   margin: 0;
@@ -250,6 +250,8 @@
     flex-direction: column;
     max-width: 1600px;
     margin: clamp(0.6rem, 2.4vh, 4rem) auto 0;
+    box-sizing: border-box;
+    padding: 0 0 clamp(0.5rem, 1.2vh, 0.8rem);
     overflow: hidden;
   }
 
@@ -270,18 +272,18 @@
    *
    * The cap is what keeps that from overflowing sideways. `--fit-column` is the
    * widest a column can be in this viewport; a row is never taller than the
-   * 16:9 height of that, so three cards always fit across. When the cap binds —
+   * 16:9 height of that, so four cards always fit across. When the cap binds —
    * a tall window, a short one — a little space is left under the grid, and
    * that is the honest answer: six landscape cards cannot fill a portrait hole
    * without being cropped into something else.
    */
   .grid {
     --fit-gap: clamp(0.45rem, 1.5vh, 1.6rem);
-    --fit-column: calc((min(1600px, 100vw - 2 * clamp(1rem, 3vw, 2.5rem)) - 2 * var(--fit-gap)) / 3);
+    --fit-column: calc((min(1600px, 100vw - 2 * clamp(1rem, 3vw, 2.5rem)) - 3 * var(--fit-gap)) / 4);
 
     flex: 1;
     min-height: 0;
-    grid-template-columns: repeat(3, auto);
+    grid-template-columns: repeat(4, auto);
     grid-template-rows: repeat(2, minmax(0, 1fr));
     align-content: center;
     gap: var(--fit-gap);

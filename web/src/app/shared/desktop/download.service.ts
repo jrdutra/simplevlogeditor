@@ -18,6 +18,11 @@ export interface InstallerInfo {
   installer: DownloadFile;
   /** Absent when the `zip` target was not built. */
   portable?: DownloadFile;
+  /** The AI plugins, when their sizes were recorded. Both find the installed editor. */
+  plugins?: {
+    claude?: DownloadFile;
+    codex?: DownloadFile;
+  };
 }
 
 /** Where the build always puts them. Every link is a plain link to these. */
@@ -33,6 +38,10 @@ export const PORTABLE_PATH = '/assets/download/SimpleVlogEditor-Portable.zip';
  */
 export const CLAUDE_PLUGIN_PATH = '/assets/download/simple-vlog-editor-claude.zip';
 export const CODEX_PLUGIN_PATH = '/assets/download/simple-vlog-editor-codex.zip';
+
+/** The Codex plugin is installed from its marketplace repository, not from a .zip. */
+export const CODEX_PLUGIN_REPOSITORY = 'https://github.com/jrdutra/simplevlogeditor-codex-plugin';
+export const CLAUDE_PLUGIN_REPOSITORY = 'https://github.com/jrdutra/simplevlogeditor-claude-plugin';
 
 /**
  * The desktop application, as something the site can offer.
@@ -56,6 +65,8 @@ export class DownloadService {
   readonly portablePath = PORTABLE_PATH;
   readonly claudePluginPath = CLAUDE_PLUGIN_PATH;
   readonly codexPluginPath = CODEX_PLUGIN_PATH;
+  readonly codexPluginRepository = CODEX_PLUGIN_REPOSITORY;
+  readonly claudePluginRepository = CLAUDE_PLUGIN_REPOSITORY;
 
   readonly info = signal<InstallerInfo | null>(null);
 
@@ -72,6 +83,70 @@ export class DownloadService {
       next: (info) => this.info.set(info),
       error: () => {}
     });
+  }
+
+  /**
+   * The Codex plugin: copies its repository address and says where to paste it.
+   * Bound to a link whose href is the repository, so without scripts it still
+   * leads somewhere useful.
+   */
+  async copyCodexRepository(event?: Event, announce = true): Promise<boolean> {
+    return this.copyPluginRepository('codex', event, announce);
+  }
+
+  async copyClaudeRepository(event?: Event, announce = true): Promise<boolean> {
+    return this.copyPluginRepository('claude', event, announce);
+  }
+
+  private async copyPluginRepository(
+    client: 'codex' | 'claude',
+    event?: Event,
+    announce = true
+  ): Promise<boolean> {
+    event?.preventDefault();
+    const address = client === 'codex' ? CODEX_PLUGIN_REPOSITORY : CLAUDE_PLUGIN_REPOSITORY;
+    const name = client === 'codex' ? 'Codex' : 'Claude Code';
+    let copied = false;
+    try {
+      await navigator.clipboard.writeText(address);
+      copied = true;
+    } catch {
+      try {
+        const field = document.createElement('textarea');
+        field.value = address;
+        field.setAttribute('readonly', '');
+        field.style.position = 'fixed';
+        field.style.opacity = '0';
+        document.body.appendChild(field);
+        field.select();
+        copied = document.execCommand('copy');
+        field.remove();
+      } catch { /* shown in the message below */ }
+    }
+    if (!announce) return copied;
+
+    window.alert(
+      (copied ? `The ${name} plugin repository was copied to your clipboard:\n\n`
+              : `Copy the ${name} plugin repository:\n\n`) +
+      `${address}\n\n` +
+      'The editor and the plugin are released together, so use the latest of both.\n\n' +
+      '1. Install the latest SimpleVlogEditor for Windows from this site, keeping the default folder. ' +
+      'If a version is already installed, uninstall it first, install the new one, and restart the computer.\n' +
+      '2. Node.js 18 or newer must be on the PATH.\n' +
+      (client === 'codex'
+        ? '3. In Codex, open Plugins, add a marketplace using this repository address, then install "Simple Vlog Editor". ' +
+          'If the plugin is already installed, remove it and install it again from the repository.\n' +
+          'Or run in a terminal:\n' +
+          `codex plugin marketplace add ${address}\n` +
+          'codex plugin add simple-vlog-editor@simple-vlog-editor\n' +
+          '4. Restart Codex and start a new task, so it loads the new version.'
+        : '3. In Claude Code, run these two commands:\n' +
+          `/plugin marketplace add ${address}\n` +
+          '/plugin install simple-vlog-editor@simplevlogeditor\n' +
+          'If the plugin is already installed, uninstall it and install it again from the repository.\n' +
+          '4. Restart Claude Code and start a new session, so it loads the new version.')
+    );
+    return copied;
   }
 
   /** "Windows app — version 1.0.0, 94 MB", once the manifest has arrived. */

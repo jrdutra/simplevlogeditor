@@ -1,5 +1,6 @@
-import { Directive, ElementRef, Inject, OnDestroy, OnInit, PLATFORM_ID } from '@angular/core';
+import { Directive, ElementRef, Inject, OnDestroy, OnInit, Optional, PLATFORM_ID } from '@angular/core';
 import { isPlatformBrowser } from '@angular/common';
+import { ToolVisibilityService } from './tool-visibility.service';
 
 /**
  * Moves its host element to the end of `<body>` for as long as it exists.
@@ -23,18 +24,22 @@ import { isPlatformBrowser } from '@angular/common';
   standalone: true
 })
 export class BodyPortalDirective implements OnInit, OnDestroy {
+  private unregister?: () => void;
   constructor(
     private readonly host: ElementRef<HTMLElement>,
-    @Inject(PLATFORM_ID) private readonly platformId: object
+    @Inject(PLATFORM_ID) private readonly platformId: object,
+    @Optional() private readonly visibility: ToolVisibilityService | null
   ) {}
 
   ngOnInit(): void {
     // Nothing to move while prerendering, and no `document` to move it into.
     if (!isPlatformBrowser(this.platformId)) return;
     document.body.appendChild(this.host.nativeElement);
+    this.unregister = this.visibility?.register(this.host.nativeElement);
   }
 
   ngOnDestroy(): void {
+    this.unregister?.();
     // Angular removes the node through its real parent, so this is belt and
     // braces rather than a requirement — but a modal left behind by a missed
     // teardown would cover the whole page, and that is not a failure worth

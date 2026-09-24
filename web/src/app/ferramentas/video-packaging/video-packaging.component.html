@@ -1,0 +1,127 @@
+@if (!showBuilder()) {
+  <section class="construction" aria-labelledby="video-packaging-heading">
+    <div class="construction__icon" aria-hidden="true"><mat-icon>image_search</mat-icon></div>
+    <p class="construction__eyebrow">AI-powered tool</p>
+    <h1 id="video-packaging-heading">Video Packaging</h1>
+    <p class="construction__lead">
+      This tool requires an active Codex or Claude Code connection. Install the matching plugin, then open this page
+      from a connected AI session.
+    </p>
+    <div class="construction__connect" aria-label="AI plugin installation guides">
+      <button type="button" class="construction__ai-button construction__ai-button--codex"
+        (click)="pluginGuide.open('codex')">
+        <img src="/assets/icons/codex-mark.svg" alt="" aria-hidden="true">
+        <span><strong>Connect with Codex</strong><small>View installation guide</small></span>
+      </button>
+      <button type="button" class="construction__ai-button construction__ai-button--claude"
+        (click)="pluginGuide.open('claude')">
+        <img src="/assets/icons/claude-mark.svg" alt="" aria-hidden="true">
+        <span><strong>Connect with Claude Code</strong><small>View installation guide</small></span>
+      </button>
+    </div>
+    <a class="construction__back" routerLink="/">Back to all tools</a>
+  </section>
+} @else {
+  <section class="packaging-builder" aria-labelledby="packaging-builder-heading">
+    <header class="packaging-builder__header">
+      <div>
+        <p class="packaging-builder__eyebrow">Horizontal videos</p>
+        <h1 id="packaging-builder-heading">Video Packaging</h1>
+        <p>Three creative directions, complete titles, a video description and searchable tags.</p>
+      </div>
+      <div class="packaging-builder__header-actions">
+        @if (desktop.agentControl().active) {
+          <span class="packaging-builder__connection"><mat-icon aria-hidden="true">check_circle</mat-icon> AI connected</span>
+        } @else {
+          <span class="packaging-builder__connection packaging-builder__connection--preview">
+            <mat-icon aria-hidden="true">history</mat-icon> Last delivered package
+          </span>
+        }
+        <button type="button" class="packaging-builder__back" (click)="chooseStyle()">
+          <mat-icon aria-hidden="true">palette</mat-icon>
+          Style configuration
+        </button>
+      </div>
+    </header>
+
+    @if (actionError()) {
+      <p class="packaging-builder__error" role="alert">
+        <mat-icon aria-hidden="true">error_outline</mat-icon> {{ actionError() }}
+      </p>
+    }
+
+    <div class="packaging-builder__workspace">
+      <section class="packaging-builder__choices" aria-label="Generated thumbnail and title options">
+        @for (option of thumbnailOptions(); track option.id) {
+          <article class="thumbnail-option">
+            <div class="thumbnail-option__image">
+              @if (option.imageUrl) {
+                <img [src]="option.imageUrl" [alt]="'Generated thumbnail ' + option.id">
+              } @else {
+                <mat-icon aria-hidden="true">image</mat-icon>
+                <strong>Thumbnail {{ option.id }}</strong>
+                <span>16:9 preview</span>
+              }
+              <button type="button" class="thumbnail-action thumbnail-action--cover"
+                [disabled]="!option.imageUrl || savingThumbnail() !== null"
+                [title]="option.imageUrl ? coverActionLabel : 'Available after the cover is generated'"
+                (click)="saveThumbnail(option)">
+                <mat-icon aria-hidden="true">{{ desktop.isDesktop ? 'save' : 'download' }}</mat-icon>
+                {{ savingThumbnail() === option.id ? 'Saving…' : coverActionLabel }}
+              </button>
+            </div>
+            <div class="thumbnail-option__title">
+              <div class="thumbnail-option__title-heading">
+                <span>Title {{ option.id }}</span>
+                <button type="button" class="thumbnail-action thumbnail-action--copy"
+                  (click)="copyText(option.title, 'title-' + option.id)">
+                  <mat-icon aria-hidden="true">{{ copiedItem() === 'title-' + option.id ? 'check' : 'content_copy' }}</mat-icon>
+                  {{ copiedItem() === 'title-' + option.id ? 'Copied' : 'Copy title' }}
+                </button>
+              </div>
+              <p>{{ option.title }}</p>
+            </div>
+          </article>
+        }
+      </section>
+
+      <section class="packaging-output" aria-labelledby="video-description-heading">
+        <header>
+          <span class="packaging-output__icon"><mat-icon aria-hidden="true">description</mat-icon></span>
+          <div>
+            <p>Video metadata</p>
+            <h2 id="video-description-heading">Video description</h2>
+          </div>
+          <div class="packaging-output__actions">
+            <span class="packaging-output__badge">Chapters &amp; hashtags included</span>
+            <button type="button" class="thumbnail-action thumbnail-action--copy"
+              (click)="copyText(videoDescription(), 'description')">
+              <mat-icon aria-hidden="true">{{ copiedItem() === 'description' ? 'check' : 'content_copy' }}</mat-icon>
+              {{ copiedItem() === 'description' ? 'Copied' : 'Copy description' }}
+            </button>
+          </div>
+        </header>
+        <div class="packaging-output__placeholder" [class.packaging-output__placeholder--filled]="hasDescription()">
+          @if (!hasDescription()) {
+            <span></span><span></span><span></span><span></span>
+          }
+          <p>{{ videoDescription() }}</p>
+        </div>
+      </section>
+
+      <section class="packaging-tags" aria-labelledby="video-tags-heading">
+        <span class="packaging-output__icon"><mat-icon aria-hidden="true">sell</mat-icon></span>
+        <div>
+          <p>Discoverability</p>
+          <h2 id="video-tags-heading">Video tags</h2>
+        </div>
+        <p class="packaging-tags__placeholder">{{ videoTags() }}</p>
+        <button type="button" class="thumbnail-action thumbnail-action--copy"
+          (click)="copyText(videoTags(), 'tags')">
+          <mat-icon aria-hidden="true">{{ copiedItem() === 'tags' ? 'check' : 'content_copy' }}</mat-icon>
+          {{ copiedItem() === 'tags' ? 'Copied' : 'Copy tags' }}
+        </button>
+      </section>
+    </div>
+  </section>
+}

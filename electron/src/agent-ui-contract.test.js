@@ -23,14 +23,34 @@ test('agent modal is viewport-bounded with internal scrolling and narrow/low bre
   assert.match(css, /@media \(max-height:\s*620px\)/);
 });
 
+// The log is global now: one panel in the application shell, on every tab.
+// The editor's own copy stays in its template but is switched off, so the
+// assertions below read the panel the reader actually sees.
+const activityRoot = path.resolve(editorRoot, '../../shared/ui');
+const activityHtml = fs.readFileSync(path.join(activityRoot, 'agent-activity.component.html'), 'utf8');
+const activityService = fs.readFileSync(path.join(activityRoot, 'agent-activity.service.ts'), 'utf8');
+const shellHtml = fs.readFileSync(path.resolve(editorRoot, '../../app.component.html'), 'utf8');
+
 test('agent log exposes timestamp, level, module, connection loss and diagnostic actions', () => {
-  assert.match(html, /line\.timestamp/);
-  assert.match(html, /line\.level/);
-  assert.match(html, /line\.module/);
-  assert.match(html, /Disconnected/);
-  assert.match(html, /Copiar diagnóstico/);
-  assert.match(html, /Salvar diagnóstico/);
-  assert.match(html, /Tentar novamente/);
+  assert.match(shellHtml, /<app-agent-activity \/>/, 'the shell must render the global log');
+  assert.match(activityHtml, /line\.timestamp/);
+  assert.match(activityHtml, /line\.level/);
+  assert.match(activityHtml, /line\.module/);
+  assert.match(activityHtml, /Disconnected/);
+  assert.match(activityHtml, /Copy diagnostic/);
+  assert.match(activityHtml, /Save diagnostic/);
+  assert.match(activityHtml, /activity\.retry\(\)/);
+});
+
+test('the editor\'s old log panel stays switched off, so there is only one', () => {
+  const panels = html.match(/@if \((false && )?\(desktop\.agentControl\(\)\.visible \|\| desktop\.agentControl\(\)\.active\) && !agentPanelDismissed/g) ?? [];
+  assert.ok(panels.length > 0, 'the old panel markers moved; update this test');
+  for (const panel of panels) assert.match(panel, /false && /, 'an editor-local log panel is live again');
+});
+
+test('the global log keeps a minimised panel minimised between commands', () => {
+  const begin = /begin\(\): void \{([\s\S]*?)\n  \}/.exec(activityService)?.[1] ?? '';
+  assert.doesNotMatch(begin, /openValue\.set\(true\)/, 'starting a command must not reopen the panel');
 });
 
 test('render and AI completion are depth-styled modals that hand off cleanly to preview', () => {

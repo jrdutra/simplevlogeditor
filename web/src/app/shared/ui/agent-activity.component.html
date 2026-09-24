@@ -1,0 +1,63 @@
+@if ((desktop.agentControl().visible || desktop.agentControl().active) && !activity.dismissed()) {
+  @if (!activity.open()) {
+    <div class="agent-pill" [class]="controller.theme">
+      <button type="button" (click)="activity.show()" title="Maximize AI control log">
+        <img [src]="controller.icon" alt="" aria-hidden="true">
+        <span><strong>{{ controller.label }}</strong> control log</span>
+        <span class="agent-pulse" aria-hidden="true"></span>
+      </button>
+      <button type="button" class="agent-pill__close" (click)="activity.dismiss()" aria-label="Hide AI control log">
+        <mat-icon>close</mat-icon>
+      </button>
+    </div>
+  } @else {
+    <div class="agent-backdrop">
+      <section class="agent-modal" [class]="controller.theme" role="dialog" aria-modal="true" aria-labelledby="global-agent-title">
+        <header>
+          <span class="agent-mark"><img [src]="controller.icon" alt="" aria-hidden="true"></span>
+          <span class="agent-identity">
+            <strong id="global-agent-title">{{ controller.label }} is controlling SimpleVlogEditor</strong>
+            <span>Commands remain visible while you move between tools.</span>
+          </span>
+          <span class="agent-state"><span class="agent-pulse" aria-hidden="true"></span>
+            {{ !desktop.agentControl().active ? 'Disconnected' : activity.working() ? 'Working' : 'Connected' }}
+          </span>
+          <button type="button" class="agent-icon-button" (click)="activity.minimize()" title="Minimize control log" aria-label="Minimize control log">
+            <mat-icon>close_fullscreen</mat-icon>
+          </button>
+          <button type="button" class="agent-icon-button" (click)="activity.dismiss()" title="Hide control log" aria-label="Hide control log">
+            <mat-icon>close</mat-icon>
+          </button>
+        </header>
+        @if (activity.working()) { <mat-progress-bar mode="indeterminate"></mat-progress-bar> }
+        <div class="agent-tools">
+          <span><mat-icon>save</mat-icon> Recovery checkpoint: {{ desktop.agentControl().recoveryPath || 'ready' }}</span>
+          <button type="button" (click)="activity.clear()" [disabled]="activity.working() || !activity.lines().length">Clear log</button>
+        </div>
+        <div class="agent-console" #console (scroll)="onScroll()" role="log" aria-live="polite" tabindex="0">
+          @if (!activity.lines().length) {
+            <div class="agent-line"><span>[waiting]</span><span>[INFO]</span><span>[MCP bridge]</span><i>&gt;</i><b>Waiting for the next command…</b></div>
+          }
+          @for (line of activity.lines(); track line.seq) {
+            <div class="agent-line agent-line--{{ line.level.toLowerCase() }}">
+              <span>[{{ line.timestamp }}]</span><span>[{{ line.level }}]</span><span>[{{ line.module }}]</span>
+              <em>{{ line.percent === null ? '' : line.percent + '%' }}</em><i>{{ mark(line.kind) }}</i><b>{{ line.text }}</b>
+            </div>
+          }
+        </div>
+        @if (activity.diagnostic(); as diagnostic) {
+          <details class="agent-diagnostic">
+            <summary>Operation failed · {{ diagnostic.incidentId }} · {{ diagnostic.summary }}</summary>
+            <pre>{{ diagnostic.fullText }}</pre>
+            <div class="agent-tools">
+              <button type="button" (click)="copyDiagnostic()">Copy diagnostic</button>
+              <button type="button" (click)="saveDiagnostic()">Save diagnostic</button>
+              <button type="button" (click)="activity.retry()" [disabled]="activity.working() || !diagnostic.retryable">Retry</button>
+              <span>{{ diagnosticMessage() }}</span>
+            </div>
+          </details>
+        }
+      </section>
+    </div>
+  }
+}

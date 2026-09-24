@@ -18,9 +18,10 @@ import { MatButtonModule } from '@angular/material/button';
 import { MatIconModule } from '@angular/material/icon';
 import { MatProgressBarModule } from '@angular/material/progress-bar';
 import { MatProgressSpinnerModule } from '@angular/material/progress-spinner';
+import { Router } from '@angular/router';
 
 import { DataService } from '../../data.service';
-import { clampAutoZoom, describeZoomPlan, planAutoZooms } from '../../shared/media/auto-zoom';
+import { clampAutoZoom, describeZoomPlan, planAutoZooms, zoomScaleAt } from '../../shared/media/auto-zoom';
 import { LoudnessControlComponent } from '../../shared/media/loudness-control.component';
 import { GainEnvelope, LoudnessSettings, clampLoudness, describeLoudness, planGainEnvelope } from '../../shared/media/loudness';
 import { MediaProbeService } from '../juntador-de-midias/media-probe.service';
@@ -75,17 +76,20 @@ import {
   SuppressionProgress
 } from '../supressao-de-ruido/noise-suppression.models';
 import { BodyPortalDirective } from '../../shared/ui/body-portal.directive';
+import { AgentActivityService } from '../../shared/ui/agent-activity.service';
+import { ToolVisibilityService } from '../../shared/ui/tool-visibility.service';
 import { AgentRuntimeInfo, AgentSystemEvent, DesktopService, MissingRoot } from '../../shared/desktop/desktop.service';
 import {
   DesktopFileDescriptor, PathBackedFile, imageBitmapForFile, mediaObjectUrl, pathBackedPath, revokeMediaObjectUrl
 } from '../../shared/desktop/path-backed-file';
-import { composeFrame } from './frame-compositor';
+import { composeFrame, frameEffectWarning } from './frame-compositor';
+import { composedFidelity, describeFidelity, editFingerprint } from './composed-fidelity';
 import { captionBox } from './caption-renderer';
 import { editorCapabilities } from './editor-agent-capabilities';
 import { measureTag } from './tag-renderer';
 import { FrameContext, FrameSource } from './frame-source';
 import { SubjectMask, SubjectSegmentationClient } from './subject-segmentation';
-import { captionAt } from './video-editor-timeline';
+import { captionAt, videoEffectSectionAt } from './video-editor-timeline';
 import {
   IMAGE_LIMITS,
   IMAGE_RESTRAINED_ROTATION,
@@ -95,6 +99,7 @@ import {
   imageBox,
   imageKey,
   imagePlacement,
+  imageBehindSubject,
   imagesAt,
   loadPlanImages,
   isImageStyle,
@@ -125,7 +130,7 @@ import { TRANSITIONS, TRANSITION_SECONDS, transitionDefinition } from './video-t
 import { ClipEditsPanelComponent } from './clip-edits-panel.component';
 import { VideoEffectsGalleryComponent } from './video-effects-gallery.component';
 import { VideoEffectPreviewComponent } from './video-effect-preview.component';
-import { VideoEffect, VIDEO_EFFECTS, VIDEO_VISION_CAPABILITIES, effectDefinition, normalizeVideoEffect } from './video-effects';
+import { VideoEffect, VIDEO_EFFECTS, VIDEO_VISION_CAPABILITIES, effectDefinition, effectNeedsSubject, normalizeVideoEffect } from './video-effects';
 import {
   ClipNoiseSettings,
   DEFAULT_CLIP_NOISE,
@@ -199,9 +204,21 @@ import {
 } from './video-editor-defaults';
 import { HelpPanelComponent } from '../../shared/ui/help-panel.component';
 import {
+  PackagingFrame,
+  VideoPackagingService
+} from '../video-packaging/video-packaging.service';
+import {
+  bytesFromDataUrl,
+  extensionForMime,
+  joinPath,
+  packagingFolderFor,
+  safeStem,
+  stampOf
+} from '../video-packaging/packaging-paths';
+import {
   EDITOR_AGENT_API_VERSION,
   EditorAgentBatch,
-  EditorAgentError,
+  EditorAgentError, RECOVERABLE_AGENT_CODES,
   EditorAgentFrameRequest,
   EditorAgentOperation,
   EditorAgentProjectPatch,
@@ -257,6 +274,7 @@ import {
   rememberHandleAs
 } from './file-handle-store';
 import { AllowedFoldersComponent } from './allowed-folders.component';
+import { AGENT_MEDIA_TIMEOUT_MS, openAgentFrameDecoder } from './agent-frame-decoder';
 import {
   ClipAudioMode,
   ClipCaption,
@@ -773,6 +791,12 @@ interface AgentDiagnostic {
 }
 
 const AGENT_LOG_LIMIT = 500;
+/** How long an export waits for automatic listening before taking it over. */
+const EXPORT_LISTENING_WAIT_MS = 90_000;
+/** A clip being listened to for an export that reports nothing for this long is abandoned. */
+const EXPORT_LISTEN_STALL_MS = 45_000;
+/** The least time a clip is given before its listening counts as stuck, whatever its length. */
+const EXPORT_LISTEN_MIN_MS = 120_000;
 
 const STAGE_LABEL: Record<RenderProgress['stage'], string> = {
   preparing: 'Preparing',
@@ -867,6 +891,7 @@ function stemOf(fileName: string): string {
  */
 @Component({
   selector: 'app-editor-de-video',
+  providers: [ToolVisibilityService],
   standalone: true,
   imports: [
     CommonModule,
@@ -886,9 +911,9 @@ function stemOf(fileName: string): string {
     TransitionDialogComponent,
     TagDialogComponent,
     LoudnessControlComponent,
-    SilenceWaveformComponent
-  ,
-    HelpPanelComponent],
+    SilenceWaveformComponent,
+    HelpPanelComponent
+  ],
   templateUrl: './editor-de-video.component.html',
   styleUrls: [
     './editor-de-video.component.css',
@@ -1501,8 +1526,57 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     readonly desktop: DesktopService,
     private readonly zone: NgZone,
     private readonly cdr: ChangeDetectorRef,
+    readonly packaging: VideoPackagingService,
+    private readonly globalAgentActivity: AgentActivityService,
+    private readonly router: Router,
+    private readonly toolVisibility: ToolVisibilityService,
     @Inject(PLATFORM_ID) private readonly platformId: object
-  ) {}
+  ) {
+    // The style picker's hand-off with the AI control log lives in the shell
+    // now (AgentActivityService), because the log is global. What stays here is
+    // the one thing only this editor knows: what the edit currently is.
+    this.stopEditFingerprint = this.packaging.registerEditFingerprint(() => this.currentEditFingerprint());
+  }
+
+  /** Released on destroy, so a torn-down editor never vouches for frames. */
+  private stopEditFingerprint: (() => void) | null = null;
+  private fingerprintCache: { plan: ProjectPlan; value: string } | null = null;
+
+  /** The plan is cached until the edit changes, so its fingerprint can be too. */
+  private currentEditFingerprint(): string {
+    const plan = this.plan;
+    if (this.fingerprintCache?.plan !== plan) this.fingerprintCache = { plan, value: editFingerprint(plan) };
+    return this.fingerprintCache.value;
+  }
+
+  // ------------------------------------------------------------ the package
+
+  /** The button only appears once there is something to look at. */
+  get packagingReady(): boolean {
+    return this.packaging.hasContent();
+  }
+
+  openPackaging(): void {
+    void this.router.navigateByUrl('/video-packaging');
+  }
+
+  /** False while another tool's tab is in front and this editor is kept behind it. */
+  private toolActive = true;
+
+  onToolVisibilityChanged(active: boolean): void {
+    this.toolActive = active;
+    this.toolVisibility.setActive(active);
+    // ngOnInit does not run again for a kept editor, so the title it set is
+    // put back here when the tab returns.
+    if (active) this.dataService.setTituloAplicacao('Video Editor');
+    if (!active) {
+      this.closeAllDialogs();
+      this.closeTimelinePreview();
+      this.agentCompletionOpen = false;
+      this.stopTextPlayback();
+    }
+    this.cdr.detectChanges();
+  }
 
   ngOnInit(): void {
     this.dataService.setTituloAplicacao('Video Editor');
@@ -1521,7 +1595,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.stopAgentBridge = this.desktop.registerAgentHandler((request) =>
       this.zone.run(() => this.handleAgentRequest(request as EditorAgentRequest))
     );
-    this.stopAgentSystemEvents = this.desktop.onAgentSystemEvent((entry) => this.onAgentSystemEvent(entry));
+    // System events are collected by the application-wide activity service.
+    // Subscribing here as well would duplicate every bridge line while the
+    // Video Editor tab is mounted.
     this.stopAgentCancelBridge = this.desktop.registerAgentCancelHandler((operationId) => this.zone.run(() => {
       this.agentOperationControllers.get(operationId)?.abort();
       this.cancelAnalyses();
@@ -1545,6 +1621,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   ngOnDestroy(): void {
+    this.stopEditFingerprint?.();
+    this.stopEditFingerprint = null;
     onFilesChosenThroughPicker(null);
     this.desktop.registerRootConsentAsker(null);
     this.stopAgentConnected?.();
@@ -1617,6 +1695,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   private applyRestored(restored: RestoredProject): void {
+    this.packagingOutputFolder = null;
     this.restoring = true;
 
     try {
@@ -1735,6 +1814,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     for (const clip of this.clips) {
       if (isMediaClip(clip) && clip.awaitingFile && clip.fileRef && matchesRef(file, clip.fileRef)) {
         clip.file = file;
+        clip.sourcePath = pathBackedPath(file) || clip.sourcePath || clip.fileRef.path;
+        if (clip.sourcePath) clip.fileRef = { ...clip.fileRef, path: clip.sourcePath };
         clip.awaitingFile = false;
         clip.info = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
@@ -2274,6 +2355,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
             kind: 'media',
             id: `clip-${this.nextId++}`,
             file,
+            sourcePath: pathBackedPath(file),
             summary,
             info: null,
             overrides: null,
@@ -2778,6 +2860,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * back on the next reload — not even for six hundred milliseconds.
    */
   clear(): void {
+    this.packagingOutputFolder = null;
     this.closeAllDialogs();
     this.closeTimelinePreview();
     this.cancelAnalyses();
@@ -2804,6 +2887,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.clearMessages();
     this.forgetStoredCopy();
     this.touch();
+    // "Clear all" means all of it: the desktop recovery checkpoints an AI edit
+    // left in the user's folders go too, not only the one for this session.
+    if (this.desktop.isDesktop) {
+      void this.desktop.purgeProjectRecovery(this.revision).catch((error) => {
+        this.notice = `The timeline was cleared, but some recovery files could not be removed: ${error instanceof Error ? error.message : String(error)}`;
+        this.cdr.markForCheck();
+      });
+    }
   }
 
   /** Drops the stored project now, and any write that was about to happen. */
@@ -8486,10 +8577,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * finished analysis is kept on the clip until a setting invalidates it.
    */
   private async runPendingAnalyses(signal: AbortSignal): Promise<void> {
+    // Automatic listening that is still running is waited for — but never for
+    // ever: if it stops moving it is called off and the export listens itself.
     const cancelAutomatic = () => this.cancelAnalyses();
     signal.addEventListener('abort', cancelAutomatic, { once: true });
     try {
-      await this.waitForAutomaticListening();
+      const waited = await Promise.race([
+        this.waitForAutomaticListening().then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), EXPORT_LISTENING_WAIT_MS))
+      ]);
+      if (!waited) {
+        this.cancelAnalyses();
+        this.pushLog({ kind: 'clip', text: 'Automatic listening was taking too long; the export takes it over' });
+      }
     } finally {
       signal.removeEventListener('abort', cancelAutomatic);
     }
@@ -8498,13 +8598,17 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const pending = clipsNeedingAnalysis(this.clips, this.project).concat(
       this.clips.filter((clip): clip is MediaClip => isMediaClip(clip) && this.isStale(clip))
     );
-    const unique = pending.filter((clip, index) => pending.indexOf(clip) === index);
+    // A clip restored from a checkpoint or a saved project comes back with its
+    // pauses (`detected`) but without the waveform, which is never saved. When
+    // the pauses are all the export needs — no levelling, no automatic zoom —
+    // they are already known, and decoding the whole file again only to find
+    // the same ranges is time spent for nothing (and, on a slow disk, the
+    // export sitting at 0%).
+    const unique = pending
+      .filter((clip, index) => pending.indexOf(clip) === index)
+      .filter((clip) => this.isStale(clip) || !this.pausesAlreadyKnown(clip));
     if (!unique.length) return;
 
-    // Several at a time, in lanes, exactly as the button on the page does it.
-    // This is the queue that used to make a long export feel like two exports:
-    // the decoding runs in a worker, so doing them one after another left most
-    // of the machine idle while the reader watched a progress bar.
     let next = 0;
     let done = 0;
 
@@ -8526,26 +8630,92 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
         const clip = unique[next++];
         report(clip);
-
-        clip.info ??= await this.inspector.inspect(clip.file);
-        const strategy = await this.selector.select(clip.info, 'automatic', { hasCuts: true });
-        const settings = this.editsFor(clip).silence;
-
-        const analysis = await this.analyser.analyze(clip.file, clip.info, {
-          settings,
-          strategy,
-          signal,
-          onProgress: () => undefined
-        });
-
-        clip.analysis = analysis;
-        clip.detected = analysis.silenceRanges.map((range) => ({ ...range }));
-        clip.analyzedWith = { ...settings, autoZoom: { ...settings.autoZoom } };
+        await this.listenForExport(clip, signal);
         done++;
+        report(clip);
       }
     };
 
     await Promise.all(Array.from({ length: Math.min(this.analysisLanes, unique.length) }, lane));
+  }
+
+  /** The cuts of a clip are known and nothing else in the export needs its waveform. */
+  private pausesAlreadyKnown(clip: MediaClip): boolean {
+    if (clip.analysis) return true;
+    const edits = this.editsFor(clip);
+    if (this.project.loudness.enabled || edits.silence.autoZoom.enabled) return false;
+    return clip.detected.length > 0;
+  }
+
+  /**
+   * Listens to one clip for the export, and never lets it hang the export.
+   *
+   * A decode can stall — a file on a slow or sleeping disk, a GPU path that
+   * never answers, a worker that dies silently. Each attempt has a watchdog:
+   * no progress for a while, or far longer than the clip itself, and it is
+   * abandoned. It is tried once more on the CPU, alone; if that stalls too, the
+   * clip keeps whatever pauses it already had and the export goes on. That is a
+   * note in the render log, not an error: the video is still made.
+   */
+  private async listenForExport(clip: MediaClip, signal: AbortSignal): Promise<void> {
+    const duration = Math.max(1, clip.summary.durationSeconds || 60);
+    const budgetMs = Math.max(EXPORT_LISTEN_MIN_MS, duration * 4000);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      if (signal.aborted) throw new EditorCanceledError();
+      const controller = new AbortController();
+      const forward = () => controller.abort();
+      signal.addEventListener('abort', forward, { once: true });
+      let lastProgress = Date.now();
+      const started = Date.now();
+      let stalled = false;
+      const watchdog = setInterval(() => {
+        const now = Date.now();
+        if (now - lastProgress > EXPORT_LISTEN_STALL_MS || now - started > budgetMs) {
+          stalled = true;
+          controller.abort();
+        }
+      }, 1000);
+      try {
+        const work = (async () => {
+          clip.info ??= await this.inspector.inspect(clip.file);
+          lastProgress = Date.now();
+          const strategy = await this.selector.select(clip.info, 'automatic', { hasCuts: true });
+          const settings = this.editsFor(clip).silence;
+          const analysis = await this.analyser.analyze(clip.file, clip.info, {
+            settings,
+            strategy: attempt === 0 ? strategy : { ...strategy, audioAnalysisMode: 'worker' },
+            signal: controller.signal,
+            onProgress: () => { lastProgress = Date.now(); }
+          });
+          return { analysis, settings };
+        })();
+        // The inspector does not take a signal, so the watchdog also races it.
+        const aborted = new Promise<never>((_, reject) =>
+          controller.signal.addEventListener('abort', () => reject(new EditorCanceledError()), { once: true }));
+        work.catch(() => undefined);
+        const { analysis, settings } = await Promise.race([work, aborted]);
+        clip.analysis = analysis;
+        clip.detected = analysis.silenceRanges.map((range) => ({ ...range }));
+        clip.analyzedWith = { ...settings, autoZoom: { ...settings.autoZoom } };
+        return;
+      } catch (error) {
+        if (signal.aborted) throw new EditorCanceledError();
+        const reason = stalled ? 'stopped responding' : (error instanceof Error ? error.message : String(error));
+        if (attempt === 0) {
+          this.pushLog({ kind: 'clip', text: `Listening to ${clip.summary.fileName} ${stalled ? 'stalled' : 'failed'}; trying again on the CPU` });
+          continue;
+        }
+        this.pushLog({
+          kind: 'clip',
+          text: `${clip.summary.fileName} could not be listened to (${reason}); ` +
+            (clip.detected.length ? 'its pauses stay as they were' : 'it is kept without removing pauses')
+        });
+        return;
+      } finally {
+        clearInterval(watchdog);
+        signal.removeEventListener('abort', forward);
+      }
+    }
   }
 
   /** Builds only the enabled per-clip caches that export actually needs. */
@@ -9042,9 +9212,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (!isPlatformBrowser(this.platformId) || clip.summary.kind === 'audio') return;
 
     const url = mediaObjectUrl(clip.file);
+    let source: ImageBitmap | HTMLVideoElement | null = null;
 
     try {
-      const source =
+      source =
         clip.summary.kind === 'image'
           ? await imageBitmapForFile(clip.file).catch(() => null)
           : await this.grabFirstFrame(url, clip.summary.durationSeconds);
@@ -9074,11 +9245,15 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       );
 
       clip.thumbUrl = canvas.toDataURL('image/jpeg', 0.72);
-      if (typeof ImageBitmap !== 'undefined' && source instanceof ImageBitmap) source.close();
     } catch {
       /* A missing thumbnail costs nothing; a failed export would. */
     } finally {
-      URL.revokeObjectURL(url);
+      if (source instanceof HTMLVideoElement) {
+        source.pause();
+        source.removeAttribute('src');
+        source.load();
+      } else source?.close();
+      revokeMediaObjectUrl(url);
       this.cdr.markForCheck();
     }
   }
@@ -9087,7 +9262,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private grabFirstFrame(url: string, duration: number): Promise<HTMLVideoElement | null> {
     return new Promise((resolve) => {
       const video = document.createElement('video');
-      video.preload = 'metadata';
+      video.preload = 'auto';
       video.muted = true;
       video.playsInline = true;
 
@@ -9096,13 +9271,27 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        video.onloadedmetadata = null;
+        video.onloadeddata = null;
+        video.onseeked = null;
+        video.onerror = null;
+        // A timed-out thumbnail must release its HTTP connection and decoder.
+        // Successful captures are released after drawImage in captureThumbnail.
+        if (!value) {
+          video.pause();
+          video.removeAttribute('src');
+          video.load();
+        }
         resolve(value);
       };
 
       const timer = setTimeout(() => finish(null), THUMB_TIMEOUT);
 
-      video.onloadeddata = () => {
+      video.onloadedmetadata = () => {
         video.currentTime = Math.min(THUMB_TIME, Math.max(0, duration - 0.01));
+      };
+      video.onloadeddata = () => {
+        if (!video.seeking && video.currentTime >= Math.min(THUMB_TIME, Math.max(0, duration - 0.01))) finish(video);
       };
       video.onseeked = () => finish(video);
       video.onerror = () => finish(null);
@@ -9699,6 +9888,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** True when this clip's speed is currently being decided by the target. */
   isTimelapseTimed(clip: EditorClip): boolean {
     return isMediaClip(clip) && clip.speedFromTimelapse === true && this.project.timelapseTargetSeconds > 0;
+  }
+
+  /**
+   * Whether an AI edit ends by producing its Video Packaging.
+   *
+   * A project setting rather than a preference of the tool, so it travels with
+   * the project and its presets; the assistant reads it from finish_editing and
+   * from get_packaging_sources.
+   */
+  onAutoVideoPackaging(enabled: boolean): void {
+    if (enabled === this.project.autoVideoPackaging) return;
+    this.project = { ...this.project, autoVideoPackaging: enabled };
+    this.touch();
   }
 
   onTimelapseTarget(value: string | number): void {
@@ -10324,12 +10526,22 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.folderRequest = { ...missing, reason };
     this.pushAgentLog('action', `Waiting for permission to use ${missing.folder}`, 'Allowed folders', 'WARN');
     this.cdr.markForCheck();
+
+    // The question lives in this editor's template. With another tab in front
+    // it would be asked where nobody can see it, and whatever raised it would
+    // wait for ever — so the editor comes forward for the answer and then
+    // hands the screen back to the tab the reader was on.
+    const returnTo = this.toolActive ? null : this.router.url;
+    if (returnTo !== null) {
+      void this.router.navigateByUrl('/video-editor').then(() => this.desktop.focus());
+    }
     return new Promise<string | null>((resolve) => {
       this.resolveFolderRequest = (folder) => {
         this.resolveFolderRequest = null;
         this.folderRequest = null;
         this.cdr.markForCheck();
         resolve(folder);
+        if (returnTo && this.router.url.startsWith('/video-editor')) void this.router.navigateByUrl(returnTo);
       };
     });
   }
@@ -10669,17 +10881,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.currentAgentOperationId = operationId;
     this.desktop.reportAgentProgress({ operationId, state: 'processing', stage: 'started', percent: 0 });
     this.agentWorking = true;
+    this.globalAgentActivity.begin();
     if (!this.agentLogMinimizedByUser && !this.agentPanelDismissed) this.agentLogOpen = true;
     const startedAt = Date.now();
     this.agentProgressReset(request.name);
-    // Before the command, not after it fails: a resumed project is intact on
-    // disk and the agent should never have to be told to reconnect it by hand.
-    if (this.hasAwaitingFiles) await this.agentRelinkFromDisk();
-    if (request.name !== 'apply_edit_batch' && request.name !== '__has_media_path') this.pushAgentLog('command', this.agentCommandLabel(request.name, args), request.name, 'INFO');
-    else this.pushAgentLog('command', `Applying edit batch: ${this.agentBatchLabel(args)}`, request.name, 'INFO');
-    await this.paintAgentProgress();
 
     try {
+      if (request.name !== 'apply_edit_batch' && request.name !== '__has_media_path') this.pushAgentLog('command', this.agentCommandLabel(request.name, args), request.name, 'INFO');
+      else this.pushAgentLog('command', `Applying edit batch: ${this.agentBatchLabel(args)}`, request.name, 'INFO');
+      // Before the command, not after it fails: a resumed project is intact on
+      // disk and the agent should never have to be told to reconnect it by
+      // hand. Inside the try, so a failed relink still releases the operation.
+      if (this.hasAwaitingFiles) await this.agentRelinkFromDisk();
+      await this.paintAgentProgress();
+
       let result: unknown;
 
       switch (request.name) {
@@ -10715,6 +10930,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         case 'transcribe': result = await this.agentTranscribe(args, operationController.signal); break;
         case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest, operationController.signal, operationId); break;
         case 'get_contact_sheet': result = await this.agentContactSheet(args, operationController.signal, operationId); break;
+        case 'get_packaging_sources': result = this.agentPackagingSources(); break;
+        case 'save_frames': result = await this.agentSaveFrames(args, operationController.signal, operationId); break;
+        case 'get_packaging_tag_style': result = await this.agentPackagingTagStyle(); break;
         case 'export': result = await this.agentExport(args, operationController.signal, operationId); break;
         default: throw new EditorAgentError(`Unknown editor command "${request.name}".`, 'unknown_command');
       }
@@ -10729,9 +10947,32 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       return { apiVersion: EDITOR_AGENT_API_VERSION, projectRevision: this.revision, result };
     } catch (error) {
       const friendly = error instanceof Error ? error.message : String(error);
-      this.pushAgentLog('fail', `${friendly} (after ${this.agentElapsed(startedAt)})`, request.name, 'ERROR');
-      this.agentDiagnostic = await this.captureAgentDiagnostic(error, request);
-      this.agentDiagnosticMessage = '';
+      const code = error && typeof error === 'object' && 'code' in error ? String((error as { code?: unknown }).code ?? '') : '';
+      if (RECOVERABLE_AGENT_CODES.has(code) || code === 'cancelled') {
+        // A stall the host will retry, or a cancellation somebody asked for:
+        // a note in the console, not an incident panel. The error still
+        // travels to the host, marked recoverable, so it can retry or restart.
+        if (error instanceof EditorAgentError && code !== 'cancelled') {
+          const details = error.details && typeof error.details === 'object' ? error.details as Record<string, unknown> : {};
+          Object.assign(details, { recoverable: true, retryAfterMs: 1000 });
+          (error as { details?: unknown }).details = details;
+        }
+        // The import queue retries a stale revision by itself at once; saying
+        // so in the console would only be noise between two successful imports.
+        const silentRetry = code === 'revision_conflict' && request.name.startsWith('__');
+        if (!silentRetry) {
+          this.pushAgentLog('action', code === 'cancelled'
+            ? `${friendly} (after ${this.agentElapsed(startedAt)})`
+            : code === 'revision_conflict'
+              ? `The project moved on while this was on its way; it will be repeated on the current revision (after ${this.agentElapsed(startedAt)})`
+              : `${friendly} — recoverable; it will be retried (after ${this.agentElapsed(startedAt)})`, request.name, 'WARN');
+        }
+      } else {
+        this.pushAgentLog('fail', `${friendly} (after ${this.agentElapsed(startedAt)})`, request.name, 'ERROR');
+        this.agentDiagnostic = await this.captureAgentDiagnostic(error, request);
+        this.globalAgentActivity.setDiagnostic(this.agentDiagnostic, () => this.retryAgentDiagnostic());
+        this.agentDiagnosticMessage = '';
+      }
       this.desktop.reportAgentProgress({
         operationId,
         state: operationController.signal.aborted ? 'cancelled' : 'failed',
@@ -10742,6 +10983,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       this.agentOperationControllers.delete(operationId);
       if (this.currentAgentOperationId === operationId) this.currentAgentOperationId = '';
       this.agentWorking = false;
+      this.globalAgentActivity.end();
       await this.paintAgentProgress();
     }
   }
@@ -10814,6 +11056,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         return `${args['composited'] ? 'Checking the composed frame' : 'Inspecting frames'} from ${mediaName()} ${where}`.trim();
       }
       case 'get_contact_sheet': return `Understanding the pictures in ${mediaName()}`;
+      case 'get_packaging_sources': return 'Reading what Video Packaging can work from';
+      case 'save_frames': return `Saving ${Array.isArray(args['timestamps']) ? args['timestamps'].length : 0} cover background(s)`;
+      case 'get_packaging_tag_style': return 'Reading the cover lettering style';
       case 'export': return `Exporting project to ${String(args['path'] ?? '')}`;
       default: return `Running MCP command ${name}`;
     }
@@ -10881,6 +11126,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     timestamp = new Date().toISOString(),
     percent: number | null = null
   ): void {
+    this.globalAgentActivity.append(kind, text, module, level, timestamp, percent);
     this.agentLog.push({
       seq: this.agentLogSeq++,
       timestamp: this.formatAgentTimestamp(timestamp),
@@ -11086,6 +11332,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           manualCuts: clip.manualCuts,
           detectedSilences: clip.detected,
           speed: this.editsFor(clip).speed,
+          hasAudio: clip.summary.audioUsable === true,
+          isTimelapse: clip.summary.isTimelapse === true,
+          timelapseReason: clip.summary.timelapseReason ?? null,
+          speedFromTimelapse: clip.speedFromTimelapse === true,
           audioMode: this.editsFor(clip).audioMode,
           edits: this.editsFor(clip),
           captions: clip.captions ?? [],
@@ -11142,6 +11392,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (duplicate.present && args['skipDuplicates'] !== false) return { status: 'already_present', ...duplicate };
 
     const file = new PathBackedFile(descriptor);
+    // FFprobe does not look for timelapses; the browser probe does. A silent
+    // video gets the same check here, so the timelapse target and the agent's
+    // reading of the clip work the same whichever way it was imported.
+    await this.probe.detectTimelapseFor(file, summary);
     const waiting = this.clips.find((candidate): candidate is MediaClip =>
       isMediaClip(candidate) && !!candidate.awaitingFile && !!candidate.sourcePath &&
       this.agentPathKey(candidate.sourcePath) === this.agentPathKey(descriptor.filePath!)
@@ -11440,8 +11694,22 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // open would cover the preview as soon as the user chooses to watch it.
     this.agentLogOpen = false;
     this.agentCompletionOpen = true;
+    this.globalAgentActivity.minimize();
     this.cdr.markForCheck();
-    return { shown: true, choices: ['preview', 'render'], projectRevision: this.revision };
+    const automatic = this.project.autoVideoPackaging !== false;
+    return {
+      shown: true,
+      choices: ['preview', 'render'],
+      projectRevision: this.revision,
+      // The reader's own setting, in the project: whether this edit ends here
+      // or goes on to its covers, titles, description and tags.
+      videoPackaging: {
+        automatic,
+        nextStep: automatic
+          ? 'Automatic Video Packaging is on for this project: run create-video-packaging now.'
+          : 'Automatic Video Packaging is off for this project: the edit is the whole job. Do not generate covers, titles, a description or tags unless the user asks for them.'
+      }
+    };
   }
 
   closeAgentCompletion(): void {
@@ -12599,6 +12867,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       next.audioFormatId = patch.audioFormatId;
     }
     if (patch.timelapseTargetSeconds !== undefined) next.timelapseTargetSeconds = clampTimelapseTarget(patch.timelapseTargetSeconds);
+    if (patch.autoVideoPackaging !== undefined) {
+      if (typeof patch.autoVideoPackaging !== 'boolean') {
+        throw new EditorAgentError('autoVideoPackaging must be true or false.', 'invalid_arguments');
+      }
+      next.autoVideoPackaging = patch.autoVideoPackaging;
+    }
     if (patch.silentCutReplacementThreshold !== undefined) {
       next.silentCutReplacementThreshold = clampSilentCutReplacementThreshold(patch.silentCutReplacementThreshold);
     }
@@ -12790,9 +13064,51 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return task;
   }
 
+  /**
+   * A clip with no sound has nothing to transcribe, and that is not a failure.
+   *
+   * Drone shots, B-roll and timelapses are routinely silent. Treating them as
+   * an error stopped an agent's whole pass over a folder and filled the log
+   * with red for material that was perfectly usable. The answer is an empty
+   * transcript with a warning, plus what the editor knows about why the clip is
+   * silent — in particular whether it is a timelapse, which the editor checks
+   * here if the import did not.
+   */
+  private async agentSilentClipTranscript(clip: MediaClip): Promise<unknown> {
+    if (clip.summary.kind === 'video' && !clip.summary.isTimelapse && clip.file) {
+      const before = clip.summary.isTimelapse;
+      await this.probe.detectTimelapseFor(clip.file, clip.summary);
+      if (clip.summary.isTimelapse && !before) {
+        this.applyTimelapseTarget();
+        this.touch();
+      }
+    }
+    const timelapse = clip.summary.isTimelapse === true;
+    const warning = timelapse
+      ? `${clip.summary.fileName} has no audio track and looks like a timelapse (${clip.summary.timelapseReason ?? 'detected by the editor'}).`
+      : `${clip.summary.fileName} has no audio track; there is nothing to transcribe.`;
+    this.pushAgentLog('action', warning, 'transcribe', 'WARN');
+    return {
+      clipId: clip.id,
+      assetId: this.agentAssetId(clip),
+      timeSpace: 'source',
+      noAudio: true,
+      warning,
+      isTimelapse: timelapse,
+      timelapseReason: clip.summary.timelapseReason ?? null,
+      nextStep: timelapse
+        ? 'Treat it as a timelapse: understand it with get_contact_sheet, and unless the user said otherwise bring it to about 15 s (set_project_settings timelapseTargetSeconds: 15).'
+        : 'Understand it with get_contact_sheet and get_frames. A silent video may still be a timelapse the metadata did not reveal (fast clouds, traffic, shadows, crowds): judge from the frames.',
+      words: [],
+      segments: [],
+      outputWords: [],
+      quality: { wordCount: 0, wordsPerMinute: 0, reviewRecommended: false }
+    };
+  }
+
   private async agentTranscribeNow(args: Record<string, unknown>, outerSignal?: AbortSignal): Promise<unknown> {
     const clip = this.agentMediaClip(args['clipId']);
-    if (!clip.summary.audioUsable) throw new EditorAgentError('This clip has no decodable audio.', 'media_unavailable');
+    if (!clip.summary.audioUsable) return this.agentSilentClipTranscript(clip);
     if (typeof args['model'] === 'string') {
       const modelId = resolveTranscriptionModel(args['model']);
       if (!SPEECH_MODELS.some((model) => model.id === modelId)) {
@@ -12834,8 +13150,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const controller = new AbortController();
     const cancel = () => controller.abort();
     outerSignal?.addEventListener('abort', cancel, { once: true });
-    const timeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['timeoutMs']) || 15 * 60_000));
-    const stageTimeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['stageTimeoutMs']) || 5 * 60_000));
+    // Older agents send 60s/120s, which interrupts a healthy Whisper run.
+    // Keep explicit longer budgets, but always allow at least ten minutes.
+    const timeoutMs = Math.max(10 * 60_000, Math.min(3_600_000, Number(args['timeoutMs']) || 10 * 60_000));
+    const stageTimeoutMs = Math.max(10 * 60_000, Math.min(3_600_000, Number(args['stageTimeoutMs']) || 10 * 60_000));
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     let stageTimedOut = false;
@@ -12893,6 +13211,238 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     };
   }
 
+  // ----------------------------------------------------------- video packaging
+
+  private packagingOutputFolder: string | null = null;
+
+  /**
+   * Where covers and lettering are written: beside the footage they came from.
+   *
+   * Older projects may retain a path only in the stored reference, while
+   * native picker Files expose it through preload. Never guess by file name.
+   * Pathless media can use a folder explicitly chosen for this project.
+   */
+  private packagingFolder(): string {
+    for (const clip of this.clips.filter(isMediaClip)) {
+      const path = pathBackedPath(clip.file) || clip.sourcePath || clip.fileRef?.path;
+      if (!path) continue;
+      // Repair older, already-open projects without replacing their media or
+      // touching edits, analysis, clip ids or the timeline revision.
+      if (clip.sourcePath !== path) {
+        clip.sourcePath = path;
+        if (clip.fileRef) clip.fileRef = { ...clip.fileRef, path };
+        this.scheduleSave();
+      }
+      return packagingFolderFor(path);
+    }
+    if (this.packagingOutputFolder) return this.packagingOutputFolder;
+    throw new EditorAgentError(
+      'The media can be open without exposing a local path. Choose an output folder for Video Packaging; do not reimport the timeline.',
+      'path_unavailable',
+      { hint: 'In the desktop editor, save_frames or get_packaging_tag_style will ask for an output folder when needed.' }
+    );
+  }
+
+  private async ensurePackagingFolder(): Promise<string> {
+    try { return this.packagingFolder(); }
+    catch (error) {
+      if (!(error instanceof EditorAgentError) || error.code !== 'path_unavailable' || !this.desktop.isDesktop) throw error;
+    }
+    this.pushAgentLog('action', 'The media is available without local paths. Choose a folder for Video Packaging output; the edit will stay unchanged.', 'Video Packaging', 'INFO');
+    const choice = await this.desktop.addRoot('packaging');
+    if (!choice?.granted) {
+      throw new EditorAgentError('No Video Packaging output folder was selected or allowed. The project is unchanged.',
+        choice?.cancelled ? 'cancelled' : 'path_unavailable');
+    }
+    this.packagingOutputFolder = joinPath(choice.granted, 'video-packaging');
+    return this.packagingOutputFolder;
+  }
+
+  private async writePackagingFile(folder: string, name: string, bytes: Uint8Array): Promise<string> {
+    const target = joinPath(folder, name);
+    const output = await this.desktop.openAgentOutput(target);
+    try {
+      await output.write(bytes);
+      await output.close();
+    } catch (error) {
+      await output.abort().catch(() => undefined);
+      throw error;
+    }
+    return target;
+  }
+
+  /**
+   * Everything Video Packaging can work from, in one read.
+   *
+   * It exists so a packaging run never starts by guessing: whether there is a
+   * project at all, which clips have sound, which already have a transcript or
+   * a set of saved backgrounds, what was understood on an earlier pass, which
+   * links the QR tags carry, and where any of it may be written.
+   */
+  private agentPackagingSources(): unknown {
+    const media = this.clips.filter(isMediaClip);
+    const heard = [...this.heardByClip.keys()];
+    let folder: string | null = null;
+    try { folder = this.packagingFolder(); } catch { folder = null; }
+
+    // Only what a QR tag on the finished timeline actually encodes. A tag that
+    // was a QR code once and is a plain ribbon now can still carry the old
+    // payload, and that link is nowhere in the video.
+    const qrLinks = [...new Set(
+      (this.plan.tags ?? [])
+        .filter((segment) => !!segment.tag && shapeIsQr(segment.tag.shape))
+        .map((segment) => segment.tag.qrText)
+        .filter((text): text is string => typeof text === 'string' && !!text.trim())
+        .map((text) => text.trim())
+    )];
+
+    const style = this.packaging.tagStyle();
+    const understanding = this.packaging.understandingState();
+    const frames = this.packaging.currentFrames();
+    const staleFrames = this.packaging.frames().length - frames.length;
+
+    return {
+      apiVersion: EDITOR_AGENT_API_VERSION,
+      projectRevision: this.revision,
+      hasProject: media.length > 0,
+      clipCount: media.length,
+      duration: this.plan.totalDuration,
+      packagingFolder: folder,
+      framesFolder: folder ? joinPath(folder, 'frames') : null,
+      coversFolder: folder ? joinPath(folder, 'covers') : null,
+      clips: media.map((clip) => ({
+        clipId: clip.id,
+        assetId: this.agentAssetId(clip),
+        fileName: clip.summary.fileName,
+        sourcePath: pathBackedPath(clip.file) || clip.sourcePath || clip.fileRef?.path || null,
+        kind: clip.summary.kind,
+        durationSeconds: clip.summary.durationSeconds,
+        available: !clip.awaitingFile,
+        hasAudio: clip.summary.audioUsable === true,
+        hasPicture: clip.summary.videoUsable === true || clip.summary.kind === 'image',
+        isTimelapse: clip.summary.isTimelapse === true,
+        transcriptReady: heard.some((key) => key.startsWith(`${clip.id}|`)),
+        // An analysis that found no pause is still an analysis.
+        silenceAnalyzed: clip.analysis !== null || clip.analyzedWith !== null || clip.detected.length > 0,
+        savedFrames: frames.filter((frame) => frame.clipId === clip.id).length
+      })),
+      understanding,
+      savedFrames: frames.map((frame) => ({ ...frame })),
+      staleFrames,
+      editFingerprint: this.currentEditFingerprint(),
+      tagStyle: { source: style.source, id: style.id, name: style.name, path: style.path, mode: this.packaging.styleMode() },
+      delivered: this.packaging.hasContent(),
+      autoVideoPackaging: this.project.autoVideoPackaging !== false,
+      qrLinks,
+      nextStep: media.length
+        ? (understanding?.stale
+          ? 'The edit changed after the stored understanding was written: read the finished video again and store it anew with set_video_understanding. '
+          : '') + (staleFrames
+          ? `${staleFrames} saved background(s) belong to an earlier version of the edit and cannot be used; save new ones with save_frames. `
+          : '') + 'Reuse transcriptReady clips and savedFrames instead of redoing that work. Understand the whole video first, store it with set_video_understanding, then write titles, description and tags, and draw covers last.'
+        : 'There is no project yet. Load the videos into the editor with add_media or queue_media_import — Video Packaging reads the editor, never a folder on its own.'
+    };
+  }
+
+  /**
+   * Writes chosen frames to disk at full size so they can be used as cover
+   * backgrounds. `get_frames` answers with pictures to look at; this answers
+   * with files to draw on, which is a different job and a different size.
+   */
+  private async agentSaveFrames(
+    args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown> {
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.summary.videoUsable && clip.summary.kind !== 'image') {
+      throw new EditorAgentError('This clip has no decodable picture.', 'media_unavailable');
+    }
+    const raw = args['timestamps'];
+    if (!Array.isArray(raw) || !raw.length || raw.length > 12) {
+      throw new EditorAgentError('timestamps must contain between 1 and 12 source times.', 'invalid_arguments');
+    }
+    const timestamps = raw.map((value, index) => finiteNumber(value, `timestamps[${index}]`));
+    const width = Math.round(Math.max(640, Math.min(3840,
+      args['width'] === undefined ? 1920 : finiteNumber(args['width'], 'width'))));
+    const quality = Math.max(0.5, Math.min(1,
+      args['quality'] === undefined ? 0.95 : finiteNumber(args['quality'], 'quality')));
+    const label = args['label'] === undefined
+      ? clip.summary.fileName
+      : stringValue(args['label'], 'label');
+
+    // Everything that can refuse does so before anything is written: the
+    // folder is only created once every frame has been composed faithfully.
+    const composed = await this.captureComposedFrames(
+      clip, timestamps, width, quality, signal, operationId, { strict: true }
+    ) as { frames: readonly { timestamp: number; outputTime: number; width: number; height: number; dataUrl: string }[] };
+
+    const folder = joinPath(await this.ensurePackagingFolder(), 'frames');
+    await this.desktop.ensureAgentFolder(folder);
+
+    // The fingerprint pins each file to the edit it was composed from. A later
+    // cut, zoom, caption or effect changes it, and the file stops counting as
+    // a background of *this* video. See `editFingerprint`.
+    const fingerprint = editFingerprint(this.plan);
+    const stem = safeStem(label.replace(/\.[^.]+$/, ''));
+    const written: PackagingFrame[] = [];
+    for (const frame of composed.frames) {
+      const { bytes, mimeType } = bytesFromDataUrl(frame.dataUrl);
+      // Named after where the frame sits in the finished video, which is the
+      // clock the thumbnail's sourceTimestamp is checked against.
+      const name = `${stem}-t${stampOf(frame.outputTime)}.${extensionForMime(mimeType)}`;
+      written.push({
+        path: await this.writePackagingFile(folder, name, bytes),
+        clipId: clip.id,
+        timestamp: roundSeconds(frame.timestamp),
+        outputTime: frame.outputTime,
+        width: frame.width,
+        height: frame.height,
+        composited: true,
+        editFingerprint: fingerprint
+      });
+    }
+
+    this.packaging.recordFrames(written);
+    this.pushAgentLog('action', `Saved ${written.length} edited-video background(s) beside the footage`, 'save_frames', 'INFO');
+    return {
+      clipId: clip.id,
+      assetId: this.agentAssetId(clip),
+      folder,
+      composited: true,
+      frames: written,
+      nextStep: 'Hand these paths to the image generator as the background, with the tag style from get_packaging_tag_style. In set_video_packaging, give each cover the sourceFramePath of its background and its outputTime as sourceTimestamp.'
+    };
+  }
+
+  /**
+   * The lettering a cover has to copy, written out as a file the generator can
+   * be handed. The reader's own style when they loaded one, and otherwise the
+   * one that ships with the editor.
+   */
+  private async agentPackagingTagStyle(): Promise<unknown> {
+    // When the reader asked to be consulted, this is where the run pauses and
+    // the picker comes up. Unanswered, it falls back to the saved style.
+    const style = await this.packaging.ensureStyleChosen();
+    const folder = joinPath(await this.ensurePackagingFolder(), 'style');
+    await this.desktop.ensureAgentFolder(folder);
+
+    const blob = await this.packaging.tagStyleBytes();
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const name = `${safeStem(style.name.replace(/\.[^.]+$/, ''), 'tag-style')}.${extensionForMime(blob.type || 'image/png')}`;
+    const path = await this.writePackagingFile(folder, name, bytes);
+    this.packaging.rememberTagStylePath(path);
+
+    return {
+      source: style.source,
+      id: style.id,
+      name: style.name,
+      path,
+      description: style.description,
+      mode: this.packaging.styleMode(),
+      available: this.packaging.styles.map((option) => ({ id: option.id, name: option.name, summary: option.summary })),
+      guidance: 'Attach this image to the cover prompt as the lettering reference. Copy its letterforms, colours and block treatment — never its words.'
+    };
+  }
+
   private async agentContactSheet(
     args: Record<string, unknown>, signal?: AbortSignal, operationId = ''
   ): Promise<unknown> {
@@ -12908,7 +13458,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       clipId: clip.id,
       timestamps,
       width: args['width'] === undefined ? 480 : finiteNumber(args['width'], 'width'),
-      quality: args['quality'] === undefined ? 0.72 : finiteNumber(args['quality'], 'quality')
+      quality: args['quality'] === undefined ? 0.72 : finiteNumber(args['quality'], 'quality'),
+      // Passed through: a sheet of the finished picture is what an agent needs
+      // to check an edit, and it used to be silently dropped here.
+      composited: args['composited'] === true
     }, signal, operationId);
   }
 
@@ -12952,19 +13505,55 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     width: number,
     quality: number,
     signal?: AbortSignal,
-    operationId = ''
+    operationId = '',
+    options: { strict?: boolean } = {}
   ): Promise<unknown> {
     const cancelled = (stage: string) => new EditorAgentError(
       'Visual inspection was cancelled.', 'cancelled', { stage, terminalState: 'cancelled' }
     );
     const plan = this.plan;
-    const entry = plan.clips.find(candidate => candidate.clip.id === clip.id);
+    const clipIndex = plan.clips.findIndex(candidate => candidate.clip.id === clip.id);
+    const entry = clipIndex >= 0 ? plan.clips[clipIndex] : null;
     if (!entry) {
       throw new EditorAgentError(
         'This container contributes nothing to the finished timeline, so it has no composed frame.',
         'invalid_target'
       );
     }
+
+    const edits = this.editsFor(clip);
+    const speed = clampSpeed(edits.speed);
+    const keep = keepRangesFor(clip, edits);
+    const bounds = clipBounds(clip);
+    const outputTimeOf = (sourceTime: number) =>
+      entry.outputStart + cutTimeOf(keep, Math.max(bounds.start, Math.min(bounds.end, sourceTime))) / speed;
+
+    // Decided before a single frame is decoded: an instant that was cut away,
+    // or one inside a join, is a picture the export never writes. A strict
+    // caller (save_frames) is refused outright, so nothing half-written is left
+    // behind; a looking caller (get_frames) is told, frame by frame.
+    const requested = timestamps.map(raw => {
+      const value = finiteNumber(raw, 'timestamp');
+      const clamped = Math.max(0, Math.min(Math.max(0, clip.summary.durationSeconds - 0.001), value));
+      return { requested: value, sourceTime: clamped, fidelity: composedFidelity(plan, clipIndex, clamped) };
+    });
+    const refused = requested.filter(item => !item.fidelity.faithful);
+    if (options.strict && refused.length) {
+      throw new EditorAgentError(
+        refused.map(item => describeFidelity(item.fidelity, item.sourceTime)).join(' '),
+        'unfaithful_frame',
+        {
+          frames: refused.map(item => ({
+            timestamp: roundSeconds(item.sourceTime),
+            reason: item.fidelity.reason,
+            suggestedTimestamp: item.fidelity.suggestedSourceTime,
+            avoidOutputRange: item.fidelity.avoidOutputRange
+          })),
+          hint: 'Choose source instants that are kept in the edit and are not inside a transition, then call save_frames again.'
+        }
+      );
+    }
+
     await loadPlanImages(plan);
 
     const height = Math.max(2, Math.round(width * plan.height / Math.max(1, plan.width)) & ~1);
@@ -12974,25 +13563,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const context = canvas.getContext('2d') as FrameContext | null;
     if (!context) throw new EditorAgentError('Canvas is unavailable.', 'unsupported');
 
-    const edits = this.editsFor(clip);
-    const speed = clampSpeed(edits.speed);
-    const keep = keepRangesFor(clip, edits);
-    const bounds = clipBounds(clip);
-    const outputTimeOf = (sourceTime: number) =>
-      entry.outputStart + cutTimeOf(keep, Math.max(bounds.start, Math.min(bounds.end, sourceTime))) / speed;
-
-    // Only built when something actually sits in the middle layer at one of the
-    // requested instants. Loading a segmentation model to check a logo in a
-    // corner would be a slow answer to a question nobody asked.
-    const needsSubject = timestamps.some(raw => {
-      const time = outputTimeOf(finiteNumber(raw, 'timestamp'));
+    // The same three reasons the encoder asks for the matte: a Background
+    // Caption, a picture placed behind the person, and an AI effect that works
+    // on the person. Asked per instant, exactly as the export asks.
+    const needsSubjectAt = (time: number): boolean => {
       const caption = captionAt(plan.captions, time);
       return (caption !== null && isBackgroundCaption(caption.caption)) ||
-        imagesAt(plan.images ?? [], time).some(item => item.image.style === 'behind-subject');
-    });
-    const vision = needsSubject ? this.agentSubjectVision() : null;
-    let subjectLayerDrawn = !needsSubject;
-    let subjectNote = '';
+        imagesAt(plan.images ?? [], time).some(item => imageBehindSubject(item.image)) ||
+        effectNeedsSubject(videoEffectSectionAt(plan.videoEffects, time, clip.id)?.effect ?? null);
+    };
+    const vision = requested.some(item => needsSubjectAt(outputTimeOf(item.sourceTime))) ? this.agentSubjectVision() : null;
 
     const drawSource = async (video: HTMLVideoElement | null, bitmap: ImageBitmap | null): Promise<FrameSource> => {
       if (bitmap) {
@@ -13019,77 +13599,153 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       video.src = url;
     }
 
+    let decoder: Awaited<ReturnType<typeof openAgentFrameDecoder>> | null = null;
+    const decodedSource = async (timestamp: number) => {
+      if (!decoder) {
+        video?.removeAttribute('src');
+        video?.load();
+        decoder = await openAgentFrameDecoder(clip.file, signal);
+      }
+      return decoder.frame(timestamp);
+    };
     try {
       // Metadata can sit at the end of the file — most camera MP4s are not
       // written for streaming — so a large source is read almost end to end
-      // before the first frame exists. Sixty seconds is generous for a local
-      // file and still finite.
-      if (video) await this.waitAgentMedia(video, 'loadedmetadata', signal, 60000);
-      const frames: unknown[] = [];
+      // before the first frame exists. Allow five minutes on busy disks.
+      if (video) {
+        try { await this.waitAgentMedia(video, 'loadedmetadata', signal); }
+        catch (error) {
+          if (!(error instanceof EditorAgentError) || !['media_timeout', 'decode_failed'].includes(error.code)) throw error;
+          await decodedSource(0);
+        }
+      }
+      const frames: {
+        timestamp: number;
+        outputTime: number;
+        width: number;
+        height: number;
+        mimeType: string;
+        dataUrl: string;
+        faithful: boolean;
+        unfaithfulReason: string | null;
+        note?: string;
+        subjectLayer: 'not-needed' | 'rendered' | 'no-subject' | 'unavailable';
+      }[] = [];
 
-      for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
+      for (let frameIndex = 0; frameIndex < requested.length; frameIndex++) {
         if (signal?.aborted) throw cancelled('composing-frames');
-        const raw = finiteNumber(timestamps[frameIndex], 'timestamp');
+        const item = requested[frameIndex];
         const duration = video ? (video.duration || clip.summary.durationSeconds) : clip.summary.durationSeconds;
-        const timestamp = Math.max(0, Math.min(Math.max(0, duration - 0.001), raw));
-        if (video && Math.abs(video.currentTime - timestamp) > 0.001) {
-          video.currentTime = timestamp;
-          await this.waitAgentMedia(video, 'seeked', signal);
+        const timestamp = Math.max(0, Math.min(Math.max(0, duration - 0.001), item.sourceTime));
+        let source: FrameSource;
+        try {
+          if (video && !decoder) {
+            if (Math.abs(video.currentTime - timestamp) > 0.001) {
+              video.currentTime = timestamp;
+              await this.waitAgentMedia(video, 'seeked', signal);
+            }
+            if (video.readyState < 2) await this.waitAgentMedia(video, 'loadeddata', signal);
+          }
+          source = decoder ? await decodedSource(timestamp) : await drawSource(video, bitmap);
+        } catch (error) {
+          if (!(error instanceof EditorAgentError) || !['media_timeout', 'decode_failed'].includes(error.code) || decoder) throw error;
+          source = await decodedSource(timestamp);
         }
         const time = outputTimeOf(timestamp);
-        const source = await drawSource(video, bitmap);
 
         let mask: SubjectMask | null = null;
-        if (vision) {
+        let subjectLayer: 'not-needed' | 'rendered' | 'no-subject' | 'unavailable' = 'not-needed';
+        let subjectNote = '';
+        if (vision && needsSubjectAt(time)) {
           try {
-            mask = await vision.maskFor(source, width, height, 1, plan.fillFrame, `${clip.id}:composed`, time);
-            subjectLayerDrawn = subjectLayerDrawn || mask !== null;
+            mask = await vision.maskFor(source, width, height, zoomScaleAt(plan.zooms, time), plan.fillFrame, `${clip.id}:composed`, timestamp);
           } catch (error) {
-            // Said plainly rather than swallowed: a frame composed without the
-            // matte is still worth looking at, but an agent must not read it as
-            // proof that the person covers the middle layer.
             subjectNote = error instanceof Error ? error.message : String(error);
           }
-          if (!mask && !subjectNote && vision.state === 'unavailable') {
+          // 'no-subject' is the model running and finding nobody, which the
+          // export draws the same way. 'unavailable' is the model failing, and
+          // a frame composed without the matte then is not the exported frame.
+          subjectLayer = mask ? 'rendered' : vision.state === 'unavailable' || subjectNote ? 'unavailable' : 'no-subject';
+          if (subjectLayer === 'unavailable' && !subjectNote) {
             subjectNote = vision.lastError || 'Subject segmentation is unavailable on this machine.';
           }
         }
 
         composeFrame(context, plan, time, width, height, source, null, mask, null);
+        const effectWarning = frameEffectWarning(context);
+
+        let faithful = item.fidelity.faithful;
+        let unfaithfulReason: string | null = item.fidelity.faithful ? null : item.fidelity.reason;
+        let note = item.fidelity.faithful ? '' : describeFidelity(item.fidelity, item.sourceTime);
+        if (subjectLayer === 'unavailable') {
+          faithful = false;
+          unfaithfulReason = unfaithfulReason ?? 'subject-unavailable';
+          note = [note, `The subject matte could not be computed: ${subjectNote}`].filter(Boolean).join(' ');
+        }
+        if (effectWarning) {
+          faithful = false;
+          unfaithfulReason = unfaithfulReason ?? 'effect';
+          note = [note, effectWarning].filter(Boolean).join(' ');
+        }
+
         frames.push({
           timestamp,
           outputTime: roundSeconds(time),
           width,
           height,
           mimeType: 'image/jpeg',
-          dataUrl: canvas.toDataURL('image/jpeg', quality)
+          dataUrl: canvas.toDataURL('image/jpeg', quality),
+          faithful,
+          unfaithfulReason,
+          ...(note ? { note } : {}),
+          subjectLayer
         });
-        const done = Math.round((frameIndex + 1) * 100 / timestamps.length);
+        const done = Math.round((frameIndex + 1) * 100 / requested.length);
         if (operationId) this.desktop.reportAgentProgress({
           operationId, state: 'processing', stage: 'extracting-frames',
-          percent: done, frameIndex: frameIndex + 1, frameCount: timestamps.length, clipId: clip.id
+          percent: done, frameIndex: frameIndex + 1, frameCount: requested.length, clipId: clip.id
         });
         this.agentProgress(
           'get_frames',
-          `Composed frame ${frameIndex + 1}/${timestamps.length} at ${this.formatTime(timestamp)}${mask ? ' with the subject matte' : ''}`,
+          `Composed frame ${frameIndex + 1}/${requested.length} at ${this.formatTime(timestamp)}${mask ? ' with the subject matte' : ''}`,
           done
         );
       }
 
+      // A strict caller gets nothing it cannot use: a frame the matte or an
+      // effect could not draw as the export would is refused, not saved.
+      if (options.strict) {
+        const failed = frames.filter(frame => !frame.faithful);
+        if (failed.length) {
+          throw new EditorAgentError(
+            failed.map(frame => frame.note || `The frame at ${frame.timestamp}s could not be composed as the export draws it.`).join(' '),
+            'unfaithful_frame',
+            {
+              frames: failed.map(frame => ({ timestamp: roundSeconds(frame.timestamp), reason: frame.unfaithfulReason })),
+              hint: failed.some(frame => frame.unfaithfulReason === 'subject-unavailable')
+                ? 'The person cut-out model is not working on this machine; choose instants without a Background Caption, a picture behind the person or an AI effect, or retry once the model is available.'
+                : 'Choose other instants and call save_frames again.'
+            }
+          );
+        }
+      }
+
+      const needed = frames.filter(frame => frame.subjectLayer !== 'not-needed');
       return {
         clipId: clip.id,
         assetId: this.agentAssetId(clip),
         timeSpace: 'source',
         composited: true,
         frame: { width: plan.width, height: plan.height },
-        subjectLayerRendered: subjectLayerDrawn,
-        ...(subjectNote ? { subjectNote } : {}),
+        allFaithful: frames.every(frame => frame.faithful),
+        // True only when every frame that needed the person cut out got it (or
+        // the model ran and found nobody, which the export draws the same way).
+        subjectLayerRendered: needed.every(frame => frame.subjectLayer !== 'unavailable'),
         images: (clip.images ?? []).map(image => this.agentImagePayload(clip, image)),
         frames
       };
     } finally {
-      // Deliberately not disposed: it is the session's client, kept warm on
-      // purpose. See `agentSubjectVision`.
+      (decoder as Awaited<ReturnType<typeof openAgentFrameDecoder>> | null)?.dispose();
       bitmap?.close();
       if (video) {
         video.removeAttribute('src');
@@ -13139,7 +13795,64 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const url = mediaObjectUrl(clip.file);
     video.src = url;
     try {
-      await this.waitAgentMedia(video, 'loadedmetadata', signal, 60000);
+      try {
+        return await this.captureAgentFramesFromElement(video, clip, timestamps, width, height, quality, canvas, context, signal, operationId);
+      } catch (error) {
+        if (!(error instanceof EditorAgentError) || !['media_timeout', 'decode_failed'].includes(error.code)) throw error;
+        // A <video> that never loads is almost always a stalled transfer —
+        // the preview and the thumbnails already hold every connection the
+        // browser allows to the local media server. The decoder reads the
+        // file in bounded ranges after releasing this player's connection.
+        this.pushAgentLog('action', `The player stalled on ${clip.summary.fileName}; reading the frames straight from the file instead`, 'get_frames', 'WARN');
+        video.removeAttribute('src');
+        video.load();
+        return await this.captureAgentFramesDecoded(clip, timestamps, width, height, quality, canvas, context, signal, operationId);
+      }
+    } finally {
+      video.removeAttribute('src');
+      video.load();
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  /** Frames through WebCodecs, reading the file itself: the fallback when the media element stalls. */
+  private async captureAgentFramesDecoded(
+    clip: MediaClip, timestamps: readonly number[], width: number, height: number, quality: number,
+    canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown[]> {
+    const decoder = await openAgentFrameDecoder(clip.file, signal);
+    try {
+      const duration = clip.summary.durationSeconds;
+      const result: unknown[] = [];
+      for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
+        if (signal?.aborted) throw new EditorAgentError('Visual inspection was cancelled.', 'cancelled', { stage: 'decoding-frames', terminalState: 'cancelled' });
+        const timestamp = Math.max(0, Math.min(Math.max(0, (duration || clip.summary.durationSeconds) - 0.001), finiteNumber(timestamps[frameIndex], 'timestamp')));
+        const source = await decoder.frame(timestamp);
+        context.clearRect(0, 0, width, height);
+        source.draw(context, 0, 0, width, height);
+        result.push({ timestamp, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality), decodedFromFile: true });
+        const done = Math.round((frameIndex + 1) * 100 / timestamps.length);
+        if (operationId) this.desktop.reportAgentProgress({
+          operationId, state: 'processing', stage: 'extracting-frames',
+          percent: done, frameIndex: frameIndex + 1, frameCount: timestamps.length, clipId: clip.id
+        });
+        this.agentProgress('get_frames', `Frame ${frameIndex + 1}/${timestamps.length} at ${this.formatTime(timestamp)}`, done);
+      }
+      return result;
+    } finally {
+      decoder.dispose();
+    }
+  }
+
+  private async captureAgentFramesFromElement(
+    video: HTMLVideoElement, clip: MediaClip, timestamps: readonly number[], width: number, height: number, quality: number,
+    canvas: HTMLCanvasElement, context: CanvasRenderingContext2D, signal?: AbortSignal, operationId = ''
+  ): Promise<unknown[]> {
+    const cancelled = (stage: string) => new EditorAgentError(
+      'Visual inspection was cancelled.', 'cancelled', { stage, terminalState: 'cancelled' }
+    );
+    {
+      await this.waitAgentMedia(video, 'loadedmetadata', signal);
       const result: unknown[] = [];
       for (let frameIndex = 0; frameIndex < timestamps.length; frameIndex++) {
         if (signal?.aborted) throw cancelled('extracting-frames');
@@ -13150,6 +13863,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           video.currentTime = timestamp;
           await this.waitAgentMedia(video, 'seeked', signal);
         }
+        if (video.readyState < 2) await this.waitAgentMedia(video, 'loadeddata', signal);
         context.drawImage(video, 0, 0, width, height);
         result.push({ timestamp, width, height, mimeType: 'image/jpeg', dataUrl: canvas.toDataURL('image/jpeg', quality) });
         const done = Math.round((frameIndex + 1) * 100 / timestamps.length);
@@ -13160,10 +13874,6 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         this.agentProgress('get_frames', `Frame ${frameIndex + 1}/${timestamps.length} at ${this.formatTime(timestamp)}`, done);
       }
       return result;
-    } finally {
-      video.removeAttribute('src');
-      video.load();
-      URL.revokeObjectURL(url);
     }
   }
 
@@ -13177,7 +13887,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * of that is on the element, and all of it is what tells a stalled transfer
    * apart from a rejected codec.
    */
-  private waitAgentMedia(media: HTMLMediaElement, event: string, signal?: AbortSignal, timeoutMs = 15000): Promise<void> {
+  private waitAgentMedia(media: HTMLMediaElement, event: string, signal?: AbortSignal, timeoutMs = AGENT_MEDIA_TIMEOUT_MS): Promise<void> {
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => finish(new EditorAgentError(
         `Timed out after ${Math.round(timeoutMs / 1000)}s waiting for media ${event}.`,
@@ -13212,6 +13922,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       media.addEventListener(event, ready, { once: true });
       media.addEventListener('error', failed, { once: true });
       signal?.addEventListener('abort', aborted, { once: true });
+      // Cached metadata or a completed seek may precede listener registration.
+      if (media.error) failed();
+      else if (event === 'loadedmetadata' && media.readyState >= 1) ready();
+      else if (event === 'loadeddata' && media.readyState >= 2) ready();
+      else if (event === 'seeked' && !media.seeking && media.readyState >= 2) ready();
     });
   }
 

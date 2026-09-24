@@ -12,6 +12,60 @@
 
 const { app, BrowserWindow, dialog, ipcMain, screen, shell, Menu } = require('electron');
 const path = require('node:path');
+
+/*
+ * `--mcp-stdio`: this executable as an MCP server rather than as a window.
+ * Decided before anything else runs — before the single-instance lock, the
+ * loopback server or any window — because in this mode none of them belong to
+ * this process. See mcp-stdio-entry.js.
+ */
+if (process.argv.includes('--mcp-stdio')) {
+  require('./mcp-stdio-entry').runMcpStdio(app);
+  return;
+}
+
+/*
+ * A write to stdout/stderr whose reader is gone must never become a dialog.
+ *
+ * This window can be started by an MCP host (or an older build of one) that
+ * handed it its own stderr and then exited. Every later log line then fails
+ * with EPIPE; the stream guard below absorbs the 'error' event, and this
+ * handler catches whatever still escapes (a synchronous throw from a Windows
+ * pipe, a write from a library that bypasses the logger). Any other uncaught
+ * error keeps Electron's usual dialog.
+ */
+const BROKEN_PIPE_CODES = new Set(['EPIPE', 'ERR_STREAM_DESTROYED', 'ERR_STREAM_WRITE_AFTER_END', 'EOF', 'ECONNRESET']);
+function isBrokenStdio(error) {
+  if (!error || !BROKEN_PIPE_CODES.has(error.code)) return false;
+  const stack = String(error.stack || '');
+  return error.code !== 'ECONNRESET' || /\b(stdout|stderr)\b|Socket\._write|afterWriteDispatched/.test(stack);
+}
+require('./structured-log').guardStream(process.stdout);
+require('./structured-log').guardStream(process.stderr);
+process.on('uncaughtException', (error) => {
+  if (isBrokenStdio(error)) return;
+  try { require('./structured-log').createLogger('main').error('uncaught_exception', { error }); } catch {}
+  try {
+    require('electron').dialog.showErrorBox('A JavaScript error occurred in the main process',
+      `Uncaught Exception:\n${error && error.stack ? error.stack : String(error)}`);
+  } catch {}
+});
+
+/*
+ * A separate profile, for isolated tests and for anyone who wants a second,
+ * independent editor. Set before the single-instance lock, which is scoped to
+ * this folder, and before anything reads or writes user data.
+ */
+if (process.env.SVE_USER_DATA_DIR) {
+  app.setPath('userData', path.resolve(process.env.SVE_USER_DATA_DIR));
+}
+/**
+ * Where roots.json and editor-location.json live: %LOCALAPPDATA% normally,
+ * inside the separate profile when there is one — an isolated profile must not
+ * read the user's consent or leave its own location in the user's record.
+ */
+const LOCAL_DATA = process.env.SVE_USER_DATA_DIR ? undefined : process.env.LOCALAPPDATA;
+
 const fs = require('node:fs/promises');
 const { randomUUID } = require('node:crypto');
 const net = require('node:net');
@@ -20,10 +74,11 @@ const { spawn } = require('node:child_process');
 const { startServer } = require('./server');
 const { restoreState, trackWindow } = require('./window-state');
 const { editorEndpoint } = require('./ipc-endpoint');
-const { MediaImportService } = require('./media-import-service');
+const { MediaImportService, ffprobeExecutable, ffmpegExecutable } = require('./media-import-service');
 const { createLogger, safeError } = require('./structured-log');
 const { IdempotencyLedger } = require('./idempotency-ledger');
 const { RecoveryCheckpointStore } = require('./recovery-checkpoint-store');
+const { RecoveryLocations, purgeRecoveryFiles } = require('./recovery-purge');
 const { preferredPort, rememberPort } = require('./stable-origin');
 const { editorLocationFile, rememberEditorLocation } = require('./editor-location');
 const { RootStore } = require('./mcp-roots');
@@ -71,6 +126,10 @@ function rootStore() {
     rootStoreInstance = new RootStore({
       getPath: (name) => app.getPath(name),
       allowances: ownApplicationData(),
+      // The program's own folder is never media. That matters now that the
+      // editor also ships inside a plugin, which a user may well unpack under
+      // Downloads or Documents — folders that are allowed by default.
+      denied: [path.dirname(app.getPath('exe'))],
       onChange: (state) => {
         log.info('mcp_roots_changed', { roots: state.roots, rootSource: state.rootSource });
         publishRootState(state);
@@ -115,7 +174,7 @@ function pickerOptions(options) {
 
 /** Where consent is remembered, beside editor-location.json. */
 function consentFile() {
-  return rootsFile(process.env.LOCALAPPDATA, app.getPath('userData'));
+  return rootsFile(LOCAL_DATA, app.getPath('userData'));
 }
 
 /**
@@ -284,6 +343,15 @@ function recoveryProjectPath() {
 }
 
 const checkpointStore = new RecoveryCheckpointStore(() => recoveryProjectPath());
+let recoveryLocationsStore = null;
+/** Every folder a checkpoint was ever written to, so "Clear all" can find them all again. */
+function recoveryLocations() {
+  if (!recoveryLocationsStore) recoveryLocationsStore = new RecoveryLocations(app.getPath('userData'));
+  return recoveryLocationsStore;
+}
+function rememberCheckpoint(saved) {
+  if (saved && saved.path && !saved.skipped) void recoveryLocations().remember(path.dirname(saved.path)).catch(() => {});
+}
 
 /**
  * Which client is driving, reduced to the names the editor knows how to dress.
@@ -473,6 +541,7 @@ async function checkpointProject(reason = 'Automatic checkpoint') {
   const saved = clipCount > 0
     ? await checkpointStore.write(document, response.projectRevision, reason)
     : await checkpointStore.remove(response.projectRevision, reason);
+  if (clipCount > 0) rememberCheckpoint(saved);
   log.info(clipCount > 0 ? 'project_checkpoint_saved' : 'project_checkpoint_removed', {
     path: saved.path, reason, projectRevision: response.projectRevision, source: 'electron-snapshot'
   });
@@ -491,10 +560,42 @@ async function checkpointRendererProject(payload) {
     payload?.projectRevision,
     payload?.reason || 'Editor autosave'
   );
+  rememberCheckpoint(result);
   if (!result.skipped) log.info('project_checkpoint_saved', {
     path: result.path, reason: result.reason, projectRevision: result.projectRevision, source: 'renderer-autosave'
   });
   return result;
+}
+
+/**
+ * "Clear all": every recovery file the editor or an AI session left anywhere.
+ *
+ * The current checkpoint, the checkpoints of earlier project folders, their
+ * half-written temporaries, stale export temporaries, and the record of AI
+ * import jobs. Nothing of a cleared edit may be able to come back.
+ */
+async function purgeAllRecovery(payload) {
+  const current = await checkpointStore.remove(payload?.projectRevision, payload?.reason || 'Clear all').catch((error) => {
+    log.warn('project_checkpoint_remove_failed', { error });
+    return null;
+  });
+  const userData = app.getPath('userData');
+  let roots = [];
+  try { roots = rootStore().roots(); } catch {}
+  const folders = [
+    path.dirname(recoveryProjectPath()),
+    path.join(userData, 'recovery'),
+    userData,
+    ...roots,
+    ...await recoveryLocations().list()
+  ];
+  const swept = await purgeRecoveryFiles(folders);
+  const imports = mediaImports ? await mediaImports.purge().catch(() => ({ removed: [] })) : { removed: [] };
+  await recoveryLocations().forget();
+  restoreAttemptedPath = null;
+  const removed = [...(current?.path ? [current.path] : []), ...swept.removed, ...imports.removed];
+  log.info('project_recovery_purged', { removed: removed.length, failed: swept.failed.length, failures: swept.failed.slice(0, 20) });
+  return { purged: true, removed, failed: swept.failed, projectRevision: Number(payload?.projectRevision) || 0 };
 }
 
 async function clearRendererCheckpoint(payload) {
@@ -583,7 +684,7 @@ const STARTUP_GATE_TIMEOUT_MS = 30_000;
 const STARTUP_EXEMPT = new Set([
   'health_check', 'get_diagnostics', 'get_recovery_state', 'get_editor_capabilities',
   'get_operation_status', 'cancel_operation', 'get_import_status', 'cancel_import',
-  'close_editor', 'restart_editor'
+  'close_editor', 'restart_editor', 'set_ai_control_log'
 ]);
 
 let startupSettled = null;
@@ -714,7 +815,7 @@ async function executeAgentRequest(request) {
       return agentResponse({ ...operation, cancellationRequested: true, terminal: false }, operation.projectRevision);
     }
     case 'get_diagnostics': {
-      const [ffmpeg, ffprobe] = await Promise.all([commandVersion(process.env.SVE_FFMPEG || 'ffmpeg'), commandVersion(process.env.SVE_FFPROBE || 'ffprobe')]);
+      const [ffmpeg, ffprobe] = await Promise.all([commandVersion(ffmpegExecutable()), commandVersion(ffprobeExecutable())]);
       const recentOperations = [...agentOperations.values()].slice(-20).map((operation) => ({
         operationId: operation.operationId, name: operation.name, state: operation.state,
         stage: operation.stage, percent: operation.percent, elapsedMs: operation.elapsedMs,
@@ -776,7 +877,10 @@ async function executeAgentRequest(request) {
         const hostCommands = [
           'queue_media_import', 'get_import_status', 'cancel_import', 'resume_import',
           'health_check', 'get_operation_status', 'cancel_operation', 'get_diagnostics',
-          'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor'
+          'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor',
+          'set_video_packaging', 'get_video_packaging', 'clear_video_packaging',
+          'set_video_understanding', 'get_video_understanding', 'set_packaging_tag_style',
+          'show_tool', 'set_ai_control_log'
         ];
         response.result.hostCommands = hostCommands;
         response.result.commands = [...new Set([...(Array.isArray(response.result.commands) ? response.result.commands : []), ...hostCommands])];
@@ -787,7 +891,7 @@ async function executeAgentRequest(request) {
           manualEditCheckpoint: true,
           mutationIdempotency: 'requestId scoped to editor session and recovery project',
           orderedRendererLane: true,
-          priorityCommands: ['health_check', 'get_operation_status', 'cancel_operation', 'get_import_status', 'cancel_import', 'get_diagnostics', 'get_recovery_state', 'close_editor', 'restart_editor']
+          priorityCommands: ['health_check', 'get_operation_status', 'cancel_operation', 'get_import_status', 'cancel_import', 'get_diagnostics', 'get_recovery_state', 'close_editor', 'restart_editor', 'set_ai_control_log']
         };
       }
       const mutatesProject = request.name === 'undo' || request.name === 'redo' ||
@@ -813,7 +917,9 @@ const IDEMPOTENT_PROJECT_MUTATIONS = new Set([
   'redo',
   'analyze_silence',
   'analyze_noise',
-  'suppress_noise'
+  'suppress_noise',
+  'set_video_packaging',
+  'clear_video_packaging'
 ]);
 
 /**
@@ -884,7 +990,7 @@ function startEditorBridgeServer() {
           lastAgentController = controller;
           hadAgentConnection = true;
           lastAgentConnectionAt = new Date().toISOString();
-          socket.write(JSON.stringify({ type: 'hello', protocolVersion: 2, pid: process.pid, windowCount: BrowserWindow.getAllWindows().length }) + '\n');
+          socket.write(JSON.stringify({ type: 'hello', protocolVersion: 2, pid: process.pid, windowCount: BrowserWindow.getAllWindows().length, editorVersion: app.getVersion() }) + '\n');
           focusEditorForControl();
           publishAgentControlState();
           publishAgentSystemLog('INFO', 'MCP bridge', wasDisconnected
@@ -1033,6 +1139,11 @@ function wireAgentBridge() {
     return clearRendererCheckpoint(payload);
   });
 
+  ipcMain.handle('project:recovery-purge', async (event, payload) => {
+    if (!fromOurApp(event.sender)) throw new Error('A recovery purge was requested by an unknown page.');
+    return purgeAllRecovery(payload);
+  });
+
   ipcMain.on('agent:response', (event, envelope) => {
     if (!fromOurApp(event.sender) || event.sender !== agentContents) return;
     const pending = agentPending.get(envelope?.id);
@@ -1118,18 +1229,21 @@ function wireAgentBridge() {
   });
 
   /** "Add folder…" in the settings. The picker itself is the consent. */
-  ipcMain.handle('roots:add', async (event) => {
+  ipcMain.handle('roots:add', async (event, purpose) => {
     if (!fromOurApp(event.sender)) throw new Error('Folder access was requested by an unknown page.');
     const chosen = await chooseFolder({
       window: BrowserWindow.fromWebContents(event.sender),
-      title: 'Choose a folder the editor may use',
-      message: 'The editor will be able to read media from this folder and write exports into it.',
-      buttonLabel: 'Allow this folder'
+      title: purpose === 'packaging' ? 'Choose where to save Video Packaging' : 'Choose a folder the editor may use',
+      message: purpose === 'packaging'
+        ? 'Frames, lettering references and covers will be saved in a video-packaging subfolder. Your existing timeline will not be changed.'
+        : 'The editor will be able to read media from this folder and write exports into it.',
+      buttonLabel: purpose === 'packaging' ? 'Use this folder' : 'Allow this folder'
     });
     if (!chosen) return { granted: null, cancelled: true, ...rootStore().describe() };
     const outcome = rememberConsent(chosen.folder, { bookmark: chosen.bookmark });
     return {
-      granted: outcome.added ? outcome.root : null,
+      // Choosing an already allowed folder is still a successful choice.
+      granted: outcome.reason ? null : outcome.root,
       refused: outcome.reason ? { folder: outcome.root, reason: outcome.reason } : null,
       cancelled: false,
       ...rootStore().describe()
@@ -1212,6 +1326,21 @@ function wireAgentBridge() {
         url: server.registerMedia(file, stat, MIME.get(path.extname(file).toLowerCase()))
       };
     }));
+  });
+
+  /*
+   * A folder for outputs that belong beside the media they came from.
+   *
+   * Video Packaging writes cover backgrounds and the lettering reference next
+   * to the footage, in a folder that does not exist until the first run. The
+   * path is admitted exactly as a file would be, so this can only ever create a
+   * folder inside somewhere the reader already allowed.
+   */
+  ipcMain.handle('agent:output-folder', async (event, candidate) => {
+    if (!fromOurApp(event.sender)) throw new Error('A folder was requested by an unknown page.');
+    const requested = admittedPath(candidate);
+    await fs.mkdir(requested, { recursive: true });
+    return admittedPath(await fs.realpath(requested));
   });
 
   ipcMain.handle('agent:output-open', async (event, candidate) => {
@@ -1389,6 +1518,14 @@ function wireWindowControls() {
 
   ipcMain.on('window:minimize', (event) => sender(event)?.minimize());
 
+  ipcMain.on('window:focus', (event) => {
+    const window = sender(event);
+    if (!window) return;
+    if (window.isMinimized()) window.restore();
+    window.show();
+    window.focus();
+  });
+
   ipcMain.on('window:toggle-maximize', (event) => {
     const window = sender(event);
     if (!window) return;
@@ -1554,7 +1691,7 @@ if (gotSingleInstanceLock) app.whenReady().then(async () => {
   Menu.setApplicationMenu(null);
 
   await rememberEditorLocation(
-    editorLocationFile(process.env.LOCALAPPDATA, app.getPath('userData')),
+    editorLocationFile(LOCAL_DATA, app.getPath('userData')),
     {
       sourceRoot: path.resolve(__dirname, '..', '..'),
       executablePath: app.getPath('exe'),

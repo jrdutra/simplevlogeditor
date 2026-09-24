@@ -8,7 +8,8 @@
  *
  * So this runs after `ng build`, and the order is the only one that works —
  * site, then installer, then the installer copied back into both the sources
- * and the finished output.
+ * and the finished output. The AI plugins are the small ones packed with the
+ * site (scripts/pack-plugins.js); none of them carries the editor inside.
  *
  * It is deliberately not fatal. Someone working on the site alone should not
  * have to install a hundred megabytes of Electron to run a build, so a missing

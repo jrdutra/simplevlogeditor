@@ -24,7 +24,7 @@ const editor = fs.readFileSync(
 );
 const server = fs.readFileSync(path.join(__dirname, 'mcp-server.js'), 'utf8');
 const skill = fs.readFileSync(
-  path.join(__dirname, '..', '..', 'ai-client', 'claude', 'plugins', 'simple-vlog-editor', 'skills', 'edit-video', 'SKILL.md'),
+  path.join(__dirname, '..', '..', 'ai-client', 'simplevlogeditor-codex-plugin', 'plugins', 'simple-vlog-editor', 'skills', 'edit-video', 'SKILL.md'),
   'utf8'
 );
 

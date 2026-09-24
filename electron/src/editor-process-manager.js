@@ -3,7 +3,6 @@
 const net = require('node:net');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const electron = require('electron');
 const { editorEndpoint } = require('./ipc-endpoint');
 const { splitRoots } = require('./mcp-roots');
 const { createLogger } = require('./structured-log');
@@ -21,6 +20,70 @@ const START_TIMEOUT_MS = 30_000;
 const CALL_TIMEOUT_MS = 30 * 60_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
 
+/**
+ * How to open the visible editor from wherever this host is running.
+ *
+ * Two situations, told apart by the process itself rather than by a setting:
+ *
+ *   packaged   This host is the editor's own executable running as Node
+ *              (`ELECTRON_RUN_AS_NODE`), which is how the plugin's bundled
+ *              runtime and an installed or portable copy start it. The window
+ *              is that same executable started normally; nothing outside the
+ *              runtime folder is consulted.
+ *   checkout   Plain Node from the repository (`npm run mcp`). The window is
+ *              the development Electron from `node_modules`, pointed at the
+ *              `electron` folder, exactly as before.
+ *
+ * `require('electron')` is only reached in the second case. From inside a
+ * packaged app it would fail — Electron is a development dependency and is not
+ * in the archive — which is why it can no longer sit at the top of this file.
+ */
+function editorLaunchCommand(options = {}) {
+  const environment = options.environment || process.env;
+  const versions = options.versions || process.versions;
+  const execPath = options.execPath || process.execPath;
+  const dev = Boolean(options.dev);
+  const controller = environment.SVE_CONTROLLER || 'codex';
+  const childEnvironment = { ...environment, SVE_CONTROLLER: controller };
+  // The window must be a real Electron browser process, never Node again.
+  delete childEnvironment.ELECTRON_RUN_AS_NODE;
+
+  if (versions.electron && environment.ELECTRON_RUN_AS_NODE) {
+    // Inside an archive the executable already knows its application. From a
+    // checkout (`electron . --mcp-stdio`) it has to be told which folder.
+    const appDirectory = options.appDirectory || path.join(__dirname, '..');
+    const packed = /\.asar$/i.test(appDirectory);
+    return {
+      mode: packed ? 'packaged' : 'checkout-electron',
+      command: execPath,
+      args: [...(packed ? [] : [appDirectory]), '--mcp-open', ...(dev ? ['--dev'] : [])],
+      env: childEnvironment
+    };
+  }
+  const resolveElectron = options.resolveElectron || (() => require('electron'));
+  return {
+    mode: 'checkout',
+    command: resolveElectron(),
+    args: [path.join(__dirname, '..'), '--mcp-open', ...(dev ? ['--dev'] : [])],
+    env: childEnvironment
+  };
+}
+
+/** This host's own editor version: the package it was shipped in. */
+function ownEditorVersion() {
+  try { return require(path.join(__dirname, '..', 'package.json')).version || null; } catch { return null; }
+}
+
+/** -1, 0 or 1; a missing version counts as the oldest there is. */
+function compareVersions(a, b) {
+  const parts = (value) => String(value || '0').split(/[.+-]/).slice(0, 3).map((part) => Number.parseInt(part, 10) || 0);
+  const [x, y] = [parts(a), parts(b)];
+  for (let index = 0; index < 3; index++) {
+    if ((x[index] || 0) !== (y[index] || 0)) return (x[index] || 0) < (y[index] || 0) ? -1 : 1;
+  }
+  return a && !b ? 1 : !a && b ? -1 : 0;
+}
+
 function recoverable(message, code = 'editor_unavailable', details = {}) {
   return Object.assign(new Error(message), {
     code,
@@ -32,18 +95,26 @@ class EditorProcessManager {
   constructor(options = {}) {
     this.endpoint = options.endpoint || editorEndpoint();
     this.dev = options.dev ?? process.argv.includes('--dev');
-    this.spawnEditor = options.spawnEditor || (() => spawn(
-      electron,
-      [path.join(__dirname, '..'), '--mcp-open', ...(this.dev ? ['--dev'] : [])],
-      {
+    this.spawnEditor = options.spawnEditor || (() => {
+      const launch = editorLaunchCommand({ dev: this.dev });
+      this.launchMode = launch.mode;
+      // Detached on purpose, and only the window: it is the user's editor and
+      // outlives this session, so ending an MCP session never closes work in
+      // progress. This process — the one serving MCP — is never detached.
+      // None of our streams are handed to it: stdout is the MCP channel, and
+      // a window that inherited our stderr would be writing into a dead pipe
+      // (EPIPE) from the moment this session ends. Its logs go to
+      // SVE_MCP_LOG_FILE, which it inherits through the environment.
+      return spawn(launch.command, launch.args, {
         detached: true,
-        stdio: ['ignore', 'ignore', 'inherit'],
+        stdio: ['ignore', 'ignore', 'ignore'],
         // Hides only Electron's launcher console on Windows. The BrowserWindow
         // is deliberately shown and focused by main.js when this bridge joins.
         windowsHide: true,
-        env: { ...process.env, SVE_CONTROLLER: process.env.SVE_CONTROLLER || 'codex' }
-      }
-    ));
+        shell: false,
+        env: launch.env
+      });
+    });
     this.connectSocket = options.connectSocket || (() => net.createConnection(this.endpoint));
     this.logger = options.logger || createLogger('editor-process-manager');
     this.socket = null;
@@ -59,6 +130,13 @@ class EditorProcessManager {
     this.windowCount = 0;
     this.lastHeartbeat = null;
     this.closed = false;
+    this.ownVersion = options.ownVersion === undefined ? ownEditorVersion() : options.ownVersion;
+    this.editorVersion = null;
+    this.helloWaiters = new Set();
+    this.replacedOlderEditor = false;
+    // Waiting for the editor's hello needs a real editor on the other end;
+    // injected test sockets never send one.
+    this.checkVersion = options.checkVersion ?? !options.connectSocket;
     this.heartbeatWatchdog = setInterval(() => {
       if (!this.socket || this.socket.destroyed || !this.lastHeartbeat) return;
       const silentForMs = Date.now() - this.lastHeartbeat;
@@ -94,21 +172,82 @@ class EditorProcessManager {
   async #ensure() {
     this.state = this.socket ? 'reconnecting' : 'starting';
     try {
-      return await this.#connect(900);
+      const socket = await this.#connect(900);
+      if (!(await this.#olderEditorRunning())) return socket;
+      /*
+       * An older editor already owns the pipe — typically a window left open
+       * from an earlier version or an earlier test. Talking to it means every
+       * fix since then is missing. It is asked to close (which saves its
+       * checkpoint), and this host's own editor opens in its place and
+       * restores that checkpoint: the edit carries on, only newer.
+       */
+      this.replacedOlderEditor = true;
+      this.logger.warn('older_editor_replaced', { running: this.editorVersion, own: this.ownVersion });
+      try {
+        await this.#closeConnected();
+      } catch (error) {
+        this.logger.warn('older_editor_close_failed', { error });
+      }
     } catch {}
 
     this.logger.info('editor_start_requested', { endpoint: this.endpoint });
     const child = this.spawnEditor();
     child?.unref?.();
+    /*
+     * A window that exits before its pipe ever answered is not one worth
+     * waiting thirty seconds for. The usual cause is another copy of the
+     * editor that already holds the single-instance lock but speaks an older
+     * protocol on a different pipe: the new window hands itself to that one
+     * and quits. Said plainly, it is a one-step fix for the user.
+     */
+    let exited = null;
+    child?.once?.('exit', (code, signal) => { exited = { code, signal }; });
+    child?.once?.('error', (error) => { exited = { error }; });
     const deadline = Date.now() + START_TIMEOUT_MS;
     let last;
     while (!this.closed && Date.now() < deadline) {
       try { return await this.#connect(1200); }
-      catch (error) { last = error; await new Promise((resolve) => setTimeout(resolve, RETRY_MS)); }
+      catch (error) { last = error; }
+      if (exited) {
+        // One more look: a window that exits because it handed over to a
+        // running editor on this same pipe is a success, not a failure.
+        try { return await this.#connect(1200); } catch { /* still nothing */ }
+        this.state = 'unavailable';
+        this.lastError = exited.error?.message || `The editor process exited (code ${exited.code ?? 'none'}) before it answered.`;
+        throw recoverable(
+          'The editor window closed before it could be reached. If SimpleVlogEditor is already open, close it and try again — ' +
+          'an older copy that is still running keeps newer ones from starting.',
+          'editor_start_failed',
+          { endpoint: this.endpoint, exitCode: exited.code ?? null, signal: exited.signal ?? null, cause: exited.error?.message }
+        );
+      }
+      await new Promise((resolve) => setTimeout(resolve, RETRY_MS));
     }
     this.state = 'unavailable';
     this.lastError = last?.message || 'Timed out waiting for the editor.';
     throw recoverable('The editor is unavailable while its IPC endpoint starts.', 'editor_start_timeout', { endpoint: this.endpoint });
+  }
+
+  /** True once, for an editor older than this host (or too old to say its version). */
+  async #olderEditorRunning() {
+    if (this.replacedOlderEditor || !this.ownVersion || !this.checkVersion) return false;
+    const answered = await new Promise((resolve) => {
+      if (this.helloSeen) return resolve(true);
+      const timer = setTimeout(() => { this.helloWaiters.delete(done); resolve(false); }, 3000);
+      const done = () => { clearTimeout(timer); resolve(true); };
+      this.helloWaiters.add(done);
+    });
+    if (!answered) return false;
+    return compareVersions(this.editorVersion, this.ownVersion) < 0;
+  }
+
+  async #closeConnected() {
+    const socket = this.socket;
+    if (!socket) return;
+    await this.#send(socket, { name: '__editor_lifecycle', arguments: { action: 'close' } });
+    await this.#waitForDisconnect();
+    // The single-instance lock outlives the socket by a moment.
+    await new Promise((resolve) => setTimeout(resolve, 1000));
   }
 
   #connect(timeoutMs) {
@@ -172,6 +311,8 @@ class EditorProcessManager {
     this.state = 'ready';
     this.lastError = null;
     this.lastHeartbeat = Date.now();
+    this.helloSeen = false;
+    this.editorVersion = null;
     socket.setEncoding('utf8');
     socket.write(JSON.stringify({
       type: 'hello', protocolVersion: 2, pid: process.pid,
@@ -196,6 +337,10 @@ class EditorProcessManager {
       if (envelope.type === 'hello') {
         this.editorPid = envelope.pid ?? null;
         this.windowCount = envelope.windowCount ?? 0;
+        this.editorVersion = envelope.editorVersion ?? null;
+        this.helloSeen = true;
+        for (const waiter of this.helloWaiters) waiter();
+        this.helloWaiters.clear();
         continue;
       }
       if (envelope.type === 'heartbeat') {
@@ -233,6 +378,10 @@ class EditorProcessManager {
 
   async callEditor(request) {
     const socket = await this.ensureEditorRunning();
+    return this.#send(socket, request);
+  }
+
+  #send(socket, request) {
     return new Promise((resolve, reject) => {
       const id = `mcp-${process.pid}-${++this.sequence}`;
       const timer = setTimeout(() => {
@@ -277,12 +426,47 @@ class EditorProcessManager {
     };
   }
 
+  /**
+   * Close and reopen the editor, whatever state it is in, and let it restore
+   * its recovery checkpoint. A polite close first (it saves the checkpoint);
+   * when the editor cannot even answer that, its process is ended — the
+   * checkpoint written after the last change is what the new window opens.
+   */
+  async recover(reason = 'recovery') {
+    this.logger.warn('editor_recovery_started', { reason, electronPid: this.editorPid });
+    const pid = this.editorPid;
+    try {
+      if (this.socket && !this.socket.destroyed) {
+        await Promise.race([
+          this.closeEditor(),
+          new Promise((_, reject) => setTimeout(() => reject(new Error('close timed out')), 15_000))
+        ]);
+      }
+    } catch (error) {
+      this.logger.warn('editor_recovery_forced', { reason, error });
+      if (pid) { try { process.kill(pid); } catch { /* already gone */ } }
+      this.socket?.destroy();
+      this.socket = null;
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+    }
+    this.state = 'starting';
+    await this.ensureEditorRunning();
+    this.recoveries = (this.recoveries || 0) + 1;
+    this.logger.info('editor_recovery_completed', { reason, electronPid: this.editorPid });
+  }
+
   diagnostics() {
     return {
       state: this.state,
       endpoint: this.endpoint,
+      launchMode: this.launchMode || null,
+      runtimeExecutable: process.versions.electron && process.env.ELECTRON_RUN_AS_NODE ? process.execPath : null,
       mcpPid: process.pid,
       electronPid: this.editorPid,
+      editorVersion: this.editorVersion,
+      hostVersion: this.ownVersion,
+      replacedOlderEditor: this.replacedOlderEditor,
+      recoveries: this.recoveries || 0,
       windowCount: this.windowCount,
       lastHeartbeat: this.lastHeartbeat ? new Date(this.lastHeartbeat).toISOString() : null,
       lastError: this.lastError,
@@ -302,4 +486,4 @@ class EditorProcessManager {
   }
 }
 
-module.exports = { EditorProcessManager, recoverable, RETRY_MS };
+module.exports = { EditorProcessManager, editorLaunchCommand, compareVersions, recoverable, RETRY_MS };

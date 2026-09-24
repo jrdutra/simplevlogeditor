@@ -1,6 +1,6 @@
 {
   "name": "simplevlogeditor",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "scripts": {
     "ng": "ng",
     "start": "node dist/server/server.mjs",
@@ -11,6 +11,8 @@
     "build:desktop": "node scripts/build-desktop.js",
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
+    "test:render": "node --test tests/render-media.test.mjs",
+    "test:packaging-paths": "node --test tests/packaging-folder.test.mjs",
     "serve:ssr:simplevlogeditor": "node dist/server/server.mjs"
   },
   "private": true,

@@ -63,19 +63,33 @@ export class PathBackedFile extends File implements PathBackedMarker {
 
 function remoteStream(url: string, start: number, end: number): ReadableStream<Uint8Array> {
   if (end <= start) return new ReadableStream({ start: (controller) => controller.close() });
+  const abort = new AbortController();
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  let cancelled = false;
   return new ReadableStream<Uint8Array>({
     async start(controller) {
       try {
-        const response = await checkedFetch(url, { headers: rangeHeader(start, end) });
-        const reader = response.body?.getReader();
+        const response = await checkedFetch(url, { headers: rangeHeader(start, end), signal: abort.signal });
+        if (cancelled) { await response.body?.cancel(); return; }
+        reader = response.body?.getReader();
         if (!reader) { controller.close(); return; }
-        while (true) {
-          const item = await reader.read();
-          if (item.done) break;
-          controller.enqueue(item.value);
-        }
-        controller.close();
-      } catch (error) { controller.error(error); }
+      } catch (error) { if (!cancelled) controller.error(error); }
+    },
+    async pull(controller) {
+      if (!reader || cancelled) return;
+      try {
+        const item = await reader.read();
+        if (cancelled) return;
+        if (item.done) { reader.releaseLock(); reader = undefined; controller.close(); }
+        else controller.enqueue(item.value);
+      } catch (error) { if (!cancelled) controller.error(error); }
+    },
+    async cancel(reason) {
+      cancelled = true;
+      // Release the HTTP connection when a decoder/preview stops reading.
+      // Otherwise abandoned streams compete with the next frame request.
+      abort.abort();
+      try { await reader?.cancel(reason); } catch { /* fetch already aborted */ }
     }
   });
 }
@@ -87,7 +101,17 @@ export function pathBackedUrl(file: File): string | null {
 }
 
 export function pathBackedPath(file: File): string | undefined {
-  return (file as unknown as Partial<PathBackedMarker>).sveSourcePath;
+  const stored = (file as unknown as Partial<PathBackedMarker>).sveSourcePath;
+  if (stored) return stored;
+  // Native picker/drop Files are not PathBackedFiles. Electron 32+ exposes
+  // their path through webUtils in preload, not through File.path. Resolving
+  // this does not grant access; all disk operations still check allowed roots.
+  try {
+    return typeof window === 'undefined' ? undefined : window.desktop?.pathForFile?.(file) || undefined;
+  } catch {
+    // Browser-created Files and some restored handles have bytes but no path.
+    return undefined;
+  }
 }
 
 export function mediaObjectUrl(file: File): string {

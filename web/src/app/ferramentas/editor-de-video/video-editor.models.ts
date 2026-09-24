@@ -378,6 +378,12 @@ export interface ProjectSettings {
   timelapseTargetSeconds: number;
   videoFormatId: string;
   audioFormatId: string;
+  /**
+   * Whether an AI edit ends by producing its Video Packaging — three covers,
+   * titles, a description and tags. Off, the assistant stops at the edit, as
+   * it did before Video Packaging existed, and packages only when asked.
+   */
+  autoVideoPackaging: boolean;
 }
 
 /**

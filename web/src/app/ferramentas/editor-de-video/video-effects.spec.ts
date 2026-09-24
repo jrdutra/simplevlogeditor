@@ -100,7 +100,7 @@ describe('Video Effects rendered pixels',()=>{
   });
   it('composites only while a timed effect segment is active',()=>{
     const a=clip('a'),plan=planFor([a]);
-    plan.videoEffects=[{start:1,end:2,clipId:'a',effect:{id:'cinematic',intensity:1}}];
+    plan.videoEffects=[{start:1,end:2,clipId:'a',effect:{id:'cinematic',intensity:1},fadeSeconds:0}];
     expect(needsCompositing(plan,.5)).toBeFalse();
     expect(needsCompositing(plan,1.5)).toBeTrue();
     expect(needsCompositing(plan,2)).toBeFalse();

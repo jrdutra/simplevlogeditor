@@ -59,8 +59,42 @@ function summaryFromProbe(file, stat, document) {
   };
 }
 
+/**
+ * Which FFprobe (and FFmpeg) to run, strongest first:
+ *
+ *   SVE_FFPROBE                         an explicit path, as before
+ *   <resources>/bin/ffprobe(.exe)       one packed with the application, when
+ *                                       the build found one to pack (see
+ *                                       electron/vendor/README.md)
+ *   ffprobe                             whatever is on PATH, as before
+ *
+ * The middle one is what lets a self-contained plugin import media on a
+ * machine that has never had FFmpeg installed. Absent, nothing changes.
+ */
+function bundledTool(name, variable, options = {}) {
+  const environment = options.environment || process.env;
+  if (environment[variable]) return environment[variable];
+  const resources = options.resourcesPath === undefined ? process.resourcesPath : options.resourcesPath;
+  const platform = options.platform || process.platform;
+  const exists = options.exists || ((candidate) => { try { return require('node:fs').statSync(candidate).isFile(); } catch { return false; } });
+  if (resources) {
+    const bundled = path.join(resources, 'bin', platform === 'win32' ? `${name}.exe` : name);
+    if (exists(bundled)) return bundled;
+  }
+  return name;
+}
+
+function ffprobeExecutable(options = {}) {
+  return bundledTool('ffprobe', 'SVE_FFPROBE', options);
+}
+
+/** The same order for FFmpeg: SVE_FFMPEG, then resources/bin/ffmpeg(.exe), then PATH. */
+function ffmpegExecutable(options = {}) {
+  return bundledTool('ffmpeg', 'SVE_FFMPEG', options);
+}
+
 function probeWithFfprobe(file, options = {}) {
-  const executable = options.executable || process.env.SVE_FFPROBE || 'ffprobe';
+  const executable = options.executable || ffprobeExecutable();
   const signal = options.signal;
   const timeoutMs = options.timeoutMs || 30_000;
   return new Promise((resolve, reject) => {
@@ -112,6 +146,9 @@ function probeWithFfprobe(file, options = {}) {
     });
   });
 }
+
+/** Stale-revision retries before a file is appended without the revision guard. */
+const MAX_REVISION_RETRIES = 4;
 
 class MediaImportService {
   constructor(options) {
@@ -238,6 +275,32 @@ class MediaImportService {
     };
   }
 
+  /**
+   * Forgets every import job, on disk too: "Clear all" leaves no record of
+   * what an AI imported. Running jobs are cancelled first so none writes the
+   * state file back a moment later.
+   */
+  async purge() {
+    for (const job of this.jobs.values()) {
+      job.cancelRequested = true;
+      try { job.controller?.abort(); } catch {}
+    }
+    this.jobs.clear();
+    this.requests.clear();
+    this.lastError = null;
+    if (!this.stateFile) return { removed: [] };
+    const removed = [];
+    const folder = path.dirname(this.stateFile);
+    const base = path.basename(this.stateFile);
+    let names = [];
+    try { names = await this.fs.readdir(folder); } catch {}
+    for (const name of names) {
+      if (name !== base && !(name.startsWith(`${base}.`) && name.endsWith('.tmp'))) continue;
+      try { await this.fs.unlink(path.join(folder, name)); removed.push(path.join(folder, name)); } catch {}
+    }
+    return { removed };
+  }
+
   async restore() {
     if (!this.stateFile) return;
     try {
@@ -339,23 +402,35 @@ class MediaImportService {
            * same message: nine in a row, none of which was a real conflict.
            *
            * Appending a clip commutes with all of that, so a conflict is a
-           * reason to re-read the number and try this file again. A second
-           * conflict is a genuine one — the project really was replaced — and
-           * is reported.
+           * reason to re-read the number and try this file again. The editor
+           * keeps moving the number on its own for a moment after each import
+           * (thumbnail, automatic listening, timelapse speed), so one retry
+           * was not always enough: a few are made, a beat apart, and if the
+           * number is still racing the file is appended without the guard —
+           * which is what an append means anyway. None of this is an error
+           * the user or the agent needs to hear about.
            */
           let response;
-          try {
-            response = await commit();
-          } catch (error) {
-            if (error?.code !== 'revision_conflict') throw error;
-            const current = await this.callEditor({ name: 'get_project', arguments: {} });
-            const refreshed = current.projectRevision;
-            this.logger.info('import_revision_refreshed', {
-              requestId: job.requestId, jobId: job.jobId, path: item.path, from: revision, to: refreshed
-            });
-            revision = refreshed;
-            job.projectRevision = revision;
-            response = await commit();
+          for (let attempt = 0; ; attempt++) {
+            try {
+              response = await commit();
+              break;
+            } catch (error) {
+              if (error?.code !== 'revision_conflict') throw error;
+              if (attempt >= MAX_REVISION_RETRIES) {
+                this.logger.info('import_revision_unguarded', { requestId: job.requestId, jobId: job.jobId, path: item.path });
+                revision = undefined;
+                response = await commit();
+                break;
+              }
+              await new Promise((resolve) => setTimeout(resolve, 150 * (attempt + 1)));
+              const current = await this.callEditor({ name: 'get_project', arguments: {} });
+              this.logger.info('import_revision_refreshed', {
+                requestId: job.requestId, jobId: job.jobId, path: item.path, from: revision, to: current.projectRevision, attempt: attempt + 1
+              });
+              revision = current.projectRevision;
+              job.projectRevision = revision;
+            }
           }
           const result = response.result || {};
           file.status = result.status || 'imported';
@@ -438,4 +513,4 @@ class MediaImportService {
   }
 }
 
-module.exports = { MediaImportService, probeWithFfprobe, summaryFromProbe, normalized, SUPPORTED };
+module.exports = { MediaImportService, probeWithFfprobe, ffprobeExecutable, ffmpegExecutable, summaryFromProbe, normalized, SUPPORTED };

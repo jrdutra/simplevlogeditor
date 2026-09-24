@@ -89,29 +89,31 @@ import { HelpPanel, HelpService } from './help.service';
 
             <h3>Let an AI drive it</h3>
             <p>The desktop application exposes the whole editor through a local MCP server, so
-              Codex or Claude Code can cut, caption and export for you. Install the plugin for the
-              client you use — <strong>install the desktop application first</strong>, because the
-              plugin opens it.</p>
+              Codex or Claude Code can cut, caption and export for you. The plugins use the editor
+              installed by the Windows installer in its default folder (the portable .zip is not
+              used by them). Install the desktop application first, keeping the default folder, then
+              the plugin for your client.</p>
 
             <ul class="instalar-lista">
               <li class="instalar-codex">
-                <a [href]="download.codexPluginPath" download>
+                <a [href]="download.codexPluginRepository" (click)="download.copyCodexRepository($event)">
                   <span class="instalar-marca"><img src="/assets/icons/codex-mark.svg" alt="" aria-hidden="true"></span>
                   <strong>Codex plugin</strong>
-                  <em>Import the .zip, or unzip it and import the folder.</em>
+                  <em>Copies the repository address to add as a marketplace in Codex.</em>
                 </a>
               </li>
               <li class="instalar-claude">
-                <a [href]="download.claudePluginPath" download>
+                <a [href]="download.claudePluginRepository" (click)="download.copyClaudeRepository($event)">
                   <span class="instalar-marca"><img src="/assets/icons/claude-mark.svg" alt="" aria-hidden="true"></span>
                   <strong>Claude Code plugin</strong>
-                  <em>Import the .zip, or unzip it and import the folder.</em>
+                  <em>Copies the repository address and shows how to install in Claude Code.</em>
                 </a>
               </li>
+
             </ul>
 
-            <p class="instalar-nota">Each archive carries an <code>INSTALL.txt</code> with both
-              routes written out, and a doctor script that checks the installation and says what to
+            <p class="instalar-nota">Each plugin carries a doctor script
+              (<code>node scripts/doctor.mjs</code>) that checks the installation and says what to
               run for anything missing. Which folders the editor may open is decided in the editor
               itself — your own Videos, Pictures, Music, Downloads, Desktop and Documents to begin
               with, and anything else you allow when it asks.</p>

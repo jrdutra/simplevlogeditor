@@ -81,6 +81,8 @@ export interface ProjectPreset {
     timelapseTargetSeconds: number;
     videoFormatId: string;
     audioFormatId: string;
+    /** Absent in presets saved before it could be switched off. Absent is on. */
+    autoVideoPackaging?: boolean;
   };
 }
 
@@ -126,7 +128,8 @@ export function presetFrom(name: string, project: ProjectSettings): ProjectPrese
       reframe: project.reframe,
       timelapseTargetSeconds: project.timelapseTargetSeconds,
       videoFormatId: project.videoFormatId,
-      audioFormatId: project.audioFormatId
+      audioFormatId: project.audioFormatId,
+      autoVideoPackaging: project.autoVideoPackaging
     }
   };
 }
@@ -156,7 +159,8 @@ export function settingsFrom(preset: ProjectPreset): ProjectSettings {
     reframe: stored.reframe ?? 'fill',
     timelapseTargetSeconds: clampTimelapseTarget(stored.timelapseTargetSeconds ?? 0),
     videoFormatId: stored.videoFormatId,
-    audioFormatId: stored.audioFormatId
+    audioFormatId: stored.audioFormatId,
+    autoVideoPackaging: stored.autoVideoPackaging !== false
   };
 }
 

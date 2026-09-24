@@ -776,6 +776,30 @@
           <p class="ajuda">{{ aspectNote }}</p>
         </fieldset>
 
+        <!-- What an AI edit does once the cutting is done. A project setting, so
+             it travels with the project and its presets, and the assistant
+             reads it when it finishes rather than deciding for itself. -->
+        <fieldset class="grupo">
+          <legend class="grupo-titulo">After an AI edit</legend>
+          <div class="linha-checks">
+            <label class="check">
+              <input type="checkbox" [checked]="project.autoVideoPackaging" [disabled]="exporting !== null"
+                (change)="onAutoVideoPackaging($any($event.target).checked)">
+              <span>Generate thumbnails, titles, description and tags automatically</span>
+              <app-help-hint label="What automatic Video Packaging does">
+                When an AI edit finishes, the assistant goes straight on to Video Packaging: three covers drawn from
+                frames of the finished video, three titles, a description with chapters and hashtags, and tags.
+                Switched off, the assistant stops at the edit and only packages the video if you ask it to.
+              </app-help-hint>
+            </label>
+          </div>
+          <p class="ajuda">
+            {{ project.autoVideoPackaging
+              ? 'On: every AI edit ends with its covers, titles, description and tags in Video Packaging.'
+              : 'Off: the AI only edits the video. Ask for thumbnails or titles whenever you want them.' }}
+          </p>
+        </fieldset>
+
         <!-- Which folders this editor may touch. Here rather than in a
              preferences window of its own, because it is read at the same
              moment as the export destination it constrains. -->
@@ -1648,6 +1672,16 @@
         </span>
       </button>
 
+      <!-- Only once there is a package to look at, in its own tool tab. -->
+      @if (packagingReady) {
+        <button mat-stroked-button class="btn-packaging" (click)="openPackaging()">
+          <span class="btn-conteudo">
+            <mat-icon aria-hidden="true">image_search</mat-icon>
+            <span>View Video Packaging</span>
+          </span>
+        </button>
+      }
+
       <button mat-raised-button color="primary" (click)="export('audio')" [disabled]="!canExportAudio">
         <span class="btn-conteudo">
           @if (exporting === 'audio') {
@@ -1699,7 +1733,7 @@
 
   <!-- Dismissing puts both of these away for good. Only an AI connecting
        brings them back, dressed as whichever client that is. -->
-  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && !agentLogOpen) {
+  @if (false && (desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && !agentLogOpen) {
     <div class="agente-controle-indicador-caixa" [class]="agentControllerTheme" appBodyPortal>
       <button type="button" class="agente-controle-indicador" (click)="openAgentLog()">
         <img [src]="agentControllerIcon" alt="" aria-hidden="true">
@@ -1714,7 +1748,7 @@
     </div>
   }
 
-  @if ((desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && agentLogOpen) {
+  @if (false && (desktop.agentControl().visible || desktop.agentControl().active) && !agentPanelDismissed && agentLogOpen) {
     <div class="agente-modal-fundo" appBodyPortal>
       <section class="agente-modal" [class]="agentControllerTheme"
         role="dialog" aria-modal="true" aria-labelledby="agente-modal-titulo">

@@ -1932,7 +1932,8 @@ describe('a video effect section arrives hard or soft, as asked', () => {
     const clip = mediaClip('a', 10, {
       videoEffects: [{ effectId: 'cinematic', intensity: 1, startSeconds: 0, durationSeconds: 10, fadeSeconds: 2 }]
     });
-    const plan = buildProjectPlan([{ ...clip, edits: cloneEdits({ ...DEFAULT_EDITS, speed: 2 }) }], DEFAULT_PROJECT, 'video');
+    // A clip's own settings live in `overrides`; there is no `edits` field on a clip.
+    const plan = buildProjectPlan([{ ...clip, overrides: cloneEdits({ ...DEFAULT_EDITS, speed: 2 }) }], DEFAULT_PROJECT, 'video');
     // A two-second ramp on a clip running at twice the speed is watched for one.
     expect(plan.videoEffects[0].fadeSeconds).toBeCloseTo(1, 6);
   });

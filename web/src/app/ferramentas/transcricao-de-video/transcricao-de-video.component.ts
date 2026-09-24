@@ -100,6 +100,9 @@ export class TranscricaoDeVideoComponent implements OnInit, OnDestroy {
   private captureTimer?: ReturnType<typeof setInterval>;
   get captureSupported(): boolean { return MeetingRecorder.supported(); }
   get sourceBusy(): boolean { return this.working || this.capturing || this.captureStarting; }
+  get hasProject(): boolean {
+    return !!this.file || this.cues.length > 0 || !!this.message || !!this.errorMessage || !!this.errorHint;
+  }
   file: File | null = null;
   fileName = '';
   fileSize = 0;
@@ -201,8 +204,21 @@ export class TranscricaoDeVideoComponent implements OnInit, OnDestroy {
     this.fileSize = 0;
     this.heard = [];
     this.cues = [];
+    this.previewCues = null;
+    this.previewFormat = null;
+    this.previewText = '';
+    this.audioOnly = false;
+    this.mediaDuration = Infinity;
+    this.playbackTime = 0;
+    this.page = 0;
     this.progress = null;
+    this.errorMessage = '';
+    this.errorHint = '';
     this.message = '';
+  }
+
+  clearProject(): void {
+    this.clearFile();
   }
 
   async startMeeting(): Promise<void> {

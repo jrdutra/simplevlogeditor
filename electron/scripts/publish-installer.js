@@ -105,6 +105,11 @@ function main() {
       fs.copyFileSync(source, path.join(directory, name));
     }
     fs.writeFileSync(path.join(directory, 'installer.json'), JSON.stringify(manifest, null, 2) + '\n');
+    // The Codex plugin with the editor embedded is no longer published. A copy
+    // left by an older build would stay downloadable from the site, so it goes.
+    for (const stale of ['simple-vlog-editor-codex-with-editor-win-x64.zip', 'simple-vlog-editor-claude-with-editor-win-x64.zip']) {
+      try { fs.rmSync(path.join(directory, stale), { force: true }); } catch {}
+    }
 
     const where = path.relative(path.resolve(ROOT, '..'), directory);
     console.log(`publish-installer: ${publishing.map((a) => `${a.name} (${a.size})`).join(', ')}  ->  ${where}`);

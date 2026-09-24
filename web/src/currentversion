@@ -1,8 +1,8 @@
 {
-  "updateUrl": "https://thebiglearn.org/",
-  "desktop": "1.0.0",
+  "updateUrl": "https://simplevlogeditor.com/",
+  "desktop": "2.0.0",
   "plugins": {
-    "claude": "1.6.0",
-    "codex": "2.6.0"
+    "claude": "2.0.0",
+    "codex": "3.0.0"
   }
 }

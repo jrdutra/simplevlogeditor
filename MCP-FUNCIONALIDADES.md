@@ -201,7 +201,41 @@ Retorno: `clipId`, `assetId`, `timeSpace: 'source'`, `language`, `model`,
 retemporizadas pela edição atual), agrupamento por frases, e `quality`
 (`wordCount`, `wordsPerMinute`, `reviewRecommended`, `fallbackModel`).
 
+Clipe **sem áudio** não é erro: a resposta traz `noAudio: true`, transcrição vazia, um
+`warning` e `isTimelapse`/`timelapseReason` (o editor roda a própria detecção de timelapse
+no clipe). `get_timeline` também expõe `hasAudio`, `isTimelapse`, `timelapseReason` e
+`speedFromTimelapse` em cada clipe de mídia.
+
 Erros próprios: `transcription_timeout`, `transcription_stage_timeout`.
+
+### 2.7b Video Packaging
+
+**Geração automática.** Nas configurações do projeto do Video Editor há a caixa
+*Generate thumbnails, titles, description and tags automatically* (ligada por
+padrão, salva no projeto e nos presets). `finish_editing` devolve
+`videoPackaging.automatic`; `get_packaging_sources` devolve `autoVideoPackaging`;
+`set_project_settings` aceita `{ "autoVideoPackaging": true | false }`. Desligada,
+a IA só edita — capas, títulos, descrição e tags só se o usuário pedir.
+
+| Tool | Argumentos | Retorno |
+|---|---|---|
+| `get_packaging_sources` | — | Leitura única de tudo que um pacote precisa: se há projeto, quais clipes já têm transcrição ou frames salvos, o entendimento guardado, os links dos QR Codes e onde escrever. Exige a página do Video Editor aberta. |
+| `save_frames` | `clipId` + `timestamps[]` (1–**12**, obrig.), `width` (640–3840), `quality` (0.5–1), `label`, `requestId` | Grava a **imagem final editada** (mesma composição de `get_frames` `composited`) em tamanho cheio em `video-packaging/frames/`, ao lado da mídia. Devolve `path`, `timestamp` de origem e `outputTime` no vídeo final. Recusa, antes de gravar qualquer coisa, instantes cortados da edição, dentro de transição, ou que dependem de recorte de pessoa indisponível (`unfaithful_frame` + `suggestedTimestamp`). Cada arquivo fica atrelado à edição atual; depois de qualquer mudança na edição ele deixa de valer como fundo. |
+| `get_packaging_tag_style` | — | Grava e devolve o caminho, o `id` e a descrição do estilo de tags em uso. São **11 estilos** embutidos (`classic` é o padrão) mais o estilo próprio do usuário. Se o usuário marcou "perguntar sempre", **abre o seletor na tela e espera** a escolha. |
+| `set_packaging_tag_style` | `path` (obrig.) | Salva uma imagem em disco como o estilo próprio do usuário e seleciona. A aplicação guarda esse estilo entre reinicializações. |
+| `set_video_understanding` | `summary`, `topics[]`, `chapters[]`, `highlights[]`, `language` | Guarda o entendimento do vídeo para a próxima execução reaproveitar. Campos omitidos mantêm o valor guardado. |
+| `get_video_understanding` | — | Lê de volta o que foi guardado. |
+| `set_video_packaging` | `thumbnails[]`, `titles[]`, `description`, `tags`, `requestId` | Entrega capas, títulos, descrição e tags na ferramenta Video Packaging. |
+| `get_video_packaging` / `clear_video_packaging` | — / `requestId` | Lê ou limpa o pacote exibido. |
+
+Na capa, `sourceFramePath` é o `path` devolvido por `save_frames` e `sourceTimestamp` é o `outputTime` desse frame; `set_video_packaging` recusa fundos de uma versão anterior da edição. `get_frames`/`get_contact_sheet` com `composited: true` marcam cada frame com `faithful` e `subjectLayer`.
+
+`get_frames` responde com imagens para **olhar**; `save_frames` responde com
+arquivos para **desenhar em cima**, que é outro trabalho e outro tamanho. As
+capas e o estilo ficam em `video-packaging/` ao lado da filmagem, nunca dentro
+dos dados da aplicação. O fluxo inteiro está na skill `create-video-packaging`,
+que deve rodar assim que `finish_editing` retornar.
+
 
 ### 2.7 Visão / frames
 

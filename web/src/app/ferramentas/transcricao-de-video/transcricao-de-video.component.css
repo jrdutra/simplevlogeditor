@@ -93,6 +93,22 @@
   flex-wrap: wrap;
 }
 
+/* Match the Noise Remover picker: before a file is selected, the complete
+   usable middle of the source panel becomes one large upload target. */
+.fonte.fonte-vazia {
+  min-height: 0;
+  align-items: stretch;
+  flex-wrap: nowrap;
+}
+
+.fonte.fonte-vazia > button {
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
+  align-self: stretch;
+}
+
 .oculto { display: none; }
 
 .arquivo {
@@ -115,6 +131,24 @@
 }
 
 .link-acao:hover { color: var(--text-main); }
+
+.painel-fonte__footer {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: auto;
+  padding-top: 0.75rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+
+.clear-project {
+  color: var(--text-muted);
+}
+
+.clear-project:not(:disabled):hover,
+.clear-project:not(:disabled):focus-visible {
+  color: #fff;
+  border-color: rgba(209, 96, 255, 0.55);
+}
 
 .nota {
   margin: 0;

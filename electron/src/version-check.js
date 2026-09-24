@@ -17,8 +17,8 @@
  */
 
 /** The published manifest, and the page a reader is sent to. */
-const MANIFEST_URL = 'https://thebiglearn.org/currentversion';
-const UPDATE_PAGE = 'https://thebiglearn.org/';
+const MANIFEST_URL = 'https://simplevlogeditor.com/currentversion';
+const UPDATE_PAGE = 'https://simplevlogeditor.com/';
 /** Long enough for a slow connection, short enough not to delay a start. */
 const TIMEOUT_MS = 6000;
 

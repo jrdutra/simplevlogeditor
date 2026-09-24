@@ -24,12 +24,12 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const OUT = path.resolve(__dirname, '..', 'src');
 
 /** Where the site tells a reader to go when something is out of date. */
-const UPDATE_URL = 'https://thebiglearn.org/';
+const UPDATE_URL = 'https://simplevlogeditor.com/';
 
 const SOURCES = {
   desktop: path.join(ROOT, 'electron', 'package.json'),
-  claude: path.join(ROOT, 'ai-client', 'claude', 'plugins', 'simple-vlog-editor', '.claude-plugin', 'plugin.json'),
-  codex: path.join(ROOT, 'ai-client', 'codex', 'plugins', 'simple-vlog-editor', '.codex-plugin', 'plugin.json')
+  claude: path.join(ROOT, 'ai-client', 'simplevlogeditor-claude-plugin', 'plugins', 'simple-vlog-editor', '.claude-plugin', 'plugin.json'),
+  codex: path.join(ROOT, 'ai-client', 'simplevlogeditor-codex-plugin', 'plugins', 'simple-vlog-editor', '.codex-plugin', 'plugin.json')
 };
 
 function versionOf(file) {

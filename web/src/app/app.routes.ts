@@ -33,7 +33,7 @@ const seo = {
   home: {
     title: 'Free Video & Audio Tools for Vloggers',
     description:
-      'Six free browser tools for vlogs: edit video, cut silence, merge clips, remove background noise, transcribe to subtitles and turn text into video. No sign-up, no upload, no watermark.',
+      'Eight browser tools for vloggers: edit video, clean audio, transcribe, create titles and turn horizontal videos into shorts. No sign-up, no upload, no watermark.',
     keywords:
       'free video editor online, cut silence from video, merge video and audio, remove background noise from video, video to subtitles, srt generator, text to video, browser video editor, no upload video editor, vlog editing tools',
     canonicalPath: '/',
@@ -73,6 +73,16 @@ const seo = {
     'text-video-maker',
     'Text Video Maker — Animate Text Over a Photo',
     'text to video, animated text video, title card maker, intro maker, text over image video, quote video maker'
+  ),
+  videoPackaging: toolSeo(
+    'video-packaging',
+    'Video Packaging for Horizontal Videos',
+    'video packaging, youtube thumbnail generator, video title generator, horizontal video thumbnail, ai thumbnail ideas, video title ideas'
+  ),
+  shortsGenerator: toolSeo(
+    'shorts-generator',
+    'Shorts Generator — Turn Horizontal Videos Into Vertical Clips',
+    'shorts generator, horizontal video to vertical, create youtube shorts, vertical video maker, ai video reframing'
   )
 };
 
@@ -119,6 +129,22 @@ export const routes: Routes = [
         (m) => m.CriadorDeVideoTextoComponent
       ),
     data: { seo: seo.textVideoMaker }
+  },
+  {
+    path: 'video-packaging',
+    loadComponent: () =>
+      import('./ferramentas/video-packaging/video-packaging.component').then(
+        (m) => m.VideoPackagingComponent
+      ),
+    data: { seo: seo.videoPackaging }
+  },
+  {
+    path: 'shorts-generator',
+    loadComponent: () =>
+      import('./ferramentas/shorts-generator/shorts-generator.component').then(
+        (m) => m.ShortsGeneratorComponent
+      ),
+    data: { seo: seo.shortsGenerator }
   },
   { path: '**', redirectTo: '' }
 ];

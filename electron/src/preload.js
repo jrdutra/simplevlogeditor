@@ -56,6 +56,7 @@ contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
 
   minimize: () => ipcRenderer.send('window:minimize'),
+  focus: () => ipcRenderer.send('window:focus'),
   toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
   close: async () => {
     try { await beforeCloseHandler?.(); }
@@ -89,6 +90,8 @@ contextBridge.exposeInMainWorld('desktop', {
   /** Autosave the renderer's complete edit to Electron's fixed recovery file. */
   checkpointProject: (payload) => ipcRenderer.invoke('project:checkpoint', payload),
   clearProjectCheckpoint: (payload) => ipcRenderer.invoke('project:checkpoint-clear', payload),
+  /** "Clear all": every recovery checkpoint and AI temporary the editor ever left. */
+  purgeProjectRecovery: (payload) => ipcRenderer.invoke('project:recovery-purge', payload),
   registerBeforeCloseHandler: (handler) => {
     if (typeof handler !== 'function') throw new TypeError('The close handler must be a function.');
     beforeCloseHandler = handler;
@@ -129,6 +132,7 @@ contextBridge.exposeInMainWorld('desktop', {
   reportAgentProgress: (progress) => ipcRenderer.send('agent:progress', progress),
 
   readAgentFiles: (paths) => ipcRenderer.invoke('agent:read-files', paths),
+  ensureAgentFolder: (path) => ipcRenderer.invoke('agent:output-folder', path),
   openAgentOutput: (path) => ipcRenderer.invoke('agent:output-open', path),
   writeAgentOutput: (id, position, data) => ipcRenderer.invoke('agent:output-write', id, position, data),
   closeAgentOutput: (id) => ipcRenderer.invoke('agent:output-close', id),
@@ -152,7 +156,7 @@ contextBridge.exposeInMainWorld('desktop', {
   rememberFolders: (paths) => ipcRenderer.invoke('roots:remember', paths),
   ensureRoots: (paths) => ipcRenderer.invoke('roots:ensure', paths),
   listRoots: () => ipcRenderer.invoke('roots:list'),
-  addRoot: () => ipcRenderer.invoke('roots:add'),
+  addRoot: (purpose) => ipcRenderer.invoke('roots:add', purpose === 'packaging' ? 'packaging' : undefined),
   removeRoot: (folder) => ipcRenderer.invoke('roots:remove', folder),
   requestRootConsent: (request) => ipcRenderer.invoke('roots:request-consent', request),
   onRootState: (handler) => {
