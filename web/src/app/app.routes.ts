@@ -81,7 +81,7 @@ const seo = {
   ),
   shortsGenerator: toolSeo(
     'shorts-generator',
-    'Shorts Generator — Turn Horizontal Videos Into Vertical Clips',
+    'Short Editor — Turn Horizontal Videos Into Vertical Clips',
     'shorts generator, horizontal video to vertical, create youtube shorts, vertical video maker, ai video reframing'
   )
 };

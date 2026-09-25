@@ -1,0 +1,1006 @@
+:host {
+  display:block;
+  height:100%;
+  min-height:100%;
+  color:var(--text-main)}
+.short-editor {
+  max-width:none;
+  margin:0;
+  padding:clamp(0.75rem, 1.5vw, 1.5rem);
+  display:flex;
+  flex-direction:column;
+  gap:1rem;
+  box-sizing:border-box}
+.short-editor.inicial { height:100%; min-height:100%; }
+.upload-area {
+  display:flex;
+  flex:1 1 auto;
+  min-height:16rem;
+  flex-direction:column;
+  align-items:center;
+  justify-content:center;
+  border:1px dashed var(--line-soft);
+  border-radius:12px;
+  text-align:center;
+  cursor:pointer;
+  transition:border-color 200ms ease, background 200ms ease;
+}
+.upload-area[aria-disabled=true] { cursor:default; }
+.upload-area:focus-visible { outline:2px solid var(--neon-bright); outline-offset:3px; }
+.upload-icone { font-size:3rem; width:3rem; height:3rem; margin-bottom:0.5rem; }
+.upload-texto { margin:0.25rem 0; font-size:1rem; color:var(--text-main); }
+.upload-hint { margin:0; font-size:0.8rem; color:var(--text-muted); }
+header,.toolbar,.actions,.settings-strip {
+  display:flex;
+  align-items:center;
+  gap:12px;
+  flex-wrap:wrap}
+header,.toolbar {
+  justify-content:space-between}
+h1 {
+  font-size:36px;
+  margin:4px 0 10px}
+h2 {
+  font-size:19px}
+h3 {
+  margin:0 0 8px}
+.eyebrow {
+  font-size:11px;
+  letter-spacing:2px;
+  color:var(--neon)}
+.hint,header p,.player p,.card-body p {
+  color:var(--text-muted);
+  font-size:13px}
+.button,button {
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border:1px solid var(--line-soft);
+  border-radius:9px;
+  background:linear-gradient(#423b4b, #292530);
+  box-shadow:inset 0 1px 0 #ffffff1c, 0 2px 3px #0005;
+  color:var(--text-main);
+  padding:10px 14px;
+  cursor:pointer;
+  font:inherit;
+  font-size:13px;
+  gap:8px}
+button:hover,.button:hover {
+  border-color:var(--line-hard)}
+button:disabled,.disabled {
+  opacity:.4;
+  cursor:not-allowed}
+.primary {
+  background:linear-gradient(#493054, #302036);
+  color:#f2ceff;
+  border-color:#db73ff;
+  box-shadow:inset 0 0 0 2px #1b1522, inset 0 0 14px #cf40ff33, 0 0 8px #c33ff933;
+  font-weight:700}
+input[type=file] {
+  position:absolute;
+  width:1px;
+  height:1px;
+  opacity:0;
+  overflow:hidden}
+.button:focus-within,button:focus-visible {
+  outline:2px solid var(--neon-bright);
+  outline-offset:3px}
+input:not([type=file]):not([type=range]),select {
+  background:var(--panel-well);
+  border:1px solid var(--line-soft);
+  color:inherit;
+  padding:8px;
+  border-radius:7px;
+  max-width:100%;
+  box-sizing:border-box}
+input[type=range] {
+  accent-color:var(--neon);
+  width:100%}
+label {
+  font-size:13px}
+.notice,.error {
+  padding:12px;
+  border-radius:8px;
+  background:var(--panel)}
+.processing {
+  display:flex;
+  align-items:center;
+  gap:10px}
+.spinner {
+  flex:0 0 auto;
+  width:16px;
+  height:16px;
+  border:2px solid var(--line-soft);
+  border-top-color:var(--neon-bright);
+  border-radius:50%;
+  animation:short-spin .8s linear infinite}
+@keyframes short-spin {
+  to {
+  transform:rotate(360deg)}
+}
+@media (prefers-reduced-motion:reduce) {
+  .spinner {
+  animation-duration:2.4s}
+}
+.error {
+  background:#472936;
+  color:#ffc3cc!important;
+  overflow-wrap:anywhere}
+.timeline-panel {
+  padding:20px;
+  background:var(--panel-well);
+  border:1px solid var(--line-soft);
+  border-radius:14px}
+.settings-strip {
+  background:var(--panel);
+  padding:10px;
+  margin-top:8px;
+  font-size:12px;
+  color:var(--text-main);
+  justify-content:space-between}
+.cut-list {
+  margin:16px 0}
+.cut-row {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  padding:8px;
+  border-bottom:1px solid var(--line-grey)}
+.cut-row label {
+  display:flex;
+  align-items:center;
+  gap:6px}
+.cut-row input {
+  width:90px}
+.cut-row span {
+  font-size:12px}
+.cut-row button {
+  padding:5px 10px}
+.clear-all mat-icon,.settings-modal .primary mat-icon,.timeline-panel .toolbar .actions mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+/* Adding a cut and its tally on the left; naming and creating the short on the right. */
+/* The tool's title lives in the site header; only its actions remain here, on the right. */
+.short-editor>header {
+  justify-content:flex-end}
+.create-bar {
+  justify-content:flex-start}
+.create-bar>span {
+  margin-right:auto}
+.icon-button {
+  flex:0 0 auto;
+  width:32px;
+  height:32px;
+  padding:0!important;
+  font-size:16px;
+  line-height:1}
+.icon-button mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+.cut-modal {
+  width:420px}
+.framing {
+  position:relative;
+  height:min(336px, 41.6vh);
+  aspect-ratio:9/16;
+  margin:14px auto 10px;
+  overflow:hidden;
+  border-radius:12px;
+  background:var(--bg-deep);
+  border:1px solid var(--line-hard);
+  cursor:grab;
+  touch-action:none;
+  user-select:none}
+.framing.dragging {
+  cursor:grabbing}
+.framing:focus-visible {
+  outline:2px solid var(--neon-bright);
+  outline-offset:3px}
+.framing video {
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  pointer-events:none;
+  display:block}
+.framing-badge {
+  position:absolute;
+  right:10px;
+  top:10px;
+  background:var(--panel-dark);
+  padding:3px 7px;
+  border-radius:5px;
+  font-size:11px;
+  pointer-events:none}
+.framing-bar {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  justify-content:center;
+  font-size:13px;
+  color:var(--text-muted)}
+.framing-bar span {
+  flex:1 1 100%;
+  text-align:center}
+.cut-times {
+  display:flex;
+  gap:12px;
+  margin-top:16px}
+.cut-times label {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  flex:1}
+.grid-title {
+  margin-top:32px}
+.grid-title span {
+  color:var(--neon)}
+.short-grid {
+  display:grid;
+  grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+  gap:20px}
+.short-card {
+  border:1px solid var(--line-soft);
+  background:var(--panel-well);
+  border-radius:14px;
+  overflow:hidden;
+  min-width:0}
+.card-cover {
+  position:relative;
+  height:240px;
+  background:var(--bg-deep)}
+.card-cover video,.short-card>video {
+  display:block;
+  width:100%;
+  height:240px;
+  object-fit:contain;
+  background:var(--bg-deep)}
+.card-cover video {
+  width:135px;
+  object-fit:cover;
+  margin:auto}
+.card-cover span {
+  position:absolute;
+  right:12px;
+  top:12px;
+  background:var(--panel-dark);
+  padding:4px 7px;
+  border-radius:5px;
+  font-size:11px}
+.card-body {
+  padding:16px}
+.card-body .actions {
+  gap:6px}
+.card-body .download {
+  display:flex;
+  width:fit-content;
+  max-width:100%;
+  min-height:0;
+  height:34px;
+  box-sizing:border-box;
+  padding:0 10px;
+  margin:0 0 12px;
+  font-size:12px;
+  line-height:1;
+  text-decoration:none}
+.card-body button {
+  padding:8px;
+  font-size:12px}
+.card-body .actions button {
+  height:34px}
+.card-body .remove-card {
+  flex:0 0 auto;
+  width:34px;
+  height:34px;
+  padding:0;
+  font-size:16px;
+  line-height:1}
+.render {
+  width:100%;
+  margin-top:12px}
+progress {
+  width:100%;
+  accent-color:var(--neon)}
+.success {
+  color:var(--neon-bright)!important}
+.success small {
+  display:block;
+  overflow-wrap:anywhere;
+  font-size:11px;
+  margin-top:5px}
+.modal-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  background:rgba(9, 8, 16, 0.72);
+  display:grid;
+  place-items:center;
+  padding:24px}
+.settings-modal {
+  box-shadow:var(--lift), var(--inset);
+  width:460px;
+  max-width:100%;
+  max-height:85vh;
+  overflow:auto;
+  background:var(--panel);
+  border:1px solid var(--line-hard);
+  border-radius:16px;
+  padding:24px;
+  box-sizing:border-box}
+.settings-modal>label:not(.button) {
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+  margin:18px 0}
+.settings-modal>.short-name {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:6px 0 18px}
+.audio-now {
+  display:flex;
+  align-items:center;
+  gap:8px;
+  margin:0 0 10px;
+  color:var(--text-main);
+  font-size:14px}
+.audio-now mat-icon {
+  flex:0 0 auto;
+  width:18px;
+  height:18px;
+  font-size:18px;
+  color:var(--neon)}
+.audio-now span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap}
+.audio-actions {
+  display:flex;
+  gap:10px;
+  flex-wrap:wrap}
+.wide-modal {
+  width:80vw;
+  max-width:80vw;
+  max-height:90vh}
+.settings-layout {
+  display:grid;
+  grid-template-columns:auto minmax(0,1fr);
+  gap:28px;
+  align-items:start;
+  margin-top:14px}
+.short-preview-panel {
+  width:min(280px, 28vw)}
+.short-preview {
+  position:relative;
+  width:100%;
+  aspect-ratio:9/16;
+  overflow:hidden;
+  border-radius:12px;
+  background:var(--bg-deep);
+  border:1px solid var(--line-hard)}
+.short-preview video {
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:cover;
+  cursor:pointer}
+.preview-controls {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  margin-top:10px;
+  font-size:12px;
+  color:var(--text-muted)}
+.preview-controls progress {
+  flex:1;
+  min-width:0}
+.settings-column {
+  min-width:0}
+.settings-column>.short-name {
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  margin:0 0 16px}
+.settings-groups {
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(260px, 1fr));
+  gap:18px}
+.settings-group {
+  min-width:0;
+  margin:0;
+  padding:12px 18px 6px;
+  border:1px solid var(--line-soft);
+  border-radius:12px;
+  background:var(--panel-well)}
+.settings-group legend {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:0 6px;
+  font-size:14px;
+  font-weight:700;
+  color:var(--text-main)}
+.settings-group legend mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px;
+  color:var(--neon)}
+.settings-group>label:not(.button) {
+  display:flex;
+  flex-direction:column;
+  gap:9px;
+  margin:16px 0}
+.settings-group>p {
+  overflow-wrap:anywhere}
+@media(max-width:800px) {
+  .wide-modal {
+  width:100%;
+  max-width:100%}
+.settings-layout {
+  grid-template-columns:1fr}
+.settings-layout>.settings-column {
+  grid-row:1}
+.short-preview-panel {
+  width:min(240px, 70vw);
+  margin:0 auto}
+}
+.settings-modal>p {
+  overflow-wrap:anywhere}
+.settings-modal .actions {
+  justify-content:flex-end;
+  margin-top:24px}
+@media(max-width:700px) {
+  .short-editor {
+  padding:20px 12px}
+.preview-layout {
+  grid-template-columns:1fr}
+.timeline-panel {
+  padding:12px}
+.short-grid {
+  grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+}
+
+/* ------------------------------------------ the workspace, as in the Video Editor */
+
+.bancada {
+  display:grid;
+  grid-template-columns:minmax(0, 1fr);
+  gap:1rem;
+  margin:12px 0 6px}
+.previa {
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+  min-width:0;
+  padding:16px;
+  border:1px solid var(--line-soft);
+  border-radius:12px;
+  background:var(--panel-dark)}
+.previa-palco {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding:8px;
+  border-radius:10px;
+  background:#000}
+.previa-tela {
+  display:block;
+  max-width:100%;
+  max-height:var(--altura-video, 46vh);
+  width:auto;
+  height:auto;
+  border-radius:6px}
+/* The Video Editor's transport, drawn the same way. */
+.previa-tela {
+  cursor:pointer}
+.previa-transporte {
+  display:flex;
+  align-items:center;
+  gap:12px}
+.previa-botao {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  width:36px;
+  height:36px;
+  flex-shrink:0;
+  padding:0;
+  border:1px solid var(--line-soft);
+  border-radius:50%;
+  background:transparent;
+  box-shadow:none;
+  color:var(--aqua);
+  cursor:pointer;
+  transition:background 120ms ease, border-color 120ms ease}
+.previa-botao:hover {
+  background:rgba(209, 96, 255, 0.1);
+  border-color:var(--aqua)}
+.previa-botao:not(.previa-botao-menor) {
+  border-color:transparent;
+  background:transparent}
+.previa-botao:not(.previa-botao-menor):hover {
+  border-color:transparent;
+  background:rgba(209, 96, 255, 0.12);
+  color:var(--neon)}
+.previa-botao:focus-visible {
+  outline:2px solid var(--aqua);
+  outline-offset:2px}
+.previa-botao-menor {
+  width:32px;
+  height:32px}
+.previa-botao-menor mat-icon {
+  font-size:21.6px;
+  width:21.6px;
+  height:21.6px;
+  line-height:21.6px}
+.previa-tempo {
+  flex-shrink:0;
+  min-width:5ch;
+  color:var(--text-muted);
+  font-size:0.78rem;
+  font-variant-numeric:tabular-nums}
+.previa-total {
+  text-align:right}
+.previa-barra {
+  flex:1 1 auto;
+  min-width:0;
+  width:auto;
+  accent-color:var(--aqua);
+  cursor:pointer}
+/* On the whole screen: a centred stack with the video taking what is left. */
+.previa-cheia {
+  justify-content:center;
+  gap:12px;
+  width:100vw;
+  height:100vh;
+  padding:16px;
+  box-sizing:border-box;
+  border-radius:0;
+  background:var(--bg-deep);
+  overflow:hidden}
+.previa-cheia .previa-palco {
+  flex:1 1 auto;
+  min-height:0;
+  overflow:hidden}
+.previa-cheia .previa-tela {
+  max-height:calc(100vh - 110px)}
+.previa-cheia .divisor-altura {
+  display:none}
+/* The vertical divider laid on its side: a dashed hairline with an invisible reach. */
+.divisor-altura {
+  position:relative;
+  align-self:stretch;
+  height:0.3rem;
+  margin:-0.35rem 0;
+  background-image:repeating-linear-gradient(to right, var(--line-hard) 0 5px, transparent 5px 11px);
+  background-size:100% 2px;
+  background-position:center;
+  background-repeat:no-repeat;
+  transition:background-size 120ms ease;
+  cursor:row-resize;
+  touch-action:none}
+.divisor-altura::before {
+  content:"";
+  position:absolute;
+  inset:-4px 0;
+  cursor:row-resize}
+.divisor-altura:hover,.divisor-altura:focus-visible {
+  background-image:repeating-linear-gradient(to right, var(--aqua) 0 5px, transparent 5px 11px);
+  background-size:100% 3px;
+  outline:none}
+.projeto {
+  min-width:0;
+  padding:16px 18px;
+  border:1px solid #15131d;
+  border-radius:14px;
+  background:linear-gradient(120deg, #202029, #272631);
+  box-shadow:inset 0 2px 5px #0006, 0 1px 0 #ffffff18;
+  box-sizing:border-box}
+.projeto-nota {
+  margin:6px 0 0 26px;
+  color:var(--text-muted);
+  font-size:0.8rem;
+  line-height:1.5;
+  max-width:78ch}
+.divisor {
+  display:none}
+@media (min-width:1200px) {
+  /* Three tracks: the video, the handle, the settings. The last is what the drag changes. */
+  .bancada {
+    column-gap:0.3rem;
+    grid-template-columns:minmax(0, 1fr) 0.3rem clamp(320px, var(--largura-projeto, 420px), 55%)}
+  .bancada>.divisor {
+    display:block;
+    grid-column:2;
+    align-self:stretch;
+    position:relative;
+    cursor:col-resize;
+    background-image:repeating-linear-gradient(to bottom, var(--line-hard) 0 5px, transparent 5px 11px);
+    background-size:2px 100%;
+    background-position:center;
+    background-repeat:no-repeat;
+    transition:background-size 120ms ease;
+    touch-action:none}
+  .bancada>.divisor::before {
+    content:"";
+    position:absolute;
+    inset:0 -4px;
+    cursor:col-resize}
+  .bancada>.divisor:hover,.bancada>.divisor:focus-visible {
+    background-image:repeating-linear-gradient(to bottom, var(--aqua) 0 5px, transparent 5px 11px);
+    background-size:3px 100%;
+    outline:none}
+  /* Exactly as tall as the video beside it, scrolling inside that height. */
+  .bancada>.projeto {
+    grid-column:3;
+    height:0;
+    min-height:100%;
+    overflow:auto}
+}
+
+/* ------------------------------------------------ save and open */
+
+.short-editor>header .actions mat-icon,.save-choices mat-icon,.open-row mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+.project-notice {
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+  margin:0}
+.project-notice>span {
+  flex:1 1 20rem}
+.open-row {
+  display:flex;
+  justify-content:flex-start}
+.save-choices {
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  gap:8px;
+  margin:16px 0}
+.save-choices .hint {
+  margin:0 0 10px}
+
+/* ------------------------------------------------ one cut played, with its short beside it */
+
+.timeline-wrap {
+  position:relative}
+.cut-balloon {
+  position:absolute;
+  z-index:10;
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  box-sizing:border-box;
+  padding:8px;
+  border:1px solid var(--neon-bright);
+  border-radius:14px;
+  background:var(--panel);
+  box-shadow:0 10px 30px #000a, 0 0 0 1px #0006}
+/* The pointer toward the cut. */
+.cut-balloon::before {
+  content:"";
+  position:absolute;
+  top:50%;
+  left:-7px;
+  width:12px;
+  height:12px;
+  background:var(--panel);
+  border-left:1px solid var(--neon-bright);
+  border-bottom:1px solid var(--neon-bright);
+  transform:translateY(-50%) rotate(45deg)}
+.cut-balloon.left-side::before {
+  left:auto;
+  right:-7px;
+  transform:translateY(-50%) rotate(225deg)}
+.cut-balloon-top,.cut-balloon-controls {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  font-size:12px;
+  color:var(--text-muted)}
+.cut-balloon-top span {
+  margin-right:auto;
+  font-weight:700;
+  color:var(--text-main)}
+.cut-balloon-frame {
+  flex:0 0 auto;
+  overflow:hidden;
+  border-radius:8px;
+  background:#000}
+.cut-balloon-frame video {
+  display:block;
+  width:100%;
+  height:100%;
+  object-fit:cover}
+.cut-balloon-controls progress {
+  flex:1;
+  min-width:0;
+  accent-color:var(--neon)}
+
+/* ------------------------------------------------ the project settings, as in the Video Editor */
+
+.disclosure {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:0;
+  border:0;
+  border-radius:0;
+  background:transparent;
+  box-shadow:none;
+  color:var(--aqua);
+  cursor:pointer;
+  font:inherit;
+  font-size:0.86rem}
+.disclosure mat-icon {
+  font-size:20px;
+  width:20px;
+  height:20px}
+.disclosure-titulo {
+  display:flex;
+  width:100%;
+  justify-content:flex-start;
+  text-align:left;
+  font-size:1rem;
+  font-weight:600;
+  color:var(--text-main)}
+.disclosure-titulo:hover {
+  border-color:transparent}
+.disclosure-titulo mat-icon {
+  color:var(--aqua)}
+.projeto-duracao {
+  margin-left:auto;
+  font-weight:500;
+  font-size:0.85rem;
+  color:var(--text-muted);
+  font-variant-numeric:tabular-nums}
+.projeto-painel {
+  margin-top:14px}
+.edits {
+  display:flex;
+  flex-direction:column;
+  gap:16px}
+.grupo {
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  min-width:0;
+  margin:0;
+  padding:14px;
+  border:1px solid var(--line-soft);
+  border-radius:10px;
+  background:rgba(20, 19, 28, 0.35)}
+.grupo-titulo {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  padding:0 4px;
+  color:var(--text-muted);
+  font-size:0.72rem;
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:0.07em}
+.linha-campos {
+  display:grid;
+  grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));
+  gap:14px}
+.campo {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width:0}
+.campo>label {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  flex-wrap:wrap;
+  color:var(--text-main);
+  font-size:0.82rem;
+  font-weight:600}
+.campo input:not([type=range]),.campo select {
+  width:100%;
+  min-width:0;
+  box-sizing:border-box;
+  padding:8px 10px;
+  border:1px solid var(--line-soft);
+  border-radius:8px;
+  background:rgba(20, 19, 28, 0.6);
+  color:var(--text-main);
+  font:inherit;
+  font-size:0.88rem}
+.campo input:focus,.campo select:focus {
+  outline:1px solid var(--aqua)}
+.com-unidade {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  min-width:0}
+.com-unidade input[type=range] {
+  flex:1 1 auto;
+  width:auto;
+  min-width:96px;
+  height:20px;
+  padding:0;
+  border:0;
+  background:transparent;
+  cursor:pointer}
+.com-unidade .unidade {
+  color:var(--text-muted);
+  font-size:0.78rem;
+  white-space:nowrap}
+.som-do-clipe {
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+  margin-top:4px;
+  padding-top:12px;
+  border-top:1px solid rgba(255, 255, 255, 0.06)}
+.linha-acoes {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:10px}
+.som-anexo {
+  display:inline-flex;
+  align-items:center;
+  gap:0.2rem;
+  max-width:14rem;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:var(--aqua)}
+.som-anexo mat-icon {
+  font-size:0.9rem;
+  width:0.9rem;
+  height:0.9rem;
+  flex-shrink:0}
+.som-escolher mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+.ajuda-som {
+  color:var(--text-muted);
+  font-size:0.74rem;
+  line-height:1.4}
+
+/* ------------------------------------------------ fades where cuts overlap */
+
+.check {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  cursor:pointer;
+  color:var(--text-main);
+  font-size:0.92rem}
+.check input {
+  accent-color:var(--aqua);
+  cursor:pointer}
+.fade-fields {
+  display:flex;
+  gap:12px}
+.fade-fields label {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  flex:1}
+.cut-balloon-top,.cut-balloon-controls {
+  height:30px;
+  min-width:0}
+.cut-balloon .icon-button {
+  width:26px;
+  height:26px;
+  font-size:14px}
+.cut-balloon .icon-button mat-icon {
+  width:16px;
+  height:16px;
+  font-size:16px}
+.cut-balloon-top span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap}
+
+/* The short's own settings dialog, drawn as the project settings. */
+.settings-column.edits {
+  gap:16px}
+.modal-nota {
+  margin:0}
+.settings-column>.actions {
+  justify-content:flex-end}
+
+/* A short question, the size of the Clear all one. */
+.confirm-modal {
+  width:420px}
+.confirm-modal .primary mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+
+/* The framing dialog's transport, the same as the one under the horizontal video. */
+.framing-transporte {
+  margin-top:4px}
+.framing-label {
+  margin:6px 0 0;
+  text-align:center;
+  color:var(--text-muted);
+  font-size:13px}
+
+/* ------------------------------------------------ following the person */
+
+.follow-check {
+  margin:4px 0 2px}
+.framing.following {
+  cursor:default}
+.framing-analysis {
+  position:absolute;
+  inset:auto 10px 10px 10px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border-radius:8px;
+  background:rgba(7, 6, 12, 0.85);
+  color:var(--text-main);
+  font-size:12px}
+
+/* ------------------------------------------------ follow settings */
+
+.follow-row {
+  position:relative;
+  display:flex;
+  align-items:center;
+  gap:10px}
+.follow-config mat-icon {
+  width:18px;
+  height:18px;
+  font-size:18px}
+.follow-balloon {
+  position:absolute;
+  top:calc(100% + 8px);
+  left:0;
+  right:0;
+  z-index:20;
+  display:flex;
+  flex-direction:column;
+  gap:12px;
+  padding:14px;
+  border:1px solid var(--neon-bright);
+  border-radius:12px;
+  background:var(--panel);
+  box-shadow:0 10px 30px #000a}
+.follow-balloon::before {
+  content:"";
+  position:absolute;
+  top:-7px;
+  left:180px;
+  width:12px;
+  height:12px;
+  background:var(--panel);
+  border-left:1px solid var(--neon-bright);
+  border-top:1px solid var(--neon-bright);
+  transform:rotate(45deg)}
+.follow-balloon-top {
+  display:flex;
+  align-items:center;
+  justify-content:space-between}
+.segmented {
+  display:grid;
+  grid-template-columns:repeat(4, 1fr);
+  gap:4px}
+.segmented button {
+  padding:7px 6px;
+  font-size:12px;
+  border-radius:7px}
+.segmented button.active {
+  border-color:#db73ff;
+  color:#f2ceff;
+  background:linear-gradient(#493054, #302036)}

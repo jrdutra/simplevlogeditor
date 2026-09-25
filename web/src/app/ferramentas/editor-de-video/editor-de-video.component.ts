@@ -10930,9 +10930,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         case 'transcribe': result = await this.agentTranscribe(args, operationController.signal); break;
         case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest, operationController.signal, operationId); break;
         case 'get_contact_sheet': result = await this.agentContactSheet(args, operationController.signal, operationId); break;
-        case 'get_packaging_sources': result = this.agentPackagingSources(); break;
-        case 'save_frames': result = await this.agentSaveFrames(args, operationController.signal, operationId); break;
-        case 'get_packaging_tag_style': result = await this.agentPackagingTagStyle(); break;
+        case 'get_packaging_sources': this.packaging.noteAgentCommand(request.name); result = this.agentPackagingSources(); break;
+        case 'save_frames': this.packaging.noteAgentCommand(request.name); result = await this.agentSaveFrames(args, operationController.signal, operationId); break;
+        case 'get_packaging_tag_style': this.packaging.noteAgentCommand(request.name); result = await this.agentPackagingTagStyle(); break;
         case 'export': result = await this.agentExport(args, operationController.signal, operationId); break;
         default: throw new EditorAgentError(`Unknown editor command "${request.name}".`, 'unknown_command');
       }

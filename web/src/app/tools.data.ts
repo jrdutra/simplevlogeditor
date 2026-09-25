@@ -41,6 +41,20 @@ export const TOOLS: readonly Tool[] = [
     novo: true
   },
   {
+    titulo: 'Video Packaging',
+    descricao: 'Create thumbnails and title ideas for horizontal videos.',
+    resumo:
+      'Generate thumbnails and title ideas designed for horizontal long-form videos.',
+    icone: 'image_search',
+    rota: 'video-packaging',
+    image: '/assets/tools/video-packaging-card.jpg',
+    imageAlt:
+      'Neon illustration of an AI workspace generating three video thumbnails, title ideas and a description',
+    imageWidth: 1200,
+    imageHeight: 675,
+    novo: true
+  },
+  {
     titulo: 'Silence Cutter',
     descricao: 'Remove the dead air from a take, automatically.',
     resumo:
@@ -111,24 +125,10 @@ export const TOOLS: readonly Tool[] = [
     novo: true
   },
   {
-    titulo: 'Video Packaging',
-    descricao: 'Create thumbnails and title ideas for horizontal videos.',
-    resumo:
-      'Generate thumbnails and title ideas designed for horizontal long-form videos.',
-    icone: 'image_search',
-    rota: 'video-packaging',
-    image: '/assets/tools/video-packaging-card.jpg',
-    imageAlt:
-      'Neon illustration of an AI workspace generating three video thumbnails, title ideas and a description',
-    imageWidth: 1200,
-    imageHeight: 675,
-    novo: true
-  },
-  {
-    titulo: 'Shorts Generator',
+    titulo: 'Short Editor',
     descricao: 'Turn horizontal videos into vertical short-form clips.',
     resumo:
-      'Transform horizontal long-form videos into vertical shorts with reframing, captions and highlight extraction.',
+      'Create vertical shorts from multiple cuts, with custom audio, transitions and individual rendering.',
     icone: 'view_day',
     rota: 'shorts-generator',
     image: '/assets/tools/shorts-generator-card.jpg',

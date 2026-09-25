@@ -874,6 +874,31 @@
   font-size: 0.86rem;
   white-space: nowrap;
 }
+.console-tab { position: relative; }
+/* A small LED in the tab's top-left corner: an AI at work on the tool, or its work done. */
+.console-tab__led {
+  --led: #c07bff;
+  position: absolute;
+  top: 7px;
+  left: 9px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 35%, #fff 0 12%, var(--led) 45%);
+  box-shadow: 0 0 4px 1px var(--led), 0 0 10px 2px color-mix(in srgb, var(--led) 55%, transparent);
+  animation: console-tab-led 1.6s ease-in-out infinite;
+  pointer-events: none;
+}
+.console-tab__led--codex { --led: #4f8cff; }
+.console-tab__led--claude { --led: #f97316; }
+.console-tab__led--done { --led: #34d46a; }
+@keyframes console-tab-led {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px 1px var(--led), 0 0 12px 3px color-mix(in srgb, var(--led) 60%, transparent); }
+  50% { opacity: .45; box-shadow: 0 0 2px 0 var(--led), 0 0 4px 1px color-mix(in srgb, var(--led) 25%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .console-tab__led { animation: none; }
+}
 .console-tab mat-icon { color: #d493ef; }
 .console-tab:hover { background: linear-gradient(#464052, #302b3d); color: #fff; }
 .console-tab--active {

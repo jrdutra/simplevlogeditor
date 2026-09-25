@@ -1,13 +1,560 @@
-<section class="construction" aria-labelledby="shorts-generator-heading">
-  <div class="construction__icon" aria-hidden="true"><mat-icon>view_day</mat-icon></div>
-  <p class="construction__eyebrow">Coming soon</p>
-  <h1 id="shorts-generator-heading">Shorts Generator</h1>
-  <p class="construction__lead">
-    Turn horizontal, long-form videos into vertical short-form clips.
-  </p>
-  <div class="construction__status">
-    <mat-icon aria-hidden="true">construction</mat-icon>
-    <span>Under construction</span>
+<section class="short-editor container" [class.inicial]="!state.source">
+  <header *ngIf="state.source">
+    <div class="actions">
+    <button (click)="openSaveChooser()" [disabled]="busy || importing" title="Write this project, or just its settings, to a file">
+<mat-icon aria-hidden="true">save</mat-icon> Save</button>
+    <label class="button" [class.disabled]="busy || importing" title="Open a saved project or a saved set of settings">
+<mat-icon aria-hidden="true">folder_open</mat-icon> Open<input type="file" accept="application/json,.json" [disabled]="busy || importing" (change)="openDocument($event)">
+</label>
+    <button class="clear-all" (click)="askClearAll()" [disabled]="busy || importing" title="Remove the video, the cuts and every short in this session">
+<mat-icon aria-hidden="true">delete_sweep</mat-icon> Clear all</button>
+    <label class="button primary" [class.disabled]="busy || importing || !available">Load video<input type="file" accept="video/*" [disabled]="busy || !available" (click)="startImport()" (cancel)="importCancelled()" (change)="importFile($event)">
+</label>
+    </div>
+  </header>
+  <p class="notice" *ngIf="!available">Open the Short Editor in a browser to choose your files.</p>
+  <p class="error" role="alert" *ngIf="error">{{error}}</p>
+  <p class="notice project-notice" role="status" *ngIf="notice">
+<span>{{notice}}</span>
+<ng-container *ngIf="pendingDocument?.kind === 'project'">
+<label class="button primary">Choose the video<input type="file" accept="video/*" (click)="startImport()" (cancel)="importCancelled()" (change)="importFile($event)">
+</label>
+<button (click)="cancelPending()">Cancel</button>
+<button class="clear-all" (click)="askClearAll()" [disabled]="busy || importing" title="Clear this project and remove the session kept in this browser">
+<mat-icon aria-hidden="true">delete_sweep</mat-icon> Clear all</button>
+</ng-container>
+<button *ngIf="!pendingDocument" class="icon-button" (click)="notice = ''" aria-label="Dismiss">×</button>
+</p>
+  <p class="notice processing" role="status" *ngIf="importing; else working"><span class="spinner" aria-hidden="true"></span>Processing the video… As soon as it is chosen, the timeline is prepared with its pictures and audio waveform.</p>
+  <ng-template #working><p class="notice processing" role="status" *ngIf="busy"><span class="spinner" aria-hidden="true"></span>Processing…</p></ng-template>
+  <div class="open-row" *ngIf="!state.source">
+<label class="button" [class.disabled]="busy || importing">
+<mat-icon aria-hidden="true">folder_open</mat-icon> Open a saved project or settings<input type="file" accept="application/json,.json" [disabled]="busy || importing" (change)="openDocument($event)">
+</label>
+</div>
+  <div class="upload-area" *ngIf="!state.source" role="button" tabindex="0" [attr.aria-disabled]="busy || importing || !available" aria-label="Load a horizontal video"
+    (click)="!busy && !importing && available && videoInput.click()" (keydown.enter)="!busy && !importing && available && videoInput.click()"
+    (keydown.space)="$event.preventDefault(); !busy && !importing && available && videoInput.click()" (dragover)="$event.preventDefault()" (drop)="dropVideo($event)">
+    <mat-icon class="upload-icone" aria-hidden="true">{{importing ? 'hourglass_top' : 'video_library'}}</mat-icon>
+    <p class="upload-texto">{{importing ? 'Processing the video…' : 'Click or drop a horizontal video here'}}</p>
+    <p class="upload-hint">MP4, MOV, MKV, WebM — pick the best moments and turn them into vertical shorts</p>
+    <input #videoInput type="file" accept="video/*" [disabled]="busy || !available" (click)="$event.stopPropagation(); startImport()" (cancel)="importCancelled()" (change)="importFile($event)">
   </div>
-  <a class="construction__back" routerLink="/">Back to all tools</a>
+  <ng-container *ngIf="state.source as source">
+    <!-- The same workspace as the Video Editor: the video, a line that moves, and the settings beside it. -->
+    <div #bancada class="bancada">
+      <section #previaSecao class="previa" [class.previa-cheia]="previewFullscreen" [title]="source.name">
+        <div class="previa-palco">
+<video #player class="previa-tela" [src]="sourceUrl" preload="metadata" (timeupdate)="cursor = player.currentTime" (play)="playerPlaying = true" (pause)="playerPlaying = false" (ended)="playerPlaying = false" (click)="togglePlayer()">
+</video>
+</div>
+        <div class="divisor-altura" role="separator" aria-orientation="horizontal" tabindex="0"
+          aria-label="Move the bottom edge of the video to resize it" title="Drag to resize the video · double-click to put it back"
+          (pointerdown)="startVideoResize($event)" (keydown)="onVideoResizeKey($event)" (dblclick)="resetVideoHeight()"></div>
+        <!-- The Video Editor's transport: play, where it is, the bar, how long, a cut at the playhead, and the whole screen. -->
+        <div class="previa-transporte">
+          <button type="button" class="previa-botao" (click)="togglePlayer()" [attr.aria-label]="playerPlaying ? 'Pause the video' : 'Play the video'">
+            <mat-icon>{{ playerPlaying ? 'pause' : 'play_arrow' }}</mat-icon>
+          </button>
+          <span class="previa-tempo">{{ clock(cursor) }}</span>
+          <input class="previa-barra" type="range" min="0" [max]="source.duration" step="0.05" [value]="cursor" (input)="scrubPlayer(+$any($event.target).value)" aria-label="Position in the video">
+          <span class="previa-tempo previa-total">{{ clock(source.duration) }}</span>
+          <button type="button" class="previa-botao previa-botao-menor" (click)="addCut()" [disabled]="busy" title="Add a cut starting at the playhead" aria-label="Add a cut starting at the playhead">
+            <mat-icon>content_cut</mat-icon>
+          </button>
+          <button type="button" class="previa-botao previa-botao-menor" (click)="togglePreviewFullscreen()" [attr.aria-label]="previewFullscreen ? 'Leave full screen' : 'Fill the screen'" [title]="previewFullscreen ? 'Leave full screen' : 'Fill the screen'">
+            <mat-icon>{{ previewFullscreen ? 'fullscreen_exit' : 'fullscreen' }}</mat-icon>
+          </button>
+        </div>
+      </section>
+      <div class="divisor" role="separator" aria-orientation="vertical" tabindex="0"
+        aria-label="Move the divider between the video and the settings" title="Drag to move · double-click to put it back"
+        (pointerdown)="startSplit($event)" (keydown)="onSplitKey($event)" (dblclick)="resetSplit()"></div>
+      <!-- The Video Editor's "Settings for the whole project", drawn the same way. -->
+      <section class="projeto">
+        <button type="button" class="disclosure disclosure-titulo" (click)="projectOpen = !projectOpen"
+          [attr.aria-expanded]="projectOpen" aria-controls="short-projeto-painel">
+          <mat-icon>{{ projectOpen ? 'expand_less' : 'expand_more' }}</mat-icon>
+          <span>Settings for the whole project</span>
+          <span class="projeto-duracao" *ngIf="state.selection.length">{{ clock(total(state.selection)) }}</span>
+        </button>
+        <p class="projeto-nota">
+          Everything here applies to the whole project — every cut, and every short you create — unless it has been
+          given settings of its own. Settings made on a single cut (its framing, from the image button) or on a single
+          short (its <strong>Settings</strong>) override these for that cut or short alone, and the rest keep following
+          the project.
+        </p>
+        <div id="short-projeto-painel" class="projeto-painel edits" *ngIf="projectOpen">
+          <fieldset class="grupo">
+            <legend class="grupo-titulo">Sound</legend>
+            <div class="linha-campos">
+              <div class="campo">
+                <label for="short-original-volume">
+                  Original volume
+                  <app-help-hint label="What this volume does">
+                    {{ activeSettings.volume === 0
+                      ? (activeSettings.audioPath ? 'The video\'s own sound is off, so the chosen audio replaces it.' : 'Turned all the way down: the short will be silent.')
+                      : activeSettings.audioPath
+                        ? 'The video\'s own sound plays under the chosen audio at this level. At 0% the chosen audio replaces it.'
+                        : 'The video\'s own sound. 100% leaves it exactly as recorded. The preview cannot go past its own full volume, so more than 100% is only heard in the rendered short.' }}
+                  </app-help-hint>
+                </label>
+                <div class="com-unidade">
+                  <input id="short-original-volume" type="range" min="0" max="2" step="0.01" [value]="activeSettings.volume" (input)="setDraft({ volume: +$any($event.target).value })">
+                  <span class="unidade">{{ activeSettings.volume * 100 | number:'1.0-0' }}%</span>
+                </div>
+              </div>
+              <div class="campo" *ngIf="activeSettings.audioPath">
+                <label for="short-music-volume">
+                  Chosen audio volume
+                  <app-help-hint label="What this volume does">The file chosen below, at this level. 100% leaves it exactly as it is.</app-help-hint>
+                </label>
+                <div class="com-unidade">
+                  <input id="short-music-volume" type="range" min="0" max="2" step="0.01" [value]="activeSettings.musicVolume ?? 1" (input)="setDraft({ musicVolume: +$any($event.target).value })">
+                  <span class="unidade">{{ (activeSettings.musicVolume ?? 1) * 100 | number:'1.0-0' }}%</span>
+                </div>
+              </div>
+            </div>
+            <ng-container *ngIf="activeSettings.transition !== 'cut'">
+              <label class="check">
+                <input type="checkbox" [checked]="fadesOn(activeSettings)" (change)="setDraft(fadesSwitched(activeSettings, $any($event.target).checked), true)">
+                <span>Fade the sounds where cuts overlap</span>
+                <app-help-hint label="What these fades do">In a transition two cuts overlap and both sounds play together. Each can fade out (the one that ends) and fade in (the one that starts) over the seconds below. Switched off, both play at full volume through the overlap.</app-help-hint>
+              </label>
+              <div class="linha-campos">
+                <div class="campo">
+                  <label for="short-fade-out">
+                    Fade out (s)
+                    <app-help-hint label="What the fade out does">Seconds the sound of the cut that ends takes to fade away, in tenths of a second. 0 keeps it at full volume to its last frame.</app-help-hint>
+                  </label>
+                  <input id="short-fade-out" type="number" min="0" max="2" step="0.1" [ngModel]="fadeOf(activeSettings, 'audioFadeOut')" (ngModelChange)="setDraft({ audioFadeOut: tenth($event) })">
+                </div>
+                <div class="campo">
+                  <label for="short-fade-in">
+                    Fade in (s)
+                    <app-help-hint label="What the fade in does">Seconds the sound of the cut that starts takes to reach full volume, in tenths of a second. 0 starts it at full volume.</app-help-hint>
+                  </label>
+                  <input id="short-fade-in" type="number" min="0" max="2" step="0.1" [ngModel]="fadeOf(activeSettings, 'audioFadeIn')" (ngModelChange)="setDraft({ audioFadeIn: tenth($event) })">
+                </div>
+              </div>
+            </ng-container>
+            <div class="som-do-clipe">
+              <div class="linha-acoes linha-som">
+                <ng-container *ngIf="activeSettings.audioPath; else noSound">
+                  <span class="som-anexo" [title]="audioLabel(activeSettings)"><mat-icon aria-hidden="true">audiotrack</mat-icon>{{ audioLabel(activeSettings) }}</span>
+                  <button type="button" (click)="draftAudioInput.click()" [disabled]="busy">Change it</button>
+                  <button type="button" (click)="useOriginalDraftAudio()" [disabled]="busy">Remove it</button>
+                </ng-container>
+                <ng-template #noSound>
+                  <button type="button" class="som-escolher" (click)="draftAudioInput.click()" [disabled]="busy">
+                    <mat-icon aria-hidden="true">library_music</mat-icon> Choose the sound for the short
+                  </button>
+                </ng-template>
+                <input #draftAudioInput hidden type="file" accept="audio/*,video/*" (change)="chooseAudio($event, 'draft')">
+              </div>
+              <small class="ajuda-som">The chosen audio starts with the short and loops until it ends. At 0% original volume it replaces the video's own sound; above that, both play together.</small>
+            </div>
+          </fieldset>
+          <fieldset class="grupo">
+            <legend class="grupo-titulo">Transitions</legend>
+            <div class="linha-campos">
+              <div class="campo">
+                <label for="short-transition">
+                  Between cuts
+                  <app-help-hint label="What this transition does">
+                    {{ activeSettings.transition === 'cut' ? 'Each cut follows the one before it at once.' : 'Each cut blends into the next. The overlap is limited to half of each cut and shortens the final video.' }}
+                  </app-help-hint>
+                </label>
+                <select id="short-transition" [ngModel]="activeSettings.transition" (ngModelChange)="setDraft({ transition: $event }, true)">
+                  <option *ngFor="let transition of transitions" [value]="transition.id">{{ transition.name }}</option>
+                </select>
+              </div>
+              <div class="campo" *ngIf="activeSettings.transition !== 'cut'">
+                <label for="short-transition-length">
+                  Length (s)
+                  <app-help-hint label="What this length does">Seconds each transition takes, from 0.05 to 2.</app-help-hint>
+                </label>
+                <input id="short-transition-length" type="number" min="0.05" max="2" step="0.05" [ngModel]="activeSettings.transitionSeconds" (ngModelChange)="setDraft({ transitionSeconds: +$event })">
+              </div>
+            </div>
+          </fieldset>
+        </div>
+      </section>
+    </div>
+    <section class="timeline-panel" aria-label="Main timeline">
+      <div #timelineWrap class="timeline-wrap">
+      <app-silence-waveform *ngIf="waveform; else waveLoading" [waveform]="waveform" [silenceRanges]="timelineRanges" [duration]="source.duration" [currentTime]="cursor"
+        [labels]="waveformLabels" [minRange]="0.1" [maxZoom]="20" [zoomLevel]="state.zoom" trackLabel="Video Image" [hintAsHelp]="true" [wheelZooms]="true" [rangeNavigation]="true" [rangeTag]="tagFor" [rangeButtons]="rangeButtons" rangeButtonsLayout="column" rangeButtonsAlign="end" [showDeleteButton]="false" [rangeButtonState]="rangeButtonState" (rangeButton)="onRangeButton($event)" [frameSource]="frameSource" [frameAspect]="frameAspect"
+        (seek)="seekTo($event)" (rangeAdd)="addRange($event)" (rangeResize)="resizeRange($event)" (rangeRemove)="removeRange($event)" (zoomChange)="zoomChanged($event)"></app-silence-waveform>
+      <!-- The cut being played, as a short: over the timeline, beside the cut. While it plays the sound comes from here and the video above is muted, so it is never heard twice. -->
+      <div #cutBalloon class="cut-balloon" *ngIf="cutPlayback as playback" role="dialog" [attr.aria-label]="'Preview of cut ' + (playback.index + 1)"
+        [class.left-side]="playback.side === 'left'" [style.left.px]="playback.left" [style.top.px]="playback.top" [style.height.px]="playback.height" [style.width.px]="playback.frameWidth + 16">
+        <div class="cut-balloon-top">
+<span>Cut {{playback.index + 1}}</span>
+<button class="icon-button" (click)="frameFromBalloon()" aria-label="Frame this cut vertically" title="Frame this cut vertically"><mat-icon aria-hidden="true">image</mat-icon></button>
+<button class="icon-button" (click)="closeCutPlayback()" aria-label="Close the preview" title="Close">×</button>
+</div>
+        <div class="cut-balloon-frame" [style.width.px]="playback.frameWidth" [style.height.px]="playback.frameHeight">
+<video #balloonVideo [src]="sourceUrl + '#t=' + playback.start" playsinline preload="auto" [style.object-position]="(playback.cropX * 100) + '% center'">
+</video>
+</div>
+        <div class="cut-balloon-controls">
+<button class="icon-button" (click)="toggleCutPlayback()" [attr.aria-label]="playback.playing ? 'Pause' : 'Play'"><mat-icon aria-hidden="true">{{playback.playing ? 'pause' : 'play_arrow'}}</mat-icon></button>
+<progress max="1" [value]="playback.progress">
+</progress>
+</div>
+      </div>
+      </div>
+      <ng-template #waveLoading>
+<p class="notice" role="status">Reading the audio to draw the timeline…</p>
+</ng-template>
+      <p class="error" *ngIf="waveformError">{{waveformError}}</p>
+      <div class="settings-strip">
+<span>♫ {{audioLabel(activeSettings)}} · {{activeSettings.volume * 100 | number:'1.0-0'}}%</span>
+<span>↔ {{label(activeSettings)}}<ng-container *ngIf="activeSettings.transition !== 'cut'"> · {{activeSettings.transitionSeconds}}s</ng-container>
+</span>
+</div>
+      <div class="cut-list">
+<div class="cut-row" *ngFor="let cut of state.selection; let i = index; trackBy: trackCut">
+<b>{{i + 1}}</b>
+<label>Start (s)<input type="number" min="0" [max]="duration" step="0.1" [ngModel]="cut.start" (change)="changeCut(i, 'start', +$any($event.target).value)" [disabled]="busy">
+</label>
+<label>End (s)<input type="number" min="0" [max]="duration" step="0.1" [ngModel]="cut.end" (change)="changeCut(i, 'end', +$any($event.target).value)" [disabled]="busy">
+</label>
+<span>{{time(cut.end - cut.start)}}</span>
+<button (click)="moveCut(i, -1)" [disabled]="busy || i === 0" aria-label="Move cut earlier">↑</button>
+<button (click)="moveCut(i, 1)" [disabled]="busy || i === state.selection.length - 1" aria-label="Move cut later">↓</button>
+<button class="icon-button" (click)="openCut(i)" [disabled]="busy" [attr.aria-label]="'Frame cut ' + (i + 1)" title="Frame this cut"><mat-icon aria-hidden="true">settings</mat-icon></button>
+<button class="icon-button" (click)="removeCut(i)" [disabled]="busy" aria-label="Remove cut">×</button>
+</div>
+</div>
+      <div class="toolbar create-bar">
+<button (click)="addCut()" [disabled]="busy">+ Cut at playhead</button>
+<span>{{state.selection.length}} cut(s) · {{time(total(state.selection))}} before transitions</span>
+<input aria-label="Short name" placeholder="Short name" [(ngModel)]="title">
+<button *ngIf="editingId" (click)="saveEdit()" [disabled]="busy || !state.selection.length">Save changes</button>
+<button class="primary" (click)="create()" [disabled]="busy || !state.selection.length">Create {{editingId ? 'new ' : ''}}short</button>
+</div>
+    </section>
+    <h2 class="grid-title">Your shorts <span>{{state.shorts.length}}</span>
+</h2>
+    <p class="hint" *ngIf="!state.shorts.length">The shorts you create appear here. Each card has its own settings and render.</p>
+    <div class="short-grid">
+<article class="short-card" *ngFor="let short of state.shorts; trackBy: trackShort">
+      <video *ngIf="short.outputPath && outputUrls[short.outputPath]; else cover" [src]="outputUrls[short.outputPath!]" controls preload="metadata">
+</video>
+      <ng-template #cover>
+<div class="card-cover">
+<video [src]="sourceUrl + '#t=' + short.ranges[0].start" muted preload="metadata" [style.object-position]="(cropOf(short.ranges[0], short.settings) * 100) + '% center'">
+</video>
+<span>9:16</span>
+</div>
+</ng-template>
+      <div class="card-body">
+<h3>{{short.name}}</h3>
+<p>{{short.ranges.length}} cut(s) · {{time(total(short.ranges))}}</p>
+<p class="hint">{{audioLabel(short.settings)}}<br>{{label(short.settings)}}</p>
+<p class="error" *ngIf="short.error">{{short.error}}</p>
+<ng-container *ngIf="short.status === 'rendering'">
+<progress max="100" [value]="short.progress">
+</progress>
+<p>Rendering {{short.progress | number:'1.0-0'}}%</p>
+<button (click)="command('short_cancel_render', {id: short.id})">Cancel</button>
+</ng-container>
+<p class="success" *ngIf="short.status === 'done'">✓ Rendered <small *ngIf="desktop?.shortCommand">{{short.outputPath}}</small>
+</p>
+<a class="button download" *ngIf="!desktop?.shortCommand && short.outputPath && outputUrls[short.outputPath]" [href]="outputUrls[short.outputPath]" [download]="short.outputPath">Download short</a>
+<div class="actions">
+<button (click)="edit(short)" [disabled]="busy || short.status === 'rendering'">Cuts</button>
+<button (click)="openSettings(short)" [disabled]="busy || short.status === 'rendering'">Settings</button>
+<button class="remove-card" (click)="remove(short)" [disabled]="busy || short.status === 'rendering'" aria-label="Remove short">×</button>
+</div>
+<button class="primary render" (click)="render(short)" [disabled]="busy || short.status === 'rendering'">Render short</button>
+</div>
+    </article>
+</div>
+  </ng-container>
 </section>
+<div class="modal-backdrop" *ngIf="modal" (click)="closeSettings()">
+<section class="settings-modal wide-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="closeSettings()">
+<div class="toolbar">
+<h2 id="settings-title">Settings</h2>
+<button class="icon-button" (click)="closeSettings()" aria-label="Close settings">×</button>
+</div>
+<div class="settings-layout">
+<div class="short-preview-panel">
+<div class="short-preview">
+<video #previewVideo [src]="sourceUrl + '#t=' + previewStart" playsinline preload="auto" [style.object-position]="(previewCrop * 100) + '% center'" (click)="togglePreview()">
+</video>
+<span class="framing-badge">9:16</span>
+<audio #previewAudio *ngIf="previewAudioUrl" [src]="previewAudioUrl" preload="auto" loop>
+</audio>
+</div>
+<div class="preview-controls">
+<button class="icon-button" (click)="togglePreview()" [disabled]="!previewRanges.length" [attr.aria-label]="previewPlaying ? 'Pause the preview' : 'Play the preview'">
+<mat-icon aria-hidden="true">{{previewPlaying ? 'pause' : 'play_arrow'}}</mat-icon>
+</button>
+<progress [max]="previewTotal || 1" [value]="previewAt">
+</progress>
+<span>{{time(previewAt)}} / {{time(previewTotal)}}</span>
+</div>
+<p class="hint">Preview of the cuts in order, each with its own framing, and the chosen audio and volume (up to 100%). Transitions appear in the rendered video.</p>
+</div>
+<div class="settings-column edits">
+<!-- Drawn exactly as the settings beside the video: the same groups, fields and "?" hints. -->
+<div class="campo" *ngIf="modalId; else draftTitle">
+<label for="short-config-name">Short name</label>
+<input id="short-config-name" type="text" maxlength="200" [(ngModel)]="configName" placeholder="Short name">
+</div>
+<ng-template #draftTitle>
+<p class="projeto-nota modal-nota">Settings for the selected cuts</p>
+</ng-template>
+<!-- Keep transitions before the expandable audio controls, even before the first export. -->
+<fieldset class="grupo">
+<legend class="grupo-titulo">Transitions</legend>
+<div class="linha-campos">
+<div class="campo">
+<label for="short-config-transition">
+Between cuts
+<app-help-hint label="What this transition does">
+{{ config.transition === 'cut' ? 'Each cut follows the one before it at once.' : 'Each cut blends into the next. The overlap is limited to half of each cut and shortens the final video.' }}
+</app-help-hint>
+</label>
+<select id="short-config-transition" [(ngModel)]="config.transition">
+<option *ngFor="let transition of transitions" [value]="transition.id">{{ transition.name }}</option>
+</select>
+</div>
+<div class="campo" *ngIf="config.transition !== 'cut'">
+<label for="short-config-transition-length">
+Length (s)
+<app-help-hint label="What this length does">Seconds each transition takes, from 0.05 to 2.</app-help-hint>
+</label>
+<input id="short-config-transition-length" type="number" min="0.05" max="2" step="0.05" [(ngModel)]="config.transitionSeconds">
+</div>
+</div>
+</fieldset>
+<fieldset class="grupo">
+<legend class="grupo-titulo">Sound</legend>
+<div class="linha-campos">
+<div class="campo">
+<label for="short-config-volume">
+Original volume
+<app-help-hint label="What this volume does">
+{{ config.volume === 0
+  ? (config.audioPath ? 'The video\'s own sound is off, so the chosen audio replaces it.' : 'Turned all the way down: the short will be silent.')
+  : config.audioPath
+    ? 'The video\'s own sound plays under the chosen audio at this level. At 0% the chosen audio replaces it.'
+    : 'The video\'s own sound. 100% leaves it exactly as recorded. The preview cannot go past its own full volume, so more than 100% is only heard in the rendered short.' }}
+</app-help-hint>
+</label>
+<div class="com-unidade">
+<input id="short-config-volume" type="range" min="0" max="2" step="0.01" [(ngModel)]="config.volume">
+<span class="unidade">{{ config.volume * 100 | number:'1.0-0' }}%</span>
+</div>
+</div>
+<div class="campo" *ngIf="config.audioPath">
+<label for="short-config-music">
+Chosen audio volume
+<app-help-hint label="What this volume does">The file chosen below, at this level. 100% leaves it exactly as it is.</app-help-hint>
+</label>
+<div class="com-unidade">
+<input id="short-config-music" type="range" min="0" max="2" step="0.01" [(ngModel)]="config.musicVolume">
+<span class="unidade">{{ (config.musicVolume ?? 1) * 100 | number:'1.0-0' }}%</span>
+</div>
+</div>
+</div>
+<ng-container *ngIf="config.transition !== 'cut'">
+<label class="check">
+<input type="checkbox" [checked]="fadesOn(config)" (change)="switchConfigFades($any($event.target).checked)">
+<span>Fade the sounds where cuts overlap</span>
+<app-help-hint label="What these fades do">In a transition two cuts overlap and both sounds play together. Each can fade out (the one that ends) and fade in (the one that starts) over the seconds below. Switched off, both play at full volume through the overlap.</app-help-hint>
+</label>
+<div class="linha-campos">
+<div class="campo">
+<label for="short-config-fade-out">
+Fade out (s)
+<app-help-hint label="What the fade out does">Seconds the sound of the cut that ends takes to fade away, in tenths of a second. 0 keeps it at full volume to its last frame.</app-help-hint>
+</label>
+<input id="short-config-fade-out" type="number" min="0" max="2" step="0.1" [ngModel]="fadeOf(config, 'audioFadeOut')" (ngModelChange)="config.audioFadeOut = tenth($event)">
+</div>
+<div class="campo">
+<label for="short-config-fade-in">
+Fade in (s)
+<app-help-hint label="What the fade in does">Seconds the sound of the cut that starts takes to reach full volume, in tenths of a second. 0 starts it at full volume.</app-help-hint>
+</label>
+<input id="short-config-fade-in" type="number" min="0" max="2" step="0.1" [ngModel]="fadeOf(config, 'audioFadeIn')" (ngModelChange)="config.audioFadeIn = tenth($event)">
+</div>
+</div>
+</ng-container>
+<div class="som-do-clipe">
+<div class="linha-acoes linha-som">
+<ng-container *ngIf="config.audioPath; else configNoSound">
+<span class="som-anexo" [title]="audioLabel(config)"><mat-icon aria-hidden="true">audiotrack</mat-icon>{{ audioLabel(config) }}</span>
+<button type="button" (click)="configAudioInput.click()">Change it</button>
+<button type="button" (click)="useOriginalAudio()">Remove it</button>
+</ng-container>
+<ng-template #configNoSound>
+<button type="button" class="som-escolher" (click)="configAudioInput.click()">
+<mat-icon aria-hidden="true">library_music</mat-icon> Choose the sound for the short
+</button>
+</ng-template>
+<input #configAudioInput hidden type="file" accept="audio/*,video/*" (change)="chooseAudio($event)">
+</div>
+<small class="ajuda-som">The chosen audio starts with the short and loops until it ends. At 0% original volume it replaces the video's own sound; above that, both play together.</small>
+</div>
+</fieldset>
+<p class="error" *ngIf="error">{{error}}</p>
+<div class="actions">
+<button (click)="closeSettings()">Cancel</button>
+<button class="primary" (click)="saveSettings()" [disabled]="busy">Save settings</button>
+</div>
+</div>
+</div>
+</section>
+</div>
+<div class="modal-backdrop" *ngIf="cutModal as cut" (click)="closeCut()">
+<section class="settings-modal cut-modal" role="dialog" aria-modal="true" aria-labelledby="cut-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="closeCut()">
+<div class="toolbar">
+<h2 id="cut-title">Cut {{cut.index + 1}}</h2>
+<button class="icon-button" (click)="closeCut()" aria-label="Close cut settings">×</button>
+</div>
+<p class="hint">{{ cut.tracking ? 'The frame follows the person on its own. Untick the box to frame the cut by hand.' : 'Click and drag the video sideways to choose this cut\'s vertical framing.' }}</p>
+<div class="follow-row">
+<label class="check follow-check">
+<input type="checkbox" [checked]="cut.tracking" [disabled]="cut.analysing !== null" (change)="toggleTracking($any($event.target).checked)">
+<span>Follow the person</span>
+<app-help-hint label="What following the person does">
+The video is analysed on this device — nothing is uploaded. The frame keeps a face in the middle of the short; when several people are in the picture it follows the one who is speaking; when no face can be seen, such as a person with their back to the camera, it follows their body. It never moves past the edge of the video, so the short never shows anything that is not picture.
+</app-help-hint>
+</label>
+<button type="button" class="icon-button follow-config" (click)="cut.followOpen = !cut.followOpen" [attr.aria-expanded]="cut.followOpen" aria-label="Follow settings" title="Follow settings">
+<mat-icon aria-hidden="true">tune</mat-icon>
+</button>
+<div class="follow-balloon" *ngIf="cut.followOpen" role="dialog" aria-label="Follow settings">
+<div class="follow-balloon-top">
+<strong>Follow settings</strong>
+<button type="button" class="icon-button" (click)="cut.followOpen = false" aria-label="Close follow settings">×</button>
+</div>
+<label class="check">
+<input type="checkbox" [checked]="cut.follow.delays" (change)="setFollow({ delays: $any($event.target).checked })">
+<span>Wait before changing person</span>
+<app-help-hint label="What the waits do">Off, the frame goes to a new person the moment they become the one to follow. On, it waits for the times below: first, how long the new person must stay the choice before the frame goes to them; second, how long the frame stays with a person after the choice has left them.</app-help-hint>
+</label>
+<div class="linha-campos">
+<div class="campo">
+<label for="follow-start-delay">Start following after (ms)</label>
+<input id="follow-start-delay" type="number" min="0" max="5000" step="10" [disabled]="!cut.follow.delays" [ngModel]="cut.follow.startDelayMs" (ngModelChange)="setFollow({ startDelayMs: +$event })">
+</div>
+<div class="campo">
+<label for="follow-hold-delay">Keep following for (ms)</label>
+<input id="follow-hold-delay" type="number" min="0" max="5000" step="10" [disabled]="!cut.follow.delays" [ngModel]="cut.follow.holdDelayMs" (ngModelChange)="setFollow({ holdDelayMs: +$event })">
+</div>
+</div>
+<div class="campo">
+<label>
+Smoothness
+<app-help-hint label="What the smoothness does">How gently the frame travels when it moves with a person or goes to another one. Abrupt jumps straight there; very smooth glides over about a second.</app-help-hint>
+</label>
+<div class="segmented" role="radiogroup" aria-label="Smoothness">
+<button type="button" *ngFor="let level of smoothnessLevels" role="radio" [attr.aria-checked]="cut.follow.smoothness === level.id" [class.active]="cut.follow.smoothness === level.id" (click)="setFollow({ smoothness: level.id })">{{ level.name }}</button>
+</div>
+</div>
+<p class="hint" *ngIf="!cut.tracking">These apply once <strong>Follow the person</strong> is ticked.</p>
+</div>
+</div>
+<div #frame class="framing" [class.dragging]="!!framing" [class.following]="cut.tracking" tabindex="0" role="slider" aria-label="Horizontal framing of the cut"
+  aria-valuemin="0" aria-valuemax="100" [attr.aria-valuenow]="modalCrop * 100 | number:'1.0-0'" [attr.aria-valuetext]="framingLabel"
+  (pointerdown)="startFrame($event, frame, framingVideo)" (pointermove)="moveFrame($event)" (pointerup)="endFrame($event, frame)" (pointercancel)="endFrame($event, frame)" (keydown)="frameKey($event)">
+<video #framingVideo [src]="sourceUrl + '#t=' + cut.start" muted playsinline preload="auto" [style.object-position]="(modalCrop * 100) + '% center'"
+  (pause)="cutPlaying = false">
+</video>
+<span class="framing-badge">9:16</span>
+<div class="framing-analysis" *ngIf="cut.analysing !== null" role="status">
+<span class="spinner" aria-hidden="true"></span>
+<span>Finding the person… {{ cut.analysing * 100 | number:'1.0-0' }}%</span>
+</div>
+</div>
+<!-- The transport under the horizontal video, measured in the cut's own seconds. -->
+<div class="previa-transporte framing-transporte">
+<button type="button" class="previa-botao" (click)="toggleCutPlay(framingVideo)" [attr.aria-label]="cutPlaying ? 'Pause the cut' : 'Play the cut'">
+<mat-icon>{{ cutPlaying ? 'pause' : 'play_arrow' }}</mat-icon>
+</button>
+<span class="previa-tempo">{{ clock(cutAt) }}</span>
+<input class="previa-barra" type="range" min="0" [max]="cut.end - cut.start" step="0.05" [value]="cutAt" (input)="seekCut(framingVideo, +$any($event.target).value)" aria-label="Position in the cut">
+<span class="previa-tempo previa-total">{{ clock(cut.end - cut.start) }}</span>
+<button type="button" class="previa-botao previa-botao-menor" (click)="cut.cropX = 0.5" [disabled]="cut.tracking" title="Center the framing" aria-label="Center the framing">
+<mat-icon>center_focus_strong</mat-icon>
+</button>
+</div>
+<p class="framing-label">{{framingLabel}}</p>
+<div class="cut-times">
+<label>Start (s)<input type="number" min="0" [max]="duration" step="0.1" [(ngModel)]="cut.start">
+</label>
+<label>End (s)<input type="number" min="0" [max]="duration" step="0.1" [(ngModel)]="cut.end">
+</label>
+</div>
+<p class="error" *ngIf="error">{{error}}</p>
+<div class="actions">
+<button (click)="closeCut()">Cancel</button>
+<button class="primary" (click)="saveCut()" [disabled]="busy || cut.analysing !== null">Save cut</button>
+</div>
+</section>
+</div>
+<div class="modal-backdrop" *ngIf="clearAllOpen" (click)="clearAllOpen = false">
+<section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="clear-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="clearAllOpen = false">
+<div class="toolbar">
+<h2 id="clear-title">Clear all?</h2>
+<button class="icon-button" (click)="clearAllOpen = false" aria-label="Cancel">×</button>
+</div>
+<p>The loaded video, the selected cuts and all {{state.shorts.length}} short(s) in this session will be removed<ng-container *ngIf="hasRendering">, and renders in progress will be stopped</ng-container>.</p>
+<p class="hint">Files you have already exported or downloaded stay on your computer.</p>
+<p class="error" *ngIf="error">{{error}}</p>
+<div class="actions">
+<button (click)="clearAllOpen = false">Cancel</button>
+<button class="primary" (click)="clearAll()" [disabled]="busy"><mat-icon aria-hidden="true">delete_sweep</mat-icon> Clear all</button>
+</div>
+</section>
+</div>
+<div class="modal-backdrop" *ngIf="saveChooser" (click)="closeSaveChooser()">
+<section class="settings-modal" role="dialog" aria-modal="true" aria-labelledby="save-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="closeSaveChooser()">
+<div class="toolbar">
+<h2 id="save-title">What should be saved?</h2>
+<button class="icon-button" (click)="closeSaveChooser()" aria-label="Cancel">×</button>
+</div>
+<div class="save-choices">
+<button class="primary" (click)="saveProject()" [disabled]="!state.source">
+<mat-icon aria-hidden="true">movie</mat-icon> The whole project</button>
+<p class="hint">Which video it is, the selected cuts, the settings beside the video and every short with its own cuts, framing and settings. Not the video itself and not the rendered files — the footage stays on your disk.</p>
+<button (click)="saveSettingsOnly()">
+<mat-icon aria-hidden="true">tune</mat-icon> Just the settings</button>
+<p class="hint">The audio and transition settings beside the video and nothing else. The chosen audio goes in by name<ng-container *ngIf="desktop?.shortCommand"> and by its place on this computer</ng-container>.</p>
+</div>
+<p class="hint"><strong>Open</strong> takes either file back. A project replaces this session; settings are applied to it.</p>
+</section>
+</div>
+<div class="modal-backdrop" *ngIf="confirmation as question" (click)="question.answer(false)">
+<section class="settings-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="confirm-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="question.answer(false)">
+<div class="toolbar">
+<h2 id="confirm-title">{{question.title}}</h2>
+<button class="icon-button" (click)="question.answer(false)" aria-label="Cancel">×</button>
+</div>
+<p>{{question.message}}</p>
+<div class="actions">
+<button (click)="question.answer(false)">Cancel</button>
+<button class="primary" (click)="question.answer(true)">{{question.action}}</button>
+</div>
+</section>
+</div>
+<div class="modal-backdrop" *ngIf="removeCutIndex !== null" (click)="removeCutIndex = null">
+<section class="settings-modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="remove-cut-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="removeCutIndex = null">
+<div class="toolbar">
+<h2 id="remove-cut-title">Remove cut {{removeCutIndex + 1}}?</h2>
+<button class="icon-button" (click)="removeCutIndex = null" aria-label="Cancel">×</button>
+</div>
+<p *ngIf="state.selection[removeCutIndex] as cut">The cut from {{clock(cut.start)}} to {{clock(cut.end)}} leaves the selection, with its framing. The video itself is not changed.</p>
+<div class="actions">
+<button (click)="removeCutIndex = null">Cancel</button>
+<button class="primary" (click)="confirmRemoveCut()" [disabled]="busy"><mat-icon aria-hidden="true">close</mat-icon> Remove cut</button>
+</div>
+</section>
+</div>

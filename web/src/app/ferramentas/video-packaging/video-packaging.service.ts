@@ -157,6 +157,17 @@ export class VideoPackagingService {
   readonly hasContent = computed(() =>
     this.images().length > 0 || this.titles().length > 0 || !!this.descriptionValue() || this.tagsValue().length > 0
   );
+  /** Everything an AI run delivers is in: three covers, three titles, the description and the tags. */
+  readonly isComplete = computed(() =>
+    this.images().length >= 3 && this.titles().length >= 3 && !!this.descriptionValue() && this.tagsValue().length > 0
+  );
+  /**
+   * What an AI is doing with the package, for the light on the tool's tab:
+   * nothing, working on it, or done (everything delivered). Only commands of
+   * this tool move it, so an AI editing in another tool does not light it.
+   */
+  private readonly agentPhaseValue = signal<'idle' | 'working' | 'done'>('idle');
+  readonly agentPhase = computed(() => this.agentPhaseValue());
   readonly understanding = computed(() => this.understandingValue());
   readonly frames = computed(() => this.framesValue());
   readonly styleMode = computed(() => this.modeValue());
@@ -555,9 +566,29 @@ export class VideoPackagingService {
     this.framesValue.set([]);
   }
 
+  // ------------------------------------------------------- the AI working on it
+
+  /**
+   * An AI command of this tool arrived. Reading does not turn a finished
+   * package back into work in progress (an AI checks what it delivered);
+   * anything else does, and a delivery that completes the package finishes it.
+   */
+  noteAgentCommand(command: string): void {
+    const reading = command.startsWith('get_');
+    if (command === 'set_video_packaging') this.agentPhaseValue.set(this.isComplete() ? 'done' : 'working');
+    else if (!reading || this.agentPhaseValue() !== 'done') this.agentPhaseValue.set('working');
+  }
+
+  /** The AI let go: work left unfinished no longer lights the tab; a finished package still does. */
+  noteAgentGone(): void {
+    if (this.agentPhaseValue() === 'working') this.agentPhaseValue.set('idle');
+  }
+
   // -------------------------------------------------------------------- state
 
   clear(): void {
+    // An emptied package is no longer a finished one (an AI clearing it is already marked as working).
+    if (this.agentPhaseValue() === 'done') this.agentPhaseValue.set('idle');
     for (const current of this.images()) URL.revokeObjectURL(current.url);
     this.images.set([]);
     this.titles.set([]);

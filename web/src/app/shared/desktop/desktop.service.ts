@@ -39,6 +39,8 @@ export interface AgentRuntimeInfo {
 
 /** The bridge the desktop shell hangs on `window`. Absent in a browser. */
 interface DesktopBridge {
+  shortCommand?(name: string, args?: Record<string, unknown>): Promise<any>;
+  chooseShortOutput?(name: string): Promise<string | null>;
   platform: string;
   minimize(): void;
   focus?(): void;

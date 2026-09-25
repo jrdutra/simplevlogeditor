@@ -7,16 +7,7 @@
 }
 
 .construction {
-  position: relative;
   width: min(760px, 100%);
-  overflow: hidden;
-  padding: clamp(1.5rem, 5vw, 3.5rem);
-  border: 1px solid var(--line-hard);
-  border-radius: 22px;
-  background:
-    radial-gradient(circle at 50% 0, rgba(94, 96, 255, 0.22), transparent 24rem),
-    linear-gradient(145deg, rgba(48, 49, 69, 0.98), rgba(24, 24, 35, 0.98));
-  box-shadow: var(--lift), var(--glow-soft), inset 0 1px 0 rgba(255, 255, 255, 0.06);
   text-align: center;
 }
 
@@ -118,6 +109,14 @@ h1 {
 }
 
 .construction__ai-button--claude { --ai-accent: #f97316; }
+
+.construction__ai-button--codex {
+  box-shadow: 0 0 20px rgba(79, 140, 255, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
+
+.construction__ai-button--claude {
+  box-shadow: 0 0 20px rgba(249, 115, 22, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+}
 
 .construction__ai-button:hover,
 .construction__ai-button:focus-visible {

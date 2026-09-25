@@ -64,32 +64,31 @@ export class PathBackedFile extends File implements PathBackedMarker {
 function remoteStream(url: string, start: number, end: number): ReadableStream<Uint8Array> {
   if (end <= start) return new ReadableStream({ start: (controller) => controller.close() });
   const abort = new AbortController();
-  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  // A paused decoder must not keep an HTTP response open to the end of a large
+  // file. Several such readers (filmstrip, waveform, tracking) otherwise occupy
+  // all Chromium connections to the local server and block new range requests.
+  const chunkSize = 1024 * 1024;
+  let position = start;
   let cancelled = false;
   return new ReadableStream<Uint8Array>({
-    async start(controller) {
-      try {
-        const response = await checkedFetch(url, { headers: rangeHeader(start, end), signal: abort.signal });
-        if (cancelled) { await response.body?.cancel(); return; }
-        reader = response.body?.getReader();
-        if (!reader) { controller.close(); return; }
-      } catch (error) { if (!cancelled) controller.error(error); }
-    },
     async pull(controller) {
-      if (!reader || cancelled) return;
+      if (cancelled) return;
       try {
-        const item = await reader.read();
+        const next = Math.min(end, position + chunkSize);
+        const response = await checkedFetch(url, { headers: rangeHeader(position, next), signal: abort.signal });
+        // Consume the complete bounded response before yielding to a consumer
+        // that may pause indefinitely. Memory and read-ahead stay bounded too.
+        const data = await response.arrayBuffer();
         if (cancelled) return;
-        if (item.done) { reader.releaseLock(); reader = undefined; controller.close(); }
-        else controller.enqueue(item.value);
+        if (data.byteLength !== next - position) throw new Error('Local media returned an incomplete byte range.');
+        position = next;
+        controller.enqueue(new Uint8Array(data));
+        if (position >= end) controller.close();
       } catch (error) { if (!cancelled) controller.error(error); }
     },
-    async cancel(reason) {
+    cancel() {
       cancelled = true;
-      // Release the HTTP connection when a decoder/preview stops reading.
-      // Otherwise abandoned streams compete with the next frame request.
       abort.abort();
-      try { await reader?.cancel(reason); } catch { /* fetch already aborted */ }
     }
   });
 }

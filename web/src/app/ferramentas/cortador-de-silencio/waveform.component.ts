@@ -5,11 +5,13 @@ import {
   Component,
   ElementRef,
   EventEmitter,
+  HostBinding,
   Input,
   NgZone,
   OnChanges,
   OnDestroy,
   Output,
+  SimpleChanges,
   ViewChild,
   inject
 } from '@angular/core';
@@ -57,6 +59,65 @@ const MIN_MANUAL_RANGE = 0.01;
 const HIT_SLOP = 3;
 const EDGE_HIT_SLOP = 7;
 
+/** Height of the optional picture-track band drawn above the wave, in CSS pixels. */
+const TRACK_BAND = 56;
+
+/** Thumbnails kept in memory at once; the oldest go first. */
+const FRAME_CACHE = 360;
+
+/** Draws one picture of the source at a given second, or null when there is none. */
+export type FrameSource = (time: number) => Promise<CanvasImageSource | null>;
+
+/**
+ * Everything the timeline says in words.
+ *
+ * The defaults are the silence cutter's; another tool that reuses this
+ * timeline for regions that mean something else (the Short Editor's stretches)
+ * passes its own wording and nothing else changes.
+ */
+export interface WaveformLabels {
+  legendOutside: string;
+  legendRange: string;
+  legendSelected: string;
+  hint: string;
+  following: (visible: string, total: string) => string;
+  summary: (count: number, total: string) => string;
+  deleteNone: string;
+  deleteRange: (start: string, end: string) => string;
+  surface: string;
+  zoomOut: string;
+  fit: string;
+  zoomIn: string;
+  help: string;
+  previousRange: string;
+  nextRange: string;
+}
+
+const DEFAULT_LABELS: WaveformLabels = {
+  legendOutside: 'Kept',
+  legendRange: 'Removed (hatched)',
+  legendSelected: 'Selected',
+  hint: 'Left-drag to mark a new region for removal, drag either edge of a marked region to adjust it, right-drag to slide the waveform, or click a region to remove it with the ✕ button.',
+  following: (visible, total) => `Showing ${visible} of ${total}, following the playhead until you scroll elsewhere.`,
+  summary: (count, total) => `${count} region${count === 1 ? '' : 's'} marked for removal across ${total}.`,
+  deleteNone: 'Delete the selected region',
+  deleteRange: (start, end) => `Delete the region from ${start} to ${end}`,
+  surface: 'Waveform. ',
+  zoomOut: 'Zoom out',
+  fit: 'Fit the whole file',
+  zoomIn: 'Zoom in',
+  help: 'How to use the waveform',
+  previousRange: 'Select the previous region',
+  nextRange: 'Select the next region'
+};
+
+/** One region's buttons on screen, and the icon of each by the button's id. */
+interface RangeGroup {
+  element: HTMLElement;
+  range: EditableRange | null;
+  icons: Map<string, { icon: HTMLElement; button: HTMLElement; action: { id: string; icon: string; label: string } }>;
+}
+
 export interface RangeResize {
   range: EditableRange;
   start: number;
@@ -79,24 +140,45 @@ const FOLLOW_LEAD = 0.1;
     <div class="wf-toolbar">
       <div class="wf-legend" role="list">
         <span class="wf-legend-item" role="listitem">
-          <span class="wf-swatch wf-swatch-kept" aria-hidden="true"></span> Kept
+          <span class="wf-swatch wf-swatch-kept" aria-hidden="true"></span> {{ text.legendOutside }}
         </span>
         <span class="wf-legend-item" role="listitem">
-          <span class="wf-swatch wf-swatch-removed" aria-hidden="true"></span> Removed (hatched)
+          <span class="wf-swatch wf-swatch-removed" aria-hidden="true"></span> {{ text.legendRange }}
         </span>
         <span class="wf-legend-item" role="listitem">
-          <span class="wf-swatch wf-swatch-selected" aria-hidden="true"></span> Selected
+          <span class="wf-swatch wf-swatch-selected" aria-hidden="true"></span> {{ text.legendSelected }}
         </span>
       </div>
 
       <div class="wf-zoom">
-        <button type="button" (click)="zoomBy(1 / 1.8)" [disabled]="zoom <= 1" aria-label="Zoom out">
+        @if (rangeNavigation) {
+          <button type="button" (click)="selectAdjacent(-1)" [disabled]="!silenceRanges.length" [attr.aria-label]="text.previousRange" [title]="text.previousRange">
+            <mat-icon aria-hidden="true">chevron_left</mat-icon>
+          </button>
+          <button type="button" (click)="selectAdjacent(1)" [disabled]="!silenceRanges.length" [attr.aria-label]="text.nextRange" [title]="text.nextRange">
+            <mat-icon aria-hidden="true">chevron_right</mat-icon>
+          </button>
+        }
+        @if (hintAsHelp) {
+          <span class="wf-help">
+            <button type="button" class="wf-help-button" [attr.aria-label]="text.help" aria-describedby="wf-help-text">
+              <mat-icon aria-hidden="true">help_outline</mat-icon>
+            </button>
+            <span class="wf-help-pop" id="wf-help-text" role="tooltip">
+              {{ text.hint }}
+              @if (zoom > 1) {
+                <span class="wf-help-follow">{{ text.following(visibleLabel, totalLabel) }}</span>
+              }
+            </span>
+          </span>
+        }
+        <button type="button" (click)="zoomBy(1 / 1.8)" [disabled]="zoom <= 1" [attr.aria-label]="text.zoomOut">
           <mat-icon aria-hidden="true">zoom_out</mat-icon>
         </button>
-        <button type="button" (click)="fit()" [disabled]="zoom === 1" aria-label="Fit the whole file">
+        <button type="button" (click)="fit()" [disabled]="zoom === 1" [attr.aria-label]="text.fit">
           <mat-icon aria-hidden="true">fit_screen</mat-icon>
         </button>
-        <button type="button" (click)="zoomBy(1.8)" [disabled]="zoom >= maxZoom" aria-label="Zoom in">
+        <button type="button" (click)="zoomBy(1.8)" [disabled]="zoom >= maxZoom" [attr.aria-label]="text.zoomIn">
           <mat-icon aria-hidden="true">zoom_in</mat-icon>
         </button>
         <span class="wf-zoom-value">{{ zoomLabel }}</span>
@@ -108,7 +190,7 @@ const FOLLOW_LEAD = 0.1;
       #surface
       role="slider"
       tabindex="0"
-      [attr.aria-label]="'Waveform. ' + summaryLabel"
+      [attr.aria-label]="text.surface + summaryLabel"
       [attr.aria-valuemin]="0"
       [attr.aria-valuemax]="duration"
       [attr.aria-valuenow]="currentTime"
@@ -126,19 +208,23 @@ const FOLLOW_LEAD = 0.1;
         (click)="deleteSelected()">
         <mat-icon aria-hidden="true">close</mat-icon>
       </button>
+
+      <!-- Buttons every region carries (the Short Editor's play and framing), placed from code on every frame. -->
+      <div class="wf-range-layer" #rangeLayer></div>
     </div>
 
     <div class="wf-scrollbar" #scroller>
       <div class="wf-spacer" #spacer></div>
     </div>
 
-    <p class="wf-hint">
-      Left-drag to mark a new region for removal, drag either edge of a marked region to adjust it, right-drag to slide
-      the waveform, or click a region to remove it with the ✕ button.
-      @if (zoom > 1) {
-        <span> Showing {{ visibleLabel }} of {{ totalLabel }}, following the playhead until you scroll elsewhere.</span>
-      }
-    </p>
+    @if (!hintAsHelp) {
+      <p class="wf-hint">
+        {{ text.hint }}
+        @if (zoom > 1) {
+          <span> {{ text.following(visibleLabel, totalLabel) }}</span>
+        }
+      </p>
+    }
   `,
   styles: [`
     :host { display: block; }
@@ -217,6 +303,8 @@ const FOLLOW_LEAD = 0.1;
       -webkit-user-select: none;
     }
 
+    :host(.wf-has-track) .wf-surface { height: 252px; }
+
     .wf-surface.is-panning { cursor: grabbing; }
 
     .wf-surface:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
@@ -247,6 +335,43 @@ const FOLLOW_LEAD = 0.1;
     .wf-delete mat-icon { width: 1.05rem; height: 1.05rem; font-size: 1.05rem; line-height: 1.05rem; }
     .wf-delete[hidden] { display: none; }
 
+    .wf-range-layer { position: absolute; inset: 0; pointer-events: none; z-index: 2; }
+    :host ::ng-deep .wf-range-group {
+      position: absolute;
+      top: 8px;
+      left: 0;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 6px;
+      pointer-events: auto;
+    }
+    :host ::ng-deep .wf-range-group[hidden] { display: none; }
+    :host ::ng-deep .wf-range-group.is-column { flex-direction: column; }
+    :host ::ng-deep .wf-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.75rem;
+      height: 1.75rem;
+      padding: 0;
+      border: 1px solid rgba(255, 208, 92, 0.95);
+      border-radius: 4px;
+      background: rgba(12, 8, 0, 0.92);
+      color: rgb(255, 208, 92);
+      cursor: pointer;
+      box-shadow: 0 2px 10px rgba(0, 0, 0, 0.55);
+    }
+    :host ::ng-deep .wf-action:hover { background: rgb(255, 208, 92); color: rgb(20, 12, 0); }
+    :host ::ng-deep .wf-action:focus-visible { outline: 2px solid var(--aqua); outline-offset: 2px; }
+    :host ::ng-deep .wf-action .material-icons { font-size: 1.05rem; line-height: 1; }
+    /* Over a region that is not picked the buttons take its purple, so the picked one still stands out. */
+    :host ::ng-deep .wf-range-group:not(.is-selected) .wf-action {
+      border-color: rgba(182, 37, 255, 0.85);
+      background: rgba(20, 6, 32, 0.9);
+      color: #e6b8ff;
+    }
+    :host ::ng-deep .wf-range-group:not(.is-selected) .wf-action:hover { background: rgb(182, 37, 255); color: #fff; }
+
     .wf-scrollbar {
       display: none;
       width: 100%;
@@ -269,8 +394,29 @@ const FOLLOW_LEAD = 0.1;
 
     .wf-hint { margin: 0.4rem 0 0; font-size: 0.78rem; color: var(--text-muted); }
 
+    .wf-help { position: relative; display: inline-flex; }
+    .wf-help-pop {
+      display: none;
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      z-index: 5;
+      width: min(340px, 80vw);
+      padding: 0.7rem 0.8rem;
+      border: 1px solid var(--line-soft);
+      border-radius: 0.6em;
+      background: rgba(3, 14, 30, 0.97);
+      box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5);
+      font-size: 0.8rem;
+      line-height: 1.45;
+      color: var(--text-main);
+    }
+    .wf-help:hover .wf-help-pop, .wf-help:focus-within .wf-help-pop { display: block; }
+    .wf-help-follow { display: block; margin-top: 0.4rem; color: var(--text-muted); }
+
     @media (max-width: 650px) {
       .wf-surface { height: 150px; }
+      :host(.wf-has-track) .wf-surface { height: 212px; }
     }
   `]
 })
@@ -280,6 +426,47 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   @Input() duration = 0;
   @Input() currentTime = 0;
   @Input() mode: WaveformMode = 'canvas2d';
+  /** Wording for a tool whose regions are not removals. Missing keys keep the silence cutter's. */
+  @Input() labels: Partial<WaveformLabels> = {};
+  /** Shortest region the reader can draw or resize to, in seconds. */
+  @Input() minRange = MIN_MANUAL_RANGE;
+  @Input() maxZoom = MAX_ZOOM;
+  /** A zoom set from outside (another control, or an assistant). Left unset, the timeline owns its zoom. */
+  @Input() zoomLevel?: number;
+  /** When set, a band above the wave names the picture track with this text. */
+  @Input() trackLabel = '';
+  /**
+   * Square buttons every region carries, picked or not (the Short Editor plays
+   * and frames a stretch with them). With them, the picked region's ✕ sits to
+   * their left.
+   */
+  @Input() rangeButtons: readonly { id: string; icon: string; label: string }[] = [];
+  /** How a region's buttons are stacked. */
+  @Input() rangeButtonsLayout: 'row' | 'column' = 'row';
+  /** Where a region's buttons sit: centred on it, or against its right edge. */
+  @Input() rangeButtonsAlign: 'center' | 'end' = 'center';
+  /**
+   * Lets a button change its face for one region — the Short Editor's play
+   * turns into pause while that cut plays. Null keeps the button's own.
+   */
+  @Input() rangeButtonState?: (id: string, range: EditableRange) => { icon: string; label: string } | null;
+  /** Off when the region's own buttons already include a way to remove it. */
+  @Input() showDeleteButton = true;
+  /** When set, each region carries this short tag (the Short Editor numbers its stretches). */
+  @Input() rangeTag?: (range: EditableRange) => string;
+  /**
+   * When set, the picture band is tiled with pictures of the source, each
+   * taken at the exact second its tile starts, re-taken as the zoom changes.
+   */
+  @Input() frameSource?: FrameSource;
+  /** Width over height of the source picture, which is the shape of each tile. */
+  @Input() frameAspect = 16 / 9;
+  /** Moves the how-to text into a ? button beside the zoom controls instead of a line under the waveform. */
+  @Input() hintAsHelp = false;
+  /** When true, the plain mouse wheel zooms around the pointer (shift or a sideways wheel still slides). */
+  @Input() wheelZooms = false;
+  /** When true, two arrows beside the zoom pick the previous or next region, as a click on it would. */
+  @Input() rangeNavigation = false;
 
   /** Emitted when the reader picks a position on the timeline. */
   @Output() readonly seek = new EventEmitter<number>();
@@ -288,12 +475,23 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   /** Emitted when the reader deletes a region, automatic or hand-drawn. */
   @Output() readonly rangeRemove = new EventEmitter<EditableRange>();
   @Output() readonly rangeResize = new EventEmitter<RangeResize>();
+  /** Emitted when the reader changes the zoom. */
+  @Output() readonly zoomChange = new EventEmitter<number>();
+  /** Emitted when the reader presses one of a region's buttons. */
+  @Output() readonly rangeButton = new EventEmitter<{ id: string; range: EditableRange }>();
+
+  @HostBinding('class.wf-has-track') get hasTrack(): boolean { return !!this.trackLabel; }
+
+  get text(): WaveformLabels { return { ...DEFAULT_LABELS, ...this.labels }; }
 
   @ViewChild('canvas') private canvasRef?: ElementRef<HTMLCanvasElement>;
   @ViewChild('surface') private surfaceRef?: ElementRef<HTMLElement>;
   @ViewChild('scroller') private scrollerRef?: ElementRef<HTMLElement>;
   @ViewChild('spacer') private spacerRef?: ElementRef<HTMLElement>;
   @ViewChild('deleteButton') private deleteButtonRef?: ElementRef<HTMLElement>;
+  @ViewChild('rangeLayer') private rangeLayerRef?: ElementRef<HTMLElement>;
+  /** One group of buttons per region on screen, reused from frame to frame. */
+  private rangeGroups: RangeGroup[] = [];
 
   private readonly zone = inject(NgZone);
   private readonly cdr = inject(ChangeDetectorRef);
@@ -340,7 +538,13 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
    */
   private follow = true;
 
-  readonly maxZoom = MAX_ZOOM;
+  /** Pictures already taken, by millisecond; `null` while one is being taken. */
+  private frames = new Map<number, CanvasImageSource | null>();
+  /** Tiles on screen that still have no picture, left to right. */
+  private wantedFrames: number[] = [];
+  /** Seconds whose picture could not be taken; not asked for again for this source. */
+  private failedFrames = new Set<number>();
+  private framePump = false;
 
   ngAfterViewInit(): void {
     const canvas = this.canvasRef?.nativeElement;
@@ -374,7 +578,20 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     this.scheduleDraw();
   }
 
-  ngOnChanges(): void {
+  ngOnChanges(changes?: SimpleChanges): void {
+    if (changes?.['rangeButtons'] && !changes['rangeButtons'].firstChange) {
+      for (const group of this.rangeGroups) group.element.remove();
+      this.rangeGroups = [];
+    }
+    if (changes?.['frameSource'] || changes?.['frameAspect']) this.clearFrames();
+    if (changes?.['zoomLevel'] && this.zoomLevel !== undefined && Number.isFinite(this.zoomLevel)) {
+      const next = Math.min(this.maxZoom, Math.max(1, this.zoomLevel));
+      if (Math.abs(next - this.zoom) > 1e-6) {
+        this.zoom = next;
+        this.offset = this.currentTime - this.visibleSpan * FOLLOW_LEAD;
+        this.follow = true;
+      }
+    }
     // A new analysis replaces the array, so a selection held by reference has
     // to be dropped rather than left pointing at a region that no longer runs.
     if (this.selected && !this.silenceRanges.includes(this.selected)) {
@@ -387,6 +604,7 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   }
 
   ngOnDestroy(): void {
+    this.clearFrames();
     const surface = this.surfaceRef?.nativeElement;
     this.observer?.disconnect();
     if (this.frame) cancelAnimationFrame(this.frame);
@@ -419,13 +637,12 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   }
 
   get deleteLabel(): string {
-    if (!this.selected) return 'Delete the selected region';
-    return `Delete the region from ${formatDuration(this.selected.start)} to ${formatDuration(this.selected.end)}`;
+    if (!this.selected) return this.text.deleteNone;
+    return this.text.deleteRange(formatDuration(this.selected.start), formatDuration(this.selected.end));
   }
 
   get summaryLabel(): string {
-    const removed = this.silenceRanges.length;
-    return `${removed} region${removed === 1 ? '' : 's'} marked for removal across ${formatDuration(this.duration)}.`;
+    return this.text.summary(this.silenceRanges.length, formatDuration(this.duration));
   }
 
   // ------------------------------------------------------------------- zoom
@@ -440,13 +657,14 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     this.follow = true;
     this.syncScrollbar();
     this.scheduleDraw();
+    this.zoomChange.emit(this.zoom);
   }
 
   /** Zooms while keeping the time under `anchor` (0..1 of the width) in place. */
   private zoomAt(factor: number, anchor: number): void {
     const visible = this.visibleSpan;
     const anchorTime = this.offset + anchor * visible;
-    const next = Math.min(MAX_ZOOM, Math.max(1, this.zoom * factor));
+    const next = Math.min(this.maxZoom, Math.max(1, this.zoom * factor));
     if (next === this.zoom) return;
 
     this.zoom = next;
@@ -455,6 +673,7 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     this.reviewFollowing();
     this.syncScrollbar();
     this.scheduleDraw();
+    this.zone.run(() => this.zoomChange.emit(this.zoom));
   }
 
   private get visibleSpan(): number {
@@ -605,8 +824,8 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   };
 
   private readonly onPointerDown = (event: PointerEvent): void => {
-    // The delete button lives inside the surface; its clicks are not gestures.
-    if ((event.target as Element)?.closest?.('.wf-delete')) return;
+    // The buttons live inside the surface; their clicks are not gestures.
+    if ((event.target as Element)?.closest?.('.wf-delete, .wf-range-group')) return;
 
     const surface = this.surfaceRef?.nativeElement;
     if (!surface || this.duration <= 0) return;
@@ -659,8 +878,8 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     } else if (this.resizeRange) {
       const now = this.timeAt(event.clientX);
       this.resizeDraft = this.gesture === 'resize-start'
-        ? { start: Math.min(now, this.resizeRange.end - MIN_MANUAL_RANGE), end: this.resizeRange.end }
-        : { start: this.resizeRange.start, end: Math.max(now, this.resizeRange.start + MIN_MANUAL_RANGE) };
+        ? { start: Math.min(now, this.resizeRange.end - this.minRange), end: this.resizeRange.end }
+        : { start: this.resizeRange.start, end: Math.max(now, this.resizeRange.start + this.minRange) };
     }
 
     this.scheduleDraw();
@@ -695,7 +914,7 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
       return;
     }
 
-    if (gesture === 'select' && moved && draft && draft.end - draft.start >= MIN_MANUAL_RANGE) {
+    if (gesture === 'select' && moved && draft && draft.end - draft.start >= this.minRange) {
       this.zone.run(() => this.rangeAdd.emit(draft));
       return;
     }
@@ -728,7 +947,8 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     const surface = this.surfaceRef?.nativeElement;
     if (!surface) return;
 
-    if (event.ctrlKey || event.metaKey) {
+    const zooms = event.ctrlKey || event.metaKey || (this.wheelZooms && !event.shiftKey && Math.abs(event.deltaY) > Math.abs(event.deltaX));
+    if (zooms) {
       event.preventDefault();
       const rect = surface.getBoundingClientRect();
       const anchor = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
@@ -773,6 +993,50 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     event.preventDefault();
   }
 
+  /**
+   * Picks the region before or after the picked one, exactly as clicking it
+   * would, and brings it on screen when the view is zoomed elsewhere. With
+   * nothing picked, the first (or the last) region is the one.
+   */
+  selectAdjacent(step: -1 | 1): void {
+    const ranges = [...this.silenceRanges].sort((a, b) => a.start - b.start);
+    if (!ranges.length) return;
+    const at = this.selected ? ranges.indexOf(this.selected) : -1;
+    const next = at < 0 ? (step > 0 ? 0 : ranges.length - 1) : Math.max(0, Math.min(ranges.length - 1, at + step));
+    const range = ranges[next];
+    this.selected = range;
+    const visible = this.visibleSpan;
+    if (range.start < this.offset || range.end > this.offset + visible) {
+      // Centred when it fits, otherwise from its start.
+      const length = range.end - range.start;
+      this.offset = length < visible ? range.start - (visible - length) / 2 : range.start;
+      this.clampOffset();
+      this.reviewFollowing();
+      this.syncScrollbar();
+    }
+    this.cdr.markForCheck();
+    this.scheduleDraw();
+  }
+
+  /** Draws again now, for a caller whose state changed what the buttons should show. */
+  redraw(): void {
+    this.scheduleDraw();
+  }
+
+  /** Where a region is on screen now, in viewport pixels, for a caller that places something beside it. */
+  rangeClientRect(range: TimeRange): { left: number; right: number; top: number; bottom: number } | null {
+    const surface = this.surfaceRef?.nativeElement;
+    const visible = this.visibleSpan;
+    if (!surface || visible <= 0) return null;
+    const rect = surface.getBoundingClientRect();
+    return {
+      left: rect.left + ((range.start - this.offset) / visible) * rect.width,
+      right: rect.left + ((range.end - this.offset) / visible) * rect.width,
+      top: rect.top,
+      bottom: rect.bottom
+    };
+  }
+
   deleteSelected(): void {
     const range = this.selected;
     if (!range) return;
@@ -811,13 +1075,16 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     const from = this.offset;
     const to = from + visible;
     const waveHeight = height - RULER_HEIGHT * ratio;
-    const middle = waveHeight / 2;
+    // The optional picture band sits above the wave; without it the wave keeps the whole height.
+    const band = this.trackLabel ? TRACK_BAND * ratio : 0;
+    const middle = band + (waveHeight - band) / 2;
 
     context.fillStyle = COLOURS.background;
     context.fillRect(0, 0, width, height);
+    if (band) this.drawTrackBand(context, width, band, from, visible, ratio);
 
     this.drawRemoved(context, width, waveHeight, from, visible);
-    this.drawWave(context, width, waveHeight, middle, from, visible);
+    this.drawWave(context, width, waveHeight, middle, from, visible, middle - band);
 
     context.strokeStyle = COLOURS.midline;
     context.lineWidth = 1;
@@ -826,6 +1093,8 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     context.lineTo(width, middle);
     context.stroke();
 
+    if (band) this.drawTrackLabel(context, band, ratio);
+    this.drawRangeTags(context, width, from, visible, ratio);
     this.drawDraft(context, width, waveHeight, from, visible);
     this.drawRuler(context, width, height, waveHeight, from, to, ratio);
     this.drawPlayhead(context, width, waveHeight, from, visible);
@@ -931,13 +1200,14 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     waveHeight: number,
     middle: number,
     from: number,
-    visible: number
+    visible: number,
+    halfHeight = middle
   ): void {
     const { min, max, rms, secondsPerBucket } = this.waveform;
     const buckets = min.length;
     if (!buckets || !secondsPerBucket) return;
 
-    const amplitude = middle * 0.92;
+    const amplitude = halfHeight * 0.92;
 
     for (let x = 0; x < width; x++) {
       const timeStart = from + (x / width) * visible;
@@ -976,6 +1246,129 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   }
 
   /**
+   * The picture track.
+   *
+   * Tiles have the shape of the source picture and sit at fixed places on the
+   * time axis, so panning keeps them and zooming asks for new ones: each shows
+   * the frame at the exact second its left edge stands for.
+   */
+  private drawTrackBand(context: CanvasRenderingContext2D, width: number, band: number, from: number, visible: number, ratio: number): void {
+    context.fillStyle = 'rgba(244, 251, 255, 0.05)';
+    context.fillRect(0, 0, width, band);
+    this.wantedFrames = [];
+    if (this.frameSource && visible > 0 && this.duration > 0) {
+      const inset = 2 * ratio;
+      const tileHeight = band - inset * 2;
+      const tileWidth = Math.max(8 * ratio, tileHeight * (this.frameAspect > 0 ? this.frameAspect : 16 / 9));
+      const tileSeconds = (tileWidth / width) * visible;
+      const endX = ((this.duration - from) / visible) * width;
+      context.save();
+      context.beginPath();
+      context.rect(0, 0, Math.min(width, endX), band);
+      context.clip();
+      for (let index = Math.floor(from / tileSeconds); index * tileSeconds < Math.min(this.duration, from + visible); index++) {
+        const time = index * tileSeconds;
+        const key = Math.round(time * 1000);
+        const x = ((time - from) / visible) * width;
+        const picture = this.frames.get(key);
+        if (picture) context.drawImage(picture, x, inset, tileWidth, tileHeight);
+        else {
+          context.fillStyle = 'rgba(244, 251, 255, 0.08)';
+          context.fillRect(x, inset, tileWidth, tileHeight);
+          if (!this.frames.has(key) && !this.failedFrames.has(key)) this.wantedFrames.push(key);
+        }
+        context.fillStyle = 'rgba(2, 8, 20, 0.9)';
+        context.fillRect(x, inset, Math.max(1, ratio), tileHeight);
+      }
+      context.restore();
+      if (this.wantedFrames.length) void this.pumpFrames();
+    }
+    context.strokeStyle = COLOURS.midline;
+    context.lineWidth = 1;
+    context.beginPath();
+    context.moveTo(0, band - 0.5);
+    context.lineTo(width, band - 0.5);
+    context.stroke();
+  }
+
+  private drawTrackLabel(context: CanvasRenderingContext2D, band: number, ratio: number): void {
+    context.save();
+    context.font = `600 ${11 * ratio}px "Segoe UI", system-ui, sans-serif`;
+    context.textBaseline = 'middle';
+    const padding = 6 * ratio;
+    const textWidth = context.measureText(this.trackLabel).width;
+    context.fillStyle = 'rgba(2, 8, 20, 0.82)';
+    context.fillRect(8 * ratio, (band - 18 * ratio) / 2, textWidth + padding * 2, 18 * ratio);
+    context.fillStyle = COLOURS.axis;
+    context.fillText(this.trackLabel, 8 * ratio + padding, band / 2);
+    context.restore();
+  }
+
+  /** Takes the missing pictures one at a time, always the leftmost one still on screen. */
+  private async pumpFrames(): Promise<void> {
+    if (this.framePump) return;
+    this.framePump = true;
+    try {
+      for (;;) {
+        const source = this.frameSource;
+        const key = this.wantedFrames.find((item) => !this.frames.has(item));
+        if (!source || key === undefined) return;
+        this.frames.set(key, null);
+        let picture: CanvasImageSource | null = null;
+        try { picture = await source(key / 1000); } catch { picture = null; }
+        // The source changed while this picture was being taken: it belongs to another file.
+        if (source !== this.frameSource) { this.release(picture); continue; }
+        if (picture) this.frames.set(key, picture);
+        else { this.frames.delete(key); this.failedFrames.add(key); }
+        while (this.frames.size > FRAME_CACHE) {
+          const oldest = this.frames.keys().next().value as number;
+          this.release(this.frames.get(oldest) ?? null);
+          this.frames.delete(oldest);
+        }
+        this.wantedFrames = this.wantedFrames.filter((item) => item !== key);
+        this.scheduleDraw();
+      }
+    } finally {
+      this.framePump = false;
+    }
+  }
+
+  private release(picture: CanvasImageSource | null): void {
+    if (picture && typeof (picture as ImageBitmap).close === 'function') (picture as ImageBitmap).close();
+  }
+
+  private clearFrames(): void {
+    for (const picture of this.frames.values()) this.release(picture);
+    this.frames.clear();
+    this.failedFrames.clear();
+    this.wantedFrames = [];
+  }
+
+  /** The tag each region carries, in its top-left corner. */
+  private drawRangeTags(context: CanvasRenderingContext2D, width: number, from: number, visible: number, ratio: number): void {
+    const tag = this.rangeTag;
+    if (!tag || visible <= 0) return;
+    context.save();
+    context.font = `700 ${11 * ratio}px "Segoe UI", system-ui, sans-serif`;
+    context.textBaseline = 'middle';
+    for (const range of this.silenceRanges) {
+      if (range.end < from || range.start > from + visible) continue;
+      const shown = range === this.resizeRange && this.resizeDraft ? this.resizeDraft : range;
+      const left = Math.max(0, ((shown.start - from) / visible) * width);
+      const right = ((shown.end - from) / visible) * width;
+      const label = tag(range);
+      const boxWidth = context.measureText(label).width + 8 * ratio;
+      if (!label || right - left < boxWidth + 4 * ratio) continue;
+      const selected = range === this.selected;
+      context.fillStyle = selected ? COLOURS.selectedBorder : COLOURS.removedBorder;
+      context.fillRect(left + 4 * ratio, 4 * ratio, boxWidth, 18 * ratio);
+      context.fillStyle = selected ? 'rgb(20, 12, 0)' : '#fff';
+      context.fillText(label, left + 8 * ratio, 13 * ratio);
+    }
+    context.restore();
+  }
+
+  /**
    * Parks the round ✕ over the middle of the selected region.
    *
    * Done straight on the element rather than through a binding: this runs on
@@ -985,6 +1378,10 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
   private placeDeleteButton(surfaceWidth: number, from: number, visible: number): void {
     const button = this.deleteButtonRef?.nativeElement;
     if (!button) return;
+    if (this.rangeButtons.length) {
+      this.placeRangeButtons(button, surfaceWidth, from, visible);
+      return;
+    }
 
     const range = this.selected;
     if (!range || visible <= 0) {
@@ -1002,6 +1399,83 @@ export class SilenceWaveformComponent implements AfterViewInit, OnChanges, OnDes
     const centre = Math.max(18, Math.min(surfaceWidth - 18, (left + right) / 2));
     button.hidden = false;
     button.style.left = `${centre}px`;
+  }
+
+  /**
+   * Every region on screen gets its group of buttons, centred on the part of
+   * it that is visible; the picked one also gets its ✕, to the group's left.
+   */
+  private placeRangeButtons(deleteButton: HTMLElement, surfaceWidth: number, from: number, visible: number): void {
+    const layer = this.rangeLayerRef?.nativeElement;
+    deleteButton.hidden = true;
+    if (!layer) return;
+    let used = 0;
+    if (visible > 0) {
+      for (const range of this.silenceRanges) {
+        const shown = range === this.resizeRange && this.resizeDraft ? this.resizeDraft : range;
+        const left = ((shown.start - from) / visible) * surfaceWidth;
+        const right = ((shown.end - from) / visible) * surfaceWidth;
+        if (right < 0 || left > surfaceWidth) continue;
+        const group = this.rangeGroup(layer, used++);
+        group.range = range;
+        group.element.hidden = false;
+        group.element.classList.toggle('is-selected', range === this.selected);
+        group.element.classList.toggle('is-column', this.rangeButtonsLayout === 'column');
+        for (const [id, face] of group.icons) {
+          const state = this.rangeButtonState?.(id, range) ?? null;
+          const icon = state?.icon ?? face.action.icon, label = state?.label ?? face.action.label;
+          if (face.icon.textContent !== icon) face.icon.textContent = icon;
+          if (face.button.title !== label) { face.button.title = label; face.button.setAttribute('aria-label', label); }
+        }
+        const half = group.element.offsetWidth / 2;
+        const withDelete = range === this.selected && this.showDeleteButton;
+        const selectedRoom = withDelete ? 36 : 0;
+        const visibleLeft = Math.max(0, left), visibleRight = Math.min(surfaceWidth, right);
+        const wanted = this.rangeButtonsAlign === 'end'
+          ? Math.max(visibleLeft + half + 4, visibleRight - half - 6)
+          : (visibleLeft + visibleRight) / 2;
+        const centre = Math.max(half + 4 + selectedRoom, Math.min(surfaceWidth - half - 4, wanted));
+        group.element.style.left = `${centre}px`;
+        if (withDelete) {
+          deleteButton.hidden = false;
+          deleteButton.style.left = `${centre - half - 18}px`;
+        }
+      }
+    }
+    for (let index = used; index < this.rangeGroups.length; index++) {
+      this.rangeGroups[index].element.hidden = true;
+      this.rangeGroups[index].range = null;
+    }
+  }
+
+  private rangeGroup(layer: HTMLElement, index: number): RangeGroup {
+    const existing = this.rangeGroups[index];
+    if (existing) return existing;
+    const element = document.createElement('div');
+    element.className = 'wf-range-group';
+    const entry: RangeGroup = { element, range: null, icons: new Map() };
+    for (const action of this.rangeButtons) {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'wf-action';
+      button.title = action.label;
+      button.setAttribute('aria-label', action.label);
+      const icon = document.createElement('span');
+      icon.className = 'material-icons';
+      icon.setAttribute('aria-hidden', 'true');
+      icon.textContent = action.icon;
+      button.appendChild(icon);
+      entry.icons.set(action.id, { icon, button, action });
+      button.addEventListener('click', (event) => {
+        event.stopPropagation();
+        const range = entry.range;
+        if (range) this.zone.run(() => this.rangeButton.emit({ id: action.id, range }));
+      });
+      element.appendChild(button);
+    }
+    layer.appendChild(element);
+    this.rangeGroups.push(entry);
+    return entry;
   }
 
   /**

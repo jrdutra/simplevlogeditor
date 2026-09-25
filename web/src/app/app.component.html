@@ -264,6 +264,11 @@
       <a class="console-tab" [routerLink]="'/' + tool.rota"
         routerLinkActive="console-tab--active" ariaCurrentWhenActive="page"
         [routerLinkActiveOptions]="{ exact: true }">
+        @if (tool.rota === 'video-packaging' && packagingLed(); as led) {
+          <span class="console-tab__led console-tab__led--{{ led }}" role="img"
+            [attr.aria-label]="led === 'done' ? 'The AI delivered the whole package' : led === 'claude' ? 'Claude is working on this tool' : led === 'codex' ? 'Codex is working on this tool' : 'An AI is working on this tool'"
+            [attr.title]="led === 'done' ? 'Package complete' : 'AI working'"></span>
+        }
         <mat-icon aria-hidden="true">{{ tool.icone }}</mat-icon>
         <span>{{ tool.titulo }}</span>
       </a>

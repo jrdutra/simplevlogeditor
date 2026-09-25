@@ -126,6 +126,98 @@ export const TAG_STYLES: readonly TagStyleOption[] = [
       'Heavy uppercase on torn brush blocks of teal, deep navy and coral, white or navy lettering with a thick '
       + 'navy outline, a colour emoji beside the text and coral spark marks. The calmer cousin of Home Classic.',
     url: asset('home-teal')
+  },
+  {
+    id: 'cartoon-gold',
+    name: 'Cartoon Gold',
+    summary: 'White and gold 3D cartoon letters',
+    description:
+      'Chunky rounded heavy uppercase, the first line in glossy white-to-grey and the second in a '
+      + 'yellow-to-orange gradient, both extruded into a thick black 3D block with a soft shadow and a slight '
+      + 'tilt, usually ending in an exclamation or question mark. Playful and loud, no panel behind the '
+      + 'words.',
+    url: asset('cartoon-gold')
+  },
+  {
+    id: 'marker-yellow',
+    name: 'Marker Yellow',
+    summary: 'White over a yellow highlighter stroke',
+    description:
+      'Tall condensed bold uppercase: the first line in off-white on a dark smudged brush patch, the second '
+      + 'line in black on a rough yellow highlighter stroke, with a gritty, printed texture and a question '
+      + 'mark in yellow when it asks something. Punchy and editorial.',
+    url: asset('marker-yellow')
+  },
+  {
+    id: 'purple-chrome',
+    name: 'Purple Chrome',
+    summary: 'Chrome and violet with a caption bar',
+    description:
+      'Tall compressed uppercase, the first line in brushed chrome-white and a larger second line in a '
+      + 'violet-to-purple gradient, both with a soft purple glow, over a thin dark-purple bar holding a '
+      + 'small, widely letter-spaced caption in white. Premium, \'make money online\' energy.',
+    url: asset('purple-chrome')
+  },
+  {
+    id: 'sports',
+    name: 'Sports',
+    summary: 'Italic white and yellow on navy, with icons',
+    description:
+      'Italic heavy condensed uppercase mixing white and bright yellow words, wrapped in a thick deep-navy '
+      + 'sticker outline, with a small flat sports icon beside the text (a football, trophy, microphone, '
+      + 'whistle, calendar or play button). Broadcast and football-channel feel.',
+    url: asset('sports')
+  },
+  {
+    id: 'red-speed',
+    name: 'Red Speed',
+    summary: 'Italic red over chrome with a red streak',
+    description:
+      'Italic heavy uppercase, the first line in glossy red and the second in brushed chrome-white, both '
+      + 'outlined in black and slanted forward, over a glowing red neon slash and motion streak. Vlog and '
+      + 'reality-show energy.',
+    url: asset('red-speed')
+  },
+  {
+    id: 'news-blocks',
+    name: 'News Blocks',
+    summary: 'Three stacked blocks: white, red, black',
+    description:
+      'Condensed bold uppercase stacked on three straight rectangular blocks, slightly offset: black text '
+      + 'on a white block, white text on a bright red block, white text on a black block, with a faint red '
+      + 'glow around them. Clean, headline-like, very readable.',
+    url: asset('news-blocks')
+  },
+  {
+    id: 'torn-stack',
+    name: 'Torn Stack',
+    summary: 'Three torn brush blocks: white, red, black',
+    description:
+      'The News Blocks stack drawn with torn brush-stroke edges instead of straight ones: black on a rough '
+      + 'white stroke, white on a red stroke, white on a black stroke, with a slight tilt and a dark outline '
+      + 'around the whole sticker. Raw, handmade storytelling feel.',
+    url: asset('torn-stack')
+  },
+  {
+    id: 'lime-pop',
+    name: 'Lime Pop',
+    summary: 'White and lime over a red pill',
+    description:
+      'Rounded heavy uppercase tilted upwards: the first line in white, the second in bright lime-yellow, '
+      + 'and a third short line in white on a red pill, all with a thick dark outline and a lime glow, '
+      + 'finished with a curved lime underline swoosh. High-energy tech and YouTube-growth style.',
+    url: asset('lime-pop')
+  },
+  {
+    id: 'pixel-game',
+    name: 'Pixel Game',
+    summary: 'Pixel-art game signs',
+    description:
+      'Pixel-art lettering in white over a second line in a bright game colour (yellow, cyan, red, green or '
+      + 'purple), with a dark pixel outline, set into a small pixel-art sign: grass and dirt blocks, stone, '
+      + 'wooden planks, coins, torches, crystals or a treasure book. Retro video-game and gameplay-channel '
+      + 'feel.',
+    url: asset('pixel-game')
   }
 ];
 

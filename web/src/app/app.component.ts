@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { MatIconModule } from '@angular/material/icon';
-import { ChangeDetectionStrategy, Component, ElementRef, HostListener, ViewChild, effect, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, ElementRef, HostListener, Signal, ViewChild, computed, effect, signal } from '@angular/core';
 import { NavigationEnd, Router, RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
 import { filter } from 'rxjs/operators';
 
@@ -41,6 +41,12 @@ import CURRENT_VERSION from '../currentversion.json';
 })
 export class AppComponent {
   readonly tools = TOOLS;
+  /**
+   * The light on the Video Packaging tab: the colour of the AI working on it
+   * (Codex blue, Claude orange), green once the whole package is delivered,
+   * nothing otherwise.
+   */
+  readonly packagingLed: Signal<'codex' | 'claude' | 'ai' | 'done' | null>;
   readonly currentYear = new Date().getFullYear();
   /** The version this build of the editor is (src/currentversion.json, bumped with every release). */
   readonly appVersion: string = String((CURRENT_VERSION as { desktop?: unknown }).desktop ?? '');
@@ -80,6 +86,20 @@ export class AppComponent {
       if (!open && pickerForAgent) this.agentActivity.show();
       pickerForAgent = open && forAgent;
     }, { allowSignalWrites: true });
+    this.packagingLed = computed(() => {
+      const phase = this.videoPackaging.agentPhase();
+      if (phase === 'done') return 'done';
+      const control = this.desktop.agentControl();
+      if (phase !== 'working' || !control.active) return null;
+      const names = [control.controller, ...control.controllers];
+      if (names.some((name) => /claude/i.test(name))) return 'claude';
+      if (names.some((name) => /codex|chatgpt/i.test(name))) return 'codex';
+      return 'ai';
+    });
+    // Work the AI left unfinished stops lighting the Video Packaging tab when it disconnects.
+    effect(() => {
+      if (!this.desktop.agentControl().active) this.videoPackaging.noteAgentGone();
+    }, { allowSignalWrites: true });
     this.desktop.registerAgentHandler((request) => this.handleGlobalAgentRequest(request));
     this.updateSelectedTool();
 
@@ -110,6 +130,7 @@ export class AppComponent {
       'show_tool', 'set_ai_control_log'
     ];
     if (!handled.includes(commandName)) return AGENT_REQUEST_NOT_HANDLED;
+    if (!['show_tool', 'set_ai_control_log'].includes(commandName)) this.videoPackaging.noteAgentCommand(commandName);
 
     const args = (command.arguments ?? {}) as Record<string, unknown>;
     let result: unknown;

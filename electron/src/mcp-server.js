@@ -181,6 +181,7 @@ const EDIT_OPERATIONS = [
 ];
 
 const TOOLS = [
+  ...require('./short-editor-tools'),
   tool('get_editor_capabilities', 'Discover every MCP editing operation and the current catalogues of tags, transitions, text styles and output formats.', {}),
   tool('show_tool', 'Bring one SimpleVlogEditor tool tab to the front. Use this to move between editing and packaging without asking the user to click a tab.', {
     tool: { type: 'string', enum: ['video-editor', 'free-silence-cutter', 'media-merger', 'background-noise-remover', 'video-transcription', 'text-video-maker', 'video-packaging', 'shorts-generator'] }
@@ -424,6 +425,7 @@ function startMcpServer(callEditor, streams = {}) {
   // control/status surface bypasses that lane, so health and cancellation stay
   // responsive during a long render or transcription.
   const priorityTools = new Set([
+    ...require('./short-editor').COMMANDS,
     'health_check', 'get_operation_status', 'cancel_operation',
     'get_import_status', 'cancel_import', 'get_diagnostics', 'get_recovery_state',
     'close_editor', 'restart_editor',

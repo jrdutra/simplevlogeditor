@@ -54,6 +54,8 @@ ipcRenderer.on('roots:state', (_event, state) => {
 
 contextBridge.exposeInMainWorld('desktop', {
   platform: process.platform,
+  shortCommand: (name, args) => ipcRenderer.invoke('short:command', name, args),
+  chooseShortOutput: (name) => ipcRenderer.invoke('short:choose-output', name),
 
   minimize: () => ipcRenderer.send('window:minimize'),
   focus: () => ipcRenderer.send('window:focus'),

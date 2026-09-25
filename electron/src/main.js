@@ -75,6 +75,14 @@ const { startServer } = require('./server');
 const { restoreState, trackWindow } = require('./window-state');
 const { editorEndpoint } = require('./ipc-endpoint');
 const { MediaImportService, ffprobeExecutable, ffmpegExecutable } = require('./media-import-service');
+const { ShortEditor, COMMANDS: SHORT_COMMANDS } = require('./short-editor');
+let shortEditor;
+function getShortEditor() {
+  return shortEditor ||= new ShortEditor({
+    admit: admittedPath,
+    statePath: path.join(app.getPath('userData'), 'short-editor.json')
+  });
+}
 const { createLogger, safeError } = require('./structured-log');
 const { IdempotencyLedger } = require('./idempotency-ledger');
 const { RecoveryCheckpointStore } = require('./recovery-checkpoint-store');
@@ -419,7 +427,9 @@ function focusEditorForControl() {
   window.show();
   window.focus();
   const target = `${DEV ? DEV_URL : origin}/video-editor`;
-  if (origin && !window.webContents.getURL().includes('/video-editor')) {
+  // Connecting an assistant must not unload an active Short Editor analysis.
+  const currentUrl = window.webContents.getURL();
+  if (origin && !currentUrl.includes('/video-editor') && !currentUrl.includes('/shorts-generator')) {
     window.loadURL(target).then(() => {
       if (!window.isDestroyed()) { window.show(); window.focus(); }
     }).catch((error) => log.warn('agent_route_open_failed', { error }));
@@ -875,6 +885,8 @@ async function executeAgentRequest(request) {
       }
       if (request.name === 'get_editor_capabilities' && response.result && typeof response.result === 'object') {
         const hostCommands = [
+          'short_get_state', 'short_import_video', 'short_set_selection', 'short_create',
+          'short_update', 'short_delete', 'short_render', 'short_cancel_render', 'short_set_view', 'short_clear', 'short_set_focus',
           'queue_media_import', 'get_import_status', 'cancel_import', 'resume_import',
           'health_check', 'get_operation_status', 'cancel_operation', 'get_diagnostics',
           'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor',
@@ -929,6 +941,14 @@ const IDEMPOTENT_PROJECT_MUTATIONS = new Set([
  * read and fresh request ids, as advertised by the protocol.
  */
 async function routeAgentRequest(request) {
+  if (SHORT_COMMANDS.includes(request?.name)) {
+    const args = request.arguments || {};
+    const execute = async () => agentResponse(await getShortEditor().execute(request.name, args));
+    if (request.name === 'short_get_state') return execute();
+    return mutationLedger.run(`${editorSessionId}:short-editor`, args.requestId, {
+      name: request.name, arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'requestId'))
+    }, execute);
+  }
   // Every call that reads or changes the project waits for startup. See
   // `startupGate`: this is the whole reason it exists.
   if (!STARTUP_EXEMPT.has(request?.name)) await startupGate();
@@ -1127,6 +1147,21 @@ function wireAgentBridge() {
       sessionId: editorSessionId, platform: process.platform, arch: process.arch,
       versions: process.versions
     };
+  });
+
+  ipcMain.handle('short:command', (event, name, args) => {
+    if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
+    return getShortEditor().execute(name, args || {});
+  });
+  ipcMain.handle('short:choose-output', async (event, name) => {
+    if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
+    const result = await dialog.showSaveDialog(BrowserWindow.fromWebContents(event.sender), {
+      title: 'Render short', defaultPath: String(name || 'short').replace(/[<>:"/\\|?*]/g, '_') + '.mp4',
+      filters: [{ name: 'MP4 video', extensions: ['mp4'] }]
+    });
+    if (result.canceled || !result.filePath) return null;
+    rememberConsent(path.dirname(result.filePath));
+    return result.filePath;
   });
 
   ipcMain.handle('project:checkpoint', async (event, payload) => {
