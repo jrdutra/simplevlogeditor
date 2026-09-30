@@ -35,3 +35,17 @@ test('rejects request id reuse with a different mutation and permits failed retr
   await assert.rejects(ledger.run('scope', 'retry', { value: 3 }, async () => { throw new Error('temporary'); }));
   assert.equal(await ledger.run('scope', 'retry', { value: 3 }, async () => 'recovered'), 'recovered');
 });
+
+test('capacity pressure never evicts an operation that is still running', async () => {
+  const ledger = new IdempotencyLedger({ limit: 1 });
+  let release;
+  let calls = 0;
+  const pending = ledger.run('scope', 'pending', {}, async () => { calls++; return new Promise(resolve => { release = resolve; }); });
+  await Promise.resolve();
+  await ledger.run('scope', 'other', {}, async () => 'other');
+  const replay = ledger.run('scope', 'pending', {}, async () => { calls++; return 'duplicate'; });
+  release('original');
+  assert.deepEqual(await Promise.all([pending, replay]), ['original', 'original']);
+  assert.equal(calls, 1);
+  assert.equal(ledger.size, 1);
+});

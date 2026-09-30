@@ -1,6 +1,6 @@
 {
   "name": "simplevlogeditor",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "scripts": {
     "ng": "ng",
     "start": "node dist/server/server.mjs",
@@ -12,7 +12,9 @@
     "watch": "ng build --watch --configuration development",
     "test": "ng test",
     "test:render": "node --test tests/render-media.test.mjs",
+    "test:editorial": "node --test tests/editorial-workflow.test.mjs tests/audio-range.test.mjs",
     "test:packaging-paths": "node --test tests/packaging-folder.test.mjs",
+    "test:server": "node --test tests/server-assets.test.mjs",
     "serve:ssr:simplevlogeditor": "node dist/server/server.mjs"
   },
   "private": true,

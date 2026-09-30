@@ -56,7 +56,7 @@ const EDIT_OPERATIONS = [
   }, ['clipId', 'enabled']),
   editOperation('set_video_effect', {
     clipId: { type: 'string' },
-    effectId: { type: 'string', description: 'Read get_capabilities.videoEffects.presets. Use none to remove. Exclusively per visual media container; never global.' },
+    effectId: { type: 'string', description: 'Read get_editor_capabilities.videoEffects.presets. Use none to remove. Exclusively per visual media container; never global.' },
     intensity: { type: 'number', minimum: 0, maximum: 1 }
   }, ['clipId', 'effectId']),
   editOperation('add_video_effect', {
@@ -99,7 +99,7 @@ const EDIT_OPERATIONS = [
     clipId: { type: 'string' }, start: { type: 'number' }, text: { type: 'string' }, duration: { type: 'number' },
     caption: {
       type: 'object',
-      description: 'The caption style, applied to the new caption in the same operation — never add a caption and then update it, because the id is only known afterwards and the batch result is what names it. Captions sit end to end on a container, so this fails with `no_room` when the ones already there reach its end: update the caption that is there instead of adding another. Read get_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the legacy "behind-subject" ID remains upper-center. positionX/positionY are normalized frame coordinates.',
+      description: 'The caption style, applied to the new caption in the same operation — never add a caption and then update it, because the id is only known afterwards and the batch result is what names it. Captions sit end to end on a container, so this fails with `no_room` when the ones already there reach its end: update the caption that is there instead of adding another. Read get_editor_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the legacy "behind-subject" ID remains upper-center. positionX/positionY are normalized frame coordinates.',
       additionalProperties: true
     }
   }, ['clipId', 'start', 'text']),
@@ -189,7 +189,7 @@ const TOOLS = [
   tool('set_ai_control_log', 'Open, minimize or hide the global AI control log. It remains available on every tool tab. Normally minimize it after an edit or Video Packaging delivery is complete.', {
     view: { type: 'string', enum: ['open', 'minimized', 'hidden'] }
   }, ['view']),
-  tool('set_video_packaging', 'Place up to three generated horizontal-video thumbnails, titles, a complete multiline description and searchable tags in the visible Video Packaging tool. Cover files are copied into real in-memory image bytes so preview and download are identical. Use exact edited-video frames as the background, record each source frame path and final-timeline timestamp, and follow get_packaging_tag_style for lettering. Omitted fields keep their current values; supplied arrays replace that section. The editor opens and focuses the result page.', {
+  tool('set_video_packaging', 'Place up to three generated horizontal-video thumbnails, titles, a complete multiline description and searchable tags in the visible Video Packaging tool. Cover files are copied into real in-memory image bytes so preview and download are identical. Each cover must name its exact edited-video frame, the active style id and reference path returned by get_packaging_tag_style, the lettering method, and the completed visual comparison. A style changed after generation is rejected. Omitted fields keep their current values; supplied arrays replace that section. The editor opens and focuses the result page.', {
     thumbnails: {
       type: 'array', maxItems: 3,
       items: {
@@ -198,9 +198,21 @@ const TOOLS = [
           path: { type: 'string', description: 'Absolute path to a locally generated PNG, JPEG, WebP or GIF inside an allowed folder.' },
           altText: { type: 'string', description: 'Short accessible description of the cover.' },
           sourceTimestamp: { type: 'number', minimum: 0, description: 'Timestamp in seconds on the final edited timeline of the exact frame used as this cover background.' },
-          sourceFramePath: { type: 'string', description: 'Absolute path returned by save_frames for the exact edited-video frame used as the cover background.' }
+          sourceFramePath: { type: 'string', description: 'Absolute path returned by save_frames for the exact edited-video frame used as the cover background.' },
+          preparedBackgroundPath: { type: 'string', description: 'Corrected PNG returned by prepare_packaging_background for that sourceFramePath. Use it as the generator background and preserve the original sourceFramePath.' },
+          tagStyleId: { type: 'string', description: 'Exact active style id returned by get_packaging_tag_style immediately before cover generation.' },
+          tagStyleReferencePath: { type: 'string', description: 'Exact reference-image path returned with tagStyleId and attached to this cover generation.' },
+          letteringMethod: { type: 'string', enum: ['generated', 'deterministic-overlay'], description: 'Use deterministic-overlay when generated lettering was not faithful and type was composed exactly over the saved frame.' },
+          styleVerification: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              checked: { type: 'boolean', const: true },
+              notes: { type: 'string', minLength: 1, maxLength: 2000, description: 'Visual comparison covering type family/weight, colours, outline, shadow, texture, angle, proportions, spacing, hierarchy, protected faces and absence of foreign artefacts.' }
+            },
+            required: ['checked', 'notes']
+          }
         },
-        required: ['path', 'sourceTimestamp', 'sourceFramePath']
+        required: ['path', 'sourceTimestamp', 'sourceFramePath', 'tagStyleId', 'tagStyleReferencePath', 'letteringMethod', 'styleVerification']
       }
     },
     titles: { type: 'array', maxItems: 3, items: { type: 'string', minLength: 1, maxLength: 240 } },
@@ -213,7 +225,7 @@ const TOOLS = [
     },
     requestId: { type: 'string', description: 'Unique mutation id; reuse it only to retry the exact same uncertain request.' }
   }, ['requestId']),
-  tool('get_video_packaging', 'Verify the thumbnails and metadata currently displayed in Video Packaging. Each thumbnail reports byteLength plus its saved source frame and final-timeline timestamp; a positive byteLength confirms the preview/download payload is present.', {}),
+  tool('get_video_packaging', 'Verify the thumbnails and metadata currently displayed in Video Packaging. Each thumbnail reports byteLength, saved source frame, final-timeline timestamp, active lettering provenance, composition method and visual-check notes; a positive byteLength confirms preview/download bytes are present.', {}),
   tool('clear_video_packaging', 'Clear every thumbnail, title, description and tag from the Video Packaging tool and focus that page.', {
     requestId: { type: 'string', description: 'Unique mutation id; reuse it only to retry the exact same uncertain request.' }
   }, ['requestId']),
@@ -226,7 +238,12 @@ const TOOLS = [
     label: { type: 'string', description: 'Stem for the written file names. Defaults to the clip file name.' },
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while the frames are written.' }
   }, ['clipId', 'timestamps']),
-  tool('get_packaging_tag_style', 'Write out the lettering a cover has to copy and return its path, its id and a description of it. The editor ships eleven styles (Classic is the default) and the reader may have loaded their own; whichever is current is what comes back. If the reader asked to be consulted, this opens the style picker on screen and waits for them before answering, so call it before drawing anything. Attach the returned image to every cover prompt.', {}),
+  tool('get_packaging_tag_style', 'Write out the active lettering reference and return its path, stable id and description. The reader may choose a shipped or custom style; whichever is current is mandatory. Call immediately before generating the cover set, keep both id and path with every cover, and attach the returned image to every generation request. set_video_packaging rejects a stale or different style.', {}),
+  tool('prepare_packaging_background', 'Apply deterministic exposure, colour and contrast correction to a current save_frames background and save a lossless PNG. Preserves dimensions, scene geometry and identities; no redraw, sharpening or added grain. Defaults use image luminance for gentle exposure. Inspect the result; use its path as the generator background while keeping the original sourceFramePath for provenance.', {
+    sourceFramePath: { type: 'string' }, exposureStops: { type: 'number', minimum: -1, maximum: 1 },
+    contrast: { type: 'number', minimum: .8, maximum: 1.2 }, saturation: { type: 'number', minimum: .8, maximum: 1.2 },
+    requestId: { type: 'string' }
+  }, ['sourceFramePath', 'requestId']),
   tool('set_packaging_tag_style', 'Save an image on disk as the reader\'s own cover lettering and select it. The application keeps it across restarts, so this is only for a file the reader hands you — they choose among the shipped styles themselves, in Video Packaging.', {
     path: { type: 'string' }
   }, ['path']),
@@ -241,6 +258,9 @@ const TOOLS = [
   tool('get_project', 'Read the complete versioned editor project.', {}),
   tool('list_assets', 'List every unique media asset and the clips that use it.', {}),
   tool('get_timeline', 'Read clips, source/output timing, cuts, captions and audio state.', {}),
+  tool('get_analysis_blocks', 'Read transcript-based analysis blocks of at most 300 source seconds, preferring sentence ends and pauses. Transcribe first. Review every block separately and refine its semantic boundaries using the transcript and frames. blockIndex returns that block\'s words and scoped silence ranges with original detector indices. This read does not cut the timeline.', {
+    clipId: { type: 'string' }, blockIndex: { type: 'integer', minimum: 0 }
+  }, ['clipId']),
   tool('add_media', 'Compatibility entry point for path-only asynchronous media import. Returns a jobId immediately; poll get_import_status.', {
     paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 100 },
     atIndex: { type: 'number' }, skipDuplicates: { type: 'boolean' }, maxConcurrency: { type: 'integer', minimum: 1, maximum: 2 },
@@ -257,7 +277,7 @@ const TOOLS = [
   tool('cancel_import', 'Cancel queued/probing files without removing assets already committed.', {
     jobId: { type: 'string' }
   }, ['jobId']),
-  tool('resume_import', 'Resume the cancelled or interrupted portion of an import job.', {
+  tool('resume_import', 'Explicitly resume unfinished or recoverable files into the current project. Inspect get_project first if the job was interrupted with project_changed. Successfully imported files are not repeated.', {
     jobId: { type: 'string' }
   }, ['jobId']),
   tool('health_check', 'Check the editor connection without mutating the project.', {}),
@@ -275,8 +295,41 @@ const TOOLS = [
   }, ['path', 'requestId']),
   tool('close_editor', 'Save a recovery checkpoint and close the visible Electron editor process.', {}),
   tool('restart_editor', 'Save, restart, reopen and focus the visible Electron editor, restoring its recovery checkpoint when needed.', {}),
-  tool('finish_editing', 'Mark the AI edit complete and show the user a modal offering preview or immediate video rendering. The result carries videoPackaging.automatic, the project setting that decides what happens next: true, run the create-video-packaging workflow now; false, the edit is the whole job and no covers, titles, description or tags are made unless the user asks.', {
-    summary: { type: 'string' }, requestId: { type: 'string' }
+  tool('finish_editing', 'Mark the AI edit complete and show the user a modal offering preview or immediate video rendering. Run the bundled YouTube policy skill only after editorial and technical completion, then include youtubePolicyReview. If a policy cut was required, re-open the edit, make the smallest coherent cut, verify continuity and repeat the final review before calling this tool. The modal presents every committed policy removal, evidence, rule and continuity check. The result carries videoPackaging.automatic, the project setting that decides what happens next.', {
+    summary: { type: 'string' },
+    youtubePolicyReview: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        reviewed: { type: 'boolean', description: 'True only after transcript, picture, audio, visible text, links and supplied packaging were reviewed.' },
+        summary: { type: 'string' },
+        reviewedScopes: { type: 'array', maxItems: 20, items: { type: 'string' } },
+        findings: {
+          type: 'array', maxItems: 200,
+          items: {
+            type: 'object', additionalProperties: false,
+            properties: {
+              clipId: { type: 'string' }, mediaName: { type: 'string' },
+              start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 },
+              excerpt: { type: 'string', description: 'Exact transcript excerpt or a precise visual/audio description.' },
+              policies: {
+                type: 'array', minItems: 1, maxItems: 8,
+                items: {
+                  type: 'object', additionalProperties: false,
+                  properties: { id: { type: 'string' }, name: { type: 'string' }, rule: { type: 'string' } },
+                  required: ['id', 'name', 'rule']
+                }
+              },
+              action: { const: 'removed' },
+              continuity: { type: 'string', description: 'How the surrounding kept material was checked for semantic and audiovisual continuity.' }
+            },
+            required: ['mediaName', 'start', 'end', 'excerpt', 'policies', 'action', 'continuity']
+          }
+        }
+      },
+      required: ['reviewed', 'findings']
+    },
+    requestId: { type: 'string' }
   }),
   tool('open_project', 'Open a saved editor project or settings document from an allowed path.', {
     path: { type: 'string' }, expectedRevision: { type: 'number' }, requestId: { type: 'string' }
@@ -284,10 +337,12 @@ const TOOLS = [
   tool('save_project', 'Save the current edit or only its settings to an allowed JSON path.', {
     path: { type: 'string' }, kind: { enum: ['project', 'settings'] }, name: { type: 'string' }
   }, ['path']),
-  tool('preview', 'Open, play, pause, seek or close the on-screen timeline preview.', {
-    action: { enum: ['open', 'play', 'pause', 'seek', 'close'] }, time: { type: 'number', minimum: 0 }
+  tool('preview', 'Open, play, pause, seek or close the on-screen edited-timeline preview. For a selected clip/cut, pass clipId with open or play: playback starts at that item\'s first kept frame on the edited timeline, accounting for trims, removed ranges, speed and transitions. Omit clipId and seek to 0 to play the whole project from the beginning.', {
+    action: { enum: ['open', 'play', 'pause', 'seek', 'close'] },
+    time: { type: 'number', minimum: 0, description: 'Absolute seconds on the edited output timeline for seek.' },
+    clipId: { type: 'string', description: 'Optional selected timeline clip/cut to open or play from its first kept frame.' }
   }, ['action']),
-  tool('analyze_silence', 'Detect speech pauses for one clip or the whole timeline. Returns a compact summary by default; request only the first bounded waveform page when needed.', {
+  tool('analyze_silence', 'Detect speech pauses for one clip or the audible timeline. Detection does not activate cuts: review scopedSilenceRanges with original rangeIndex, set_clip_edits cutSilence:true and verify get_timeline. Returns per-clip statistics, cutSilenceEnabled and appliedSilenceSeconds; request a bounded waveform page only when needed.', {
     clipId: { type: 'string' }, includeWaveform: { type: 'boolean' },
     waveformOffset: { type: 'integer', minimum: 0 }, waveformLimit: { type: 'integer', minimum: 1, maximum: 1000 },
     requestId: { type: 'string' }, timeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000 }
@@ -311,14 +366,21 @@ const TOOLS = [
   tool('get_waveform_page', 'Read one bounded page of waveform buckets after silence analysis.', {
     clipId: { type: 'string' }, offset: { type: 'integer', minimum: 0 }, limit: { type: 'integer', minimum: 1, maximum: 1000 }
   }, ['clipId']),
+  tool('get_audio_levels', 'Decode an arbitrary source audio range without prior silence analysis. Returns real PCM RMS/peak and dBFS, channel levels and decode coverage in 200ms bins by default. Optional includeAudio returns a native MCP WAV excerpt to hear speech and sounds. Inspect four seconds before and after each proposed cut with transcript and frames before editing. Levels alone cannot identify speech or meaningful sound. Source audio is measured before edits, denoise, volume or soundtrack; a split does not restrict neighbouring source context.', {
+    clipId: { type: 'string' }, start: { type: 'number', minimum: 0 }, end: { type: 'number', minimum: 0 },
+    interval: { type: 'number', minimum: 0.05, maximum: 1, description: 'Seconds per measurement bin; default 0.2. Range at most 120s.' },
+    includeAudio: { type: 'boolean', description: 'Attach the original PCM WAV excerpt; range at most 12s, audio at most 8 MiB.' },
+    requestId: { type: 'string', description: 'Operation id for progress and cancellation. This read never mutates the project.' }
+  }, ['clipId', 'start', 'end']),
   tool('transcribe', 'Transcribe the complete source of a clip with word and phrase timestamps.', {
     clipId: { type: 'string' },
+    includeWords: { type: 'boolean', description: 'Default true. For long sources, false returns quality and bounded analysis-block metadata while caching the full transcript. Read each block with get_analysis_blocks blockIndex.' },
     model: { type: 'string', description: 'Canonical model id or alias: tiny, base, small/quality (default), turbo/large.' },
     language: { type: 'string', description: 'Whisper language name, ISO alias such as pt/pt-BR/en, or auto. Omit/auto for spoken-language detection.' },
     denoise: { type: 'boolean' }, noiseEngine: { enum: ['gtcrn', 'rnnoise'], description: 'Defaults to gtcrn (Voice model).' },
     noiseStrength: { enum: ['gentle', 'balanced', 'maximum'] }, requestId: { type: 'string' },
-    timeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Whole-operation timeout. Defaults to 600000 ms (10 minutes); smaller values are raised to 600000 ms.' },
-    stageTimeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Stage watchdog. Defaults to 600000 ms (10 minutes); smaller values are raised to 600000 ms. Resets when decode, denoise, model-load or recognition advances to a new stage.' }
+    timeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'Whole-operation timeout; default 1800000 ms (30 minutes). Explicit shorter budgets are honoured. Interruption never replays transcription automatically.' },
+    stageTimeoutMs: { type: 'integer', minimum: 1000, maximum: 3600000, description: 'No-progress watchdog; default 300000 ms (5 minutes). Resets on real stage/ratio/detail advancement, not repeated identical progress. Audio decoder waits and worker startup are additionally bounded to 60 seconds.' }
   }, ['clipId']),
   tool('get_frames', 'Extract frames at exact timestamps for visual understanding. Source frames by default; set composited for the finished picture as the export will write it. The operation reports progress and can be cancelled through cancel_operation.', {
     clipId: { type: 'string' }, timestamps: { type: 'array', items: { type: 'number' }, minItems: 1, maxItems: 64 },
@@ -327,7 +389,7 @@ const TOOLS = [
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while extraction runs.' }
   }, ['clipId', 'timestamps']),
   tool('get_contact_sheet', 'Sample a source interval uniformly for broad visual coverage. The operation reports progress and can be cancelled through cancel_operation.', {
-    clipId: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, interval: { type: 'number', minimum: 0.25 }, width: { type: 'number' },
+    clipId: { type: 'string' }, start: { type: 'number' }, end: { type: 'number' }, interval: { type: 'number', minimum: 0.2 }, width: { type: 'number' },
     composited: { type: 'boolean', description: 'Sample the finished picture, as get_frames composited does. Each frame reports whether it is faithful to the export.' },
     requestId: { type: 'string', description: 'Stable operation id used with get_operation_status and cancel_operation while extraction runs.' }
   }, ['clipId']),
@@ -353,14 +415,18 @@ function tool(name, description, properties, required = []) {
 function resultContent(response) {
   const value = response && response.result;
   const frames = value && typeof value === 'object' && Array.isArray(value.frames) ? value.frames : null;
-  if (!frames) return [{ type: 'text', text: JSON.stringify(response, null, 2) }];
+  const audio = value && typeof value === 'object' && value.audio && typeof value.audio.data === 'string' ? value.audio : null;
+  if (!frames && !audio) return [{ type: 'text', text: JSON.stringify(response, null, 2) }];
 
   const metadata = {
     ...response,
-    result: { ...value, frames: frames.map(({ dataUrl, ...frame }) => frame) }
+    result: { ...value,
+      ...(frames ? { frames: frames.map(({ dataUrl, ...frame }) => frame) } : {}),
+      ...(audio ? { audio: { ...audio, data: undefined } } : {}) }
   };
   const content = [{ type: 'text', text: JSON.stringify(metadata, null, 2) }];
-  for (const frame of frames) {
+  if (audio) content.push({ type: 'audio', mimeType: audio.mimeType, data: audio.data });
+  for (const frame of frames || []) {
     if (typeof frame.dataUrl !== 'string') continue;
     const match = /^data:([^;,]+);base64,(.*)$/s.exec(frame.dataUrl);
     if (match) content.push({ type: 'image', mimeType: match[1], data: match[2] });
@@ -459,7 +525,12 @@ function startMcpServer(callEditor, streams = {}) {
           if (!TOOLS.some((entry) => entry.name === name)) throw new Error(`Unknown tool "${name}".`);
           try {
             const response = await callEditor({ name, arguments: message.params?.arguments ?? {} });
-            result = { content: resultContent(response), structuredContent: response };
+            const audio = response?.result?.audio;
+            // The PCM belongs in native audio content, never duplicated as a
+            // huge base64 string in the model's structured/text context.
+            const structured = audio && typeof audio.data === 'string'
+              ? { ...response, result: { ...response.result, audio: { ...audio, data: undefined } } } : response;
+            result = { content: resultContent(response), structuredContent: structured };
           } catch (error) {
             result = {
               isError: true,

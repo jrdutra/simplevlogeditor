@@ -24,6 +24,7 @@ function editor(): any {
     nextId: 1,
     history: [], future: [], lastChangeAt: 0, exporting: null, revision: 0,
     player: null, restoring: false,
+    captionPresetGroups: [], behindSubjectPositions: [], noiseStrengthIds: [],
     snapshotBoard: () => ({}), scheduleSave: () => {}, closeAllDialogs: () => {},
     aplicarLayoutBoard: () => {}, cdr: { markForCheck: () => {} }
   });

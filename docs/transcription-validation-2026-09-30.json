@@ -1,0 +1,346 @@
+{
+  "date": "2026-09-30",
+  "transport": "MCP stdio host, local checkout, actual Electron/renderer",
+  "sources": {
+    "vlog": {
+      "name": "Gravado-Viagem a Recife Parte 2.mov",
+      "bytes": 16896043786,
+      "durationSeconds": 595.4949,
+      "audio": "PCM s16le stereo 48kHz"
+    },
+    "publicSpeech": {
+      "url": "https://huggingface.co/datasets/Xenova/transformers.js-docs/resolve/main/jfk.wav",
+      "durationSeconds": 11
+    }
+  },
+  "transcriptions": [
+    {
+      "requestId": "real-small-wav-20260930",
+      "clipId": "clip-0",
+      "requestedModel": "small",
+      "receivedAt": "2026-09-30T13:11:18.468Z",
+      "wordCount": 22,
+      "elapsedMs": 6137,
+      "finalState": "applied",
+      "finalStage": "completed",
+      "alignedWordsInBounds": true,
+      "blocks": [
+        {
+          "index": 0,
+          "start": 0,
+          "end": 11,
+          "boundary": "end"
+        }
+      ]
+    },
+    {
+      "requestId": "real-small-aac-20260930",
+      "clipId": "clip-1",
+      "requestedModel": "small",
+      "receivedAt": "2026-09-30T13:12:19.288Z",
+      "wordCount": 22,
+      "elapsedMs": 5672,
+      "finalState": "applied",
+      "finalStage": "completed",
+      "alignedWordsInBounds": true,
+      "blocks": [
+        {
+          "index": 0,
+          "start": 0,
+          "end": 11,
+          "boundary": "end"
+        }
+      ]
+    },
+    {
+      "requestId": "real-turbo-aac-20260930",
+      "clipId": "clip-1",
+      "requestedModel": "turbo",
+      "receivedAt": "2026-09-30T13:13:55.222Z",
+      "wordCount": 22,
+      "elapsedMs": 15317,
+      "finalState": "applied",
+      "finalStage": "completed",
+      "alignedWordsInBounds": true,
+      "blocks": [
+        {
+          "index": 0,
+          "start": 0,
+          "end": 11,
+          "boundary": "end"
+        }
+      ]
+    },
+    {
+      "requestId": "real-recife-small-20260930",
+      "clipId": "clip-2",
+      "requestedModel": "small",
+      "receivedAt": "2026-09-30T13:21:12.133Z",
+      "wordCount": 1149,
+      "elapsedMs": 265928,
+      "finalState": "applied",
+      "finalStage": "completed",
+      "blocks": [
+        {
+          "index": 0,
+          "start": 0,
+          "end": 299.02,
+          "boundary": "sentence"
+        },
+        {
+          "index": 1,
+          "start": 299.02,
+          "end": 595.4949,
+          "boundary": "end"
+        }
+      ]
+    },
+    {
+      "requestId": "real-timeout-20260930",
+      "clipId": "clip-2",
+      "requestedModel": "base",
+      "receivedAt": "2026-09-30T13:24:02.225Z",
+      "error": {
+        "code": "transcription_timeout",
+        "message": "Transcription timed out after 1000 ms during Reading the sound.",
+        "stage": "Reading the sound",
+        "cause": {
+          "name": "TranscriptionCanceled",
+          "message": "The transcription was stopped.",
+          "stack": "TranscriptionCanceled: The transcription was stopped.\n    at AbortSignal.i (http://127.0.0.1:42255/chunk-25MYPHOG.js:24:2419)\n    at f.invokeTask (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:7068)\n    at Object.onInvokeTask (http://127.0.0.1:42255/chunk-E7LTSVMJ.js:7:64496)\n    at f.invokeTask (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:6989)\n    at t.runTask (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:2375)\n    at E.invokeTask [as invoke] (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:8144)\n    at I (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:15196)\n    at H (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:15590)\n    at AbortSignal.U (http://127.0.0.1:42255/polyfills-FFHMD2TL.js:1:15750)\n    at http://127.0.0.1:42255/chunk-OG6DT2EL.js:75:57109"
+        }
+      }
+    },
+    {
+      "requestId": "real-cancel-20260930",
+      "clipId": "clip-2",
+      "requestedModel": "base",
+      "receivedAt": "2026-09-30T13:26:40.636Z",
+      "elapsedMs": 37810,
+      "finalState": "cancelled",
+      "finalStage": "cancelled",
+      "error": {
+        "code": "cancelled",
+        "message": "The transcription was stopped.",
+        "stage": "cancelled"
+      }
+    },
+    {
+      "requestId": "real-restart-20260930",
+      "clipId": "clip-2",
+      "requestedModel": "base",
+      "receivedAt": "2026-09-30T13:33:01.534Z",
+      "elapsedMs": 22640,
+      "finalState": "processing",
+      "finalStage": "listening",
+      "error": {
+        "code": "transcription_interrupted",
+        "message": "Transcription was interrupted (editor_reconnecting); it was not restarted automatically. The saved project and edits are preserved. Read health_check/get_project, then retry explicitly with a new requestId.",
+        "cause": "editor_reconnecting"
+      }
+    },
+    {
+      "requestId": "real-final-small-20260930",
+      "clipId": "clip-0",
+      "requestedModel": "small",
+      "receivedAt": "2026-09-30T13:34:08.285Z",
+      "wordCount": 22,
+      "elapsedMs": 5754,
+      "finalState": "applied",
+      "finalStage": "completed",
+      "alignedWordsInBounds": true,
+      "blocks": [
+        {
+          "index": 0,
+          "start": 0,
+          "end": 11,
+          "boundary": "end"
+        }
+      ]
+    }
+  ],
+  "operationSamples": [
+    {
+      "at": "2026-09-30T13:11:35.190Z",
+      "operationId": "real-small-wav-20260930",
+      "state": "applied",
+      "stage": "completed",
+      "percent": 100,
+      "detail": "",
+      "elapsedMs": 6137,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:12:47.294Z",
+      "operationId": "real-small-aac-20260930",
+      "state": "applied",
+      "stage": "completed",
+      "percent": 100,
+      "detail": "",
+      "elapsedMs": 5672,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:13:39.908Z",
+      "operationId": "real-turbo-aac-20260930",
+      "state": "processing",
+      "stage": "started",
+      "percent": 0,
+      "elapsedMs": 1,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:14:07.575Z",
+      "operationId": "real-turbo-aac-20260930",
+      "state": "applied",
+      "stage": "completed",
+      "percent": 100,
+      "detail": "",
+      "elapsedMs": 15317,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:17:49.940Z",
+      "operationId": "real-recife-small-20260930",
+      "state": "processing",
+      "stage": "listening",
+      "percent": 28.211826737821767,
+      "detail": "2:48 – 3:12",
+      "elapsedMs": 54694,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:19:05.465Z",
+      "operationId": "real-recife-small-20260930",
+      "state": "processing",
+      "stage": "listening",
+      "percent": 48.3631315505516,
+      "detail": "4:48 – 5:12",
+      "elapsedMs": 111389,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:21:11.099Z",
+      "operationId": "real-recife-small-20260930",
+      "state": "processing",
+      "stage": "listening",
+      "percent": 96.7262631011032,
+      "detail": "9:36 – 9:55",
+      "elapsedMs": 260331,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:24:01.208Z",
+      "operationId": "real-recife-small-20260930",
+      "state": "applied",
+      "stage": "completed",
+      "percent": 100,
+      "detail": "",
+      "elapsedMs": 265928,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:26:40.633Z",
+      "operationId": "real-cancel-20260930",
+      "state": "processing",
+      "stage": "listening",
+      "percent": 8.060521925091932,
+      "detail": "0:48 – 1:12",
+      "elapsedMs": 26692,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:32:03.802Z",
+      "operationId": "real-cancel-20260930",
+      "state": "cancelled",
+      "stage": "cancelled",
+      "percent": null,
+      "detail": "0:48 – 1:12",
+      "elapsedMs": 37810,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:33:01.149Z",
+      "operationId": "real-restart-20260930",
+      "state": "processing",
+      "stage": "listening",
+      "percent": 8.060521925091932,
+      "detail": "0:48 – 1:12",
+      "elapsedMs": 22640,
+      "clipId": null,
+      "file": null
+    },
+    {
+      "at": "2026-09-30T13:34:27.183Z",
+      "operationId": "real-final-small-20260930",
+      "state": "applied",
+      "stage": "completed",
+      "percent": 100,
+      "detail": "",
+      "elapsedMs": 5754,
+      "clipId": "clip-0",
+      "file": "jfk.wav"
+    }
+  ],
+  "frames": [
+    {
+      "requestId": "frame-after-cancel-20260930",
+      "receivedAt": "2026-09-30T13:26:41.136Z",
+      "frameCount": 1
+    }
+  ],
+  "restartPreservation": {
+    "beforeHash": "bee2a6f0ad562eb85842cea937d8a51557a9fb0d51c19ab4bab6cb694688dfdb",
+    "afterHash": "bee2a6f0ad562eb85842cea937d8a51557a9fb0d51c19ab4bab6cb694688dfdb",
+    "equal": true
+  },
+  "restoredInitialProject": {
+    "beforeHash": "e99d1d6e0fa921e94fe3c0078fd18305ebdac6ab77b229e43ae35e2125a81437",
+    "afterHash": "e99d1d6e0fa921e94fe3c0078fd18305ebdac6ab77b229e43ae35e2125a81437",
+    "equal": true,
+    "clipCount": 0
+  },
+  "finalHealth": {
+    "state": "ready",
+    "operations": {
+      "activeCount": 0,
+      "active": []
+    }
+  },
+  "finalRecovery": {
+    "path": "C:\\Users\\joaor\\AppData\\Roaming\\SimpleVlogEditor\\recovery\\simplevlogeditor-recovery.sve.json",
+    "exists": false,
+    "size": 0,
+    "modifiedAt": null
+  },
+  "automated": {
+    "browserFull": {
+      "pass": 574,
+      "skip": 1
+    },
+    "browserFinalFocused": {
+      "pass": 12
+    },
+    "electronFull": {
+      "pass": 134
+    },
+    "electronFinalFocused": {
+      "pass": 10
+    },
+    "clientSkills": {
+      "pass": 5
+    },
+    "typescript": "pass",
+    "productionBuild": "pass"
+  }
+}

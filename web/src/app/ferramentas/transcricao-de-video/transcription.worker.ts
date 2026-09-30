@@ -24,7 +24,16 @@ addEventListener('message', async ({ data }: MessageEvent<TranscriptionRequest>)
       // (missing embedding scale). Basic optimizations retain the original graph.
       session_options: { graphOptimizationLevel: 'basic' },
       progress_callback: (event: any) => {
+        if (event.status === 'initiate' || event.status === 'download') {
+          stage = 'downloading-model';
+          send({ type: 'progress', progress: { stage: 'downloading', ratio: null, detail: event.file || options.model } });
+        }
+        if (event.status === 'done') {
+          stage = 'initializing-model';
+          send({ type: 'progress', progress: { stage: 'initializing-model', ratio: null, detail: event.file || options.model } });
+        }
         if (event.status !== 'progress') return;
+        stage = 'downloading-model';
         downloads.set(event.file, { loaded: event.loaded, total: event.total });
         const all = [...downloads.values()];
         const total = all.reduce((sum, file) => sum + file.total, 0);
@@ -63,7 +72,7 @@ addEventListener('message', async ({ data }: MessageEvent<TranscriptionRequest>)
       stage,
       model: data.options.model,
       language: data.options.language || 'auto',
-      recoverable: true
+      recoverable: false
     } });
   }
 });

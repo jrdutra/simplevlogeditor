@@ -481,9 +481,9 @@ export const DEFAULT_TEXT_DRAFT: TextClipDraft = {
  */
 export function readingSeconds(text: string): number {
   const characters = text.trim().length;
-  if (!characters) return TEXT_HOLD_FLOOR * 3;
+  if (!characters) return 6;
 
-  return 3 * Math.min(TEXT_HOLD_CEILING, Math.max(TEXT_HOLD_FLOOR, TEXT_HOLD_FLOOR + characters / READING_RATE));
+  return Math.min(TEXT_HOLD_CEILING, Math.max(6, TEXT_HOLD_FLOOR + characters / READING_RATE + 2.5));
 }
 
 /** Characters a second the card is timed for. Lower than subtitle practice. */

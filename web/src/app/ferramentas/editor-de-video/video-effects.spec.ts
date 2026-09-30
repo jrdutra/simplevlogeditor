@@ -72,7 +72,13 @@ describe('Video Effects rendered pixels',()=>{
     expect(Array.from(person)).toEqual([207,88,48,255]);
     for(const id of ['background-blur','subject-glow','portrait-pop']) {
       engine.render(source,{id,intensity:1},320,180,0,1,false,null).draw(ctx,0,0,320,180);
-      expect(ctx.getImageData(250,10,1,1).data).toEqual(person);
+      // With no subject, the whole picture receives the preset's background filter.
+      const original=surface(),expected=surface(),expectedContext=expected.getContext('2d')!;
+      source.draw(original.getContext('2d')!,0,0,320,180);
+      expectedContext.filter=backgroundFilter(effectDefinition(id)!.subject!,180);
+      expectedContext.drawImage(original,0,0);
+      expect(ctx.getImageData(250,10,1,1).data).withContext(id)
+        .toEqual(expectedContext.getImageData(250,10,1,1).data);
     }
     engine.render(source,{id:'selective-color',intensity:1},320,180,0,1,false,null).draw(ctx,0,0,320,180);
     const noSubject=ctx.getImageData(250,10,1,1).data;

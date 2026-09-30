@@ -2,6 +2,7 @@
 
 const fs = require('node:fs/promises');
 const path = require('node:path');
+const { fingerprint } = require('./idempotency-ledger');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
 const { createLogger, safeError } = require('./structured-log');
@@ -97,6 +98,7 @@ function probeWithFfprobe(file, options = {}) {
   const executable = options.executable || ffprobeExecutable();
   const signal = options.signal;
   const timeoutMs = options.timeoutMs || 30_000;
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error('Media probe cancelled.'), { code: 'cancelled', stage: 'ffprobe' }));
   return new Promise((resolve, reject) => {
     const child = spawn(executable, [
       '-v', 'error', '-show_format', '-show_streams', '-of', 'json', file
@@ -112,19 +114,18 @@ function probeWithFfprobe(file, options = {}) {
       if (error) reject(error); else resolve(value);
     };
     const abort = () => {
-      child.kill();
       finish(Object.assign(new Error('Media probe cancelled.'), {
         code: 'cancelled', stage: 'ffprobe', stdout, stderr
       }));
+      try { child.kill(); } catch { /* The process may not have started. */ }
     };
     const timer = setTimeout(() => {
-      child.kill();
       finish(Object.assign(new Error(`FFprobe timed out after ${timeoutMs} ms.`), {
         code: 'ffprobe_timeout', stage: 'ffprobe', stdout, stderr
       }));
+      try { child.kill(); } catch { /* Preserve the timeout diagnostic. */ }
     }, timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
-    if (signal?.aborted) return abort();
     child.stdout.on('data', (chunk) => {
       if (stdout.length < 2_000_000) stdout += chunk.toString('utf8');
     });
@@ -134,7 +135,7 @@ function probeWithFfprobe(file, options = {}) {
     child.once('error', (error) => finish(Object.assign(error, {
       code: 'ffprobe_unavailable', stage: 'ffprobe', stdout, stderr
     })));
-    child.once('exit', (code) => {
+    child.once('close', (code) => {
       if (finished) return;
       if (code !== 0) return finish(Object.assign(new Error(stderr.trim() || `FFprobe exited with code ${code}.`), {
         code: 'ffprobe_failed', stage: 'ffprobe', exitCode: code, stdout, stderr
@@ -144,6 +145,7 @@ function probeWithFfprobe(file, options = {}) {
         code: 'ffprobe_invalid_output', stage: 'ffprobe', stdout, stderr
       })); }
     });
+    if (signal?.aborted) abort();
   });
 }
 
@@ -172,6 +174,7 @@ class MediaImportService {
     this.stateFile = options.stateFile;
     this.checkpoint = options.checkpoint || null;
     this.lastError = null;
+    this.persistence = Promise.resolve();
   }
 
   queue(args = {}, context = {}) {
@@ -185,6 +188,8 @@ class MediaImportService {
       projectRevision: Number.isFinite(context.projectRevision) ? context.projectRevision : null
     };
     const requestId = typeof args.requestId === 'string' && args.requestId.trim() ? args.requestId.trim() : randomUUID();
+    const { requestId: _requestId, ...payload } = args;
+    const requestFingerprint = fingerprint(payload);
     const existingId = this.requests.get(requestId);
     if (existingId) {
       const existing = this.jobs.get(existingId);
@@ -192,6 +197,9 @@ class MediaImportService {
       const sameProject = existing?.projectId === scope.projectId;
       const sameRevision = existing?.initialProjectRevision === scope.projectRevision;
       if (existing && sameSession && sameProject && sameRevision) {
+        if (existing.requestFingerprint !== requestFingerprint) {
+          throw Object.assign(new Error('This import requestId was already used with different arguments.'), { code: 'idempotency_conflict' });
+        }
         return {
           jobId: existingId, requestId, idempotentReplay: true, state: existing.state,
           idempotencyScope: { sessionId: existing.sessionId, projectId: existing.projectId, initialProjectRevision: existing.initialProjectRevision }
@@ -206,7 +214,8 @@ class MediaImportService {
 
     const now = new Date().toISOString();
     const job = {
-      jobId: randomUUID(), requestId, state: 'queued', createdAt: now, updatedAt: now,
+      jobId: randomUUID(), requestId, requestFingerprint, state: 'queued', createdAt: now, updatedAt: now,
+      projectInstanceId: context.projectInstanceId,
       sessionId: scope.sessionId,
       projectId: scope.projectId,
       initialProjectRevision: scope.projectRevision,
@@ -253,11 +262,13 @@ class MediaImportService {
     return this.status(jobId);
   }
 
-  resume(jobId) {
+  resume(jobId, context = {}) {
     const job = this.jobs.get(jobId);
     if (!job) throw Object.assign(new Error(`Import job "${jobId}" was not found.`), { code: 'job_not_found' });
     if (!['cancelled', 'interrupted', 'failed', 'partial'].includes(job.state)) return this.status(jobId);
-    for (const file of job.files) if (file.status === 'cancelled' || file.status === 'failed') { file.status = 'queued'; file.error = null; }
+    for (const file of job.files) if (['cancelled', 'failed', 'missing', 'probing'].includes(file.status)) { file.status = 'queued'; file.error = null; }
+    if (context.projectInstanceId !== undefined) job.projectInstanceId = context.projectInstanceId;
+    if (context.projectRevision !== undefined) job.projectRevision = context.projectRevision;
     job.cancelRequested = false;
     job.state = 'queued';
     job.updatedAt = new Date().toISOString();
@@ -288,17 +299,19 @@ class MediaImportService {
     this.jobs.clear();
     this.requests.clear();
     this.lastError = null;
-    if (!this.stateFile) return { removed: [] };
-    const removed = [];
-    const folder = path.dirname(this.stateFile);
-    const base = path.basename(this.stateFile);
-    let names = [];
-    try { names = await this.fs.readdir(folder); } catch {}
-    for (const name of names) {
-      if (name !== base && !(name.startsWith(`${base}.`) && name.endsWith('.tmp'))) continue;
-      try { await this.fs.unlink(path.join(folder, name)); removed.push(path.join(folder, name)); } catch {}
-    }
-    return { removed };
+    return this.#serializePersistence(async () => {
+      if (!this.stateFile) return { removed: [] };
+      const removed = [];
+      const folder = path.dirname(this.stateFile);
+      const base = path.basename(this.stateFile);
+      let names = [];
+      try { names = await this.fs.readdir(folder); } catch {}
+      for (const name of names) {
+        if (name !== base && !(name.startsWith(`${base}.`) && name.endsWith('.tmp'))) continue;
+        try { await this.fs.unlink(path.join(folder, name)); removed.push(path.join(folder, name)); } catch {}
+      }
+      return { removed };
+    });
   }
 
   async restore() {
@@ -307,6 +320,7 @@ class MediaImportService {
       const saved = JSON.parse(await this.fs.readFile(this.stateFile, 'utf8'));
       for (const job of saved.jobs || []) {
         if (job.state === 'running' || job.state === 'queued') job.state = 'interrupted';
+        for (const file of job.files || []) if (file.status === 'probing') file.status = 'cancelled';
         delete job.controller;
         this.jobs.set(job.jobId, job);
         // Persisted jobs remain inspectable/recoverable, but their request ids
@@ -334,7 +348,10 @@ class MediaImportService {
         try { await this.#run(job); }
         catch (error) {
           this.lastError = safeError(error);
-          job.state = job.cancelRequested ? 'cancelled' : 'failed';
+          job.state = error.code === 'project_changed' ? 'interrupted' : job.cancelRequested ? 'cancelled' : 'failed';
+          for (const file of job.files) if (!TERMINAL.has(file.status)) {
+            file.status = 'cancelled'; file.error = safeError(error);
+          }
           this.logger.error('job_failed', { requestId: job.requestId, jobId: job.jobId, error });
         } finally {
           delete job.controller;
@@ -352,9 +369,14 @@ class MediaImportService {
     job.controller = new AbortController();
     job.updatedAt = new Date().toISOString();
     let revision = job.projectRevision;
-    if (revision === null) {
+    {
       const project = await this.callEditor({ name: 'get_project', arguments: {} });
-      revision = project.projectRevision;
+      const currentInstance = project.result?.projectInstanceId;
+      if (job.projectInstanceId !== undefined && currentInstance !== undefined && job.projectInstanceId !== currentInstance) {
+        throw Object.assign(new Error('The project changed while this import was queued. Inspect the current project before resuming.'), { code: 'project_changed' });
+      }
+      job.projectInstanceId ??= currentInstance;
+      if (revision === null) revision = project.projectRevision;
       job.projectRevision = revision;
     }
     const seen = new Set(job.files.filter((file) => file.status === 'imported').map((file) => normalized(file.path)));
@@ -382,34 +404,21 @@ class MediaImportService {
         }
         try {
           const descriptor = this.registerMedia(item.path, item.stat, item.mime);
-          const commit = () => this.callEditor({
-            name: '__import_media_path',
-            arguments: {
-              descriptor, summary: item.summary,
-              atIndex: job.atIndex === undefined ? undefined : job.atIndex + inserted,
-              expectedRevision: revision, skipDuplicates: job.skipDuplicates
-            }
-          });
+          const commit = () => {
+            if (job.cancelRequested) throw Object.assign(new Error('Import cancelled before commit.'), { code: 'cancelled' });
+            return this.callEditor({
+              name: '__import_media_path',
+              arguments: {
+                descriptor, summary: item.summary,
+                atIndex: job.atIndex === undefined ? undefined : job.atIndex + inserted,
+                expectedRevision: revision, expectedProjectInstanceId: job.projectInstanceId, skipDuplicates: job.skipDuplicates
+              }
+            });
+          };
 
-          /*
-           * The guard is against the project being replaced underneath this
-           * queue, not against the revision moving.
-           *
-           * A queue of twelve files carries a revision it read before the first
-           * one, and anything else legitimately moves that number in between —
-           * a caption, a checkpoint, the agent reading and editing while the
-           * import runs. Once it drifted, every remaining file failed with the
-           * same message: nine in a row, none of which was a real conflict.
-           *
-           * Appending a clip commutes with all of that, so a conflict is a
-           * reason to re-read the number and try this file again. The editor
-           * keeps moving the number on its own for a moment after each import
-           * (thumbnail, automatic listening, timelapse speed), so one retry
-           * was not always enough: a few are made, a beat apart, and if the
-           * number is still racing the file is appended without the guard —
-           * which is what an append means anyway. None of this is an error
-           * the user or the agent needs to hear about.
-           */
+          // Background analyses may advance the revision during an import.
+          // Retry that number a bounded number of times; the separate document
+          // identity guard remains mandatory even on the final append attempt.
           let response;
           for (let attempt = 0; ; attempt++) {
             try {
@@ -418,7 +427,7 @@ class MediaImportService {
             } catch (error) {
               if (error?.code !== 'revision_conflict') throw error;
               if (attempt >= MAX_REVISION_RETRIES) {
-                this.logger.info('import_revision_unguarded', { requestId: job.requestId, jobId: job.jobId, path: item.path });
+                this.logger.info('import_revision_guard_relaxed', { requestId: job.requestId, jobId: job.jobId, path: item.path, projectInstanceId: job.projectInstanceId });
                 revision = undefined;
                 response = await commit();
                 break;
@@ -449,6 +458,7 @@ class MediaImportService {
             catch (error) { this.logger.warn('checkpoint_failed', { path: item.path, projectRevision: revision, error }); }
           }
         } catch (error) {
+          if (error.code === 'project_changed') throw error;
           file.status = error.code === 'cancelled' ? 'cancelled' : 'failed';
           file.error = safeError(error);
           this.logger.warn('file_commit_failed', { requestId: job.requestId, jobId: job.jobId, path: item.path, error });
@@ -499,17 +509,25 @@ class MediaImportService {
     }
   }
 
-  async #persist() {
-    if (!this.stateFile) return;
-    try {
-      await this.fs.mkdir(path.dirname(this.stateFile), { recursive: true });
-      const jobs = [...this.jobs.values()].map(({ controller, ...job }) => job);
-      const temp = `${this.stateFile}.${process.pid}.tmp`;
-      await this.fs.writeFile(temp, JSON.stringify({ version: 1, jobs }), 'utf8');
-      await this.fs.rename(temp, this.stateFile);
-    } catch (error) {
-      this.logger.warn('state_persist_failed', { error });
-    }
+  #serializePersistence(work) {
+    const result = this.persistence.then(work);
+    this.persistence = result.catch(() => undefined);
+    return result;
+  }
+
+  #persist() {
+    return this.#serializePersistence(async () => {
+      if (!this.stateFile || !this.jobs.size) return;
+      try {
+        await this.fs.mkdir(path.dirname(this.stateFile), { recursive: true });
+        const jobs = [...this.jobs.values()].map(({ controller, ...job }) => job);
+        const temp = `${this.stateFile}.${process.pid}.tmp`;
+        await this.fs.writeFile(temp, JSON.stringify({ version: 1, jobs }), 'utf8');
+        await this.fs.rename(temp, this.stateFile);
+      } catch (error) {
+        this.logger.warn('state_persist_failed', { error });
+      }
+    });
   }
 }
 

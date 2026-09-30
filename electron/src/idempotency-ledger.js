@@ -44,8 +44,9 @@ class IdempotencyLedger {
     }
 
     const promise = Promise.resolve().then(operation);
-    this.entries.set(key, { fingerprint: hash, promise });
-    while (this.entries.size > this.limit) this.entries.delete(this.entries.keys().next().value);
+    const entry = { fingerprint: hash, promise, settled: false };
+    this.entries.set(key, entry);
+    this.prune();
 
     try {
       return await promise;
@@ -53,6 +54,16 @@ class IdempotencyLedger {
       // A failed attempt did not establish an outcome and may be retried safely.
       if (this.entries.get(key)?.promise === promise) this.entries.delete(key);
       throw error;
+    } finally {
+      entry.settled = true;
+      this.prune();
+    }
+  }
+
+  prune() {
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size <= this.limit) break;
+      if (entry.settled) this.entries.delete(key);
     }
   }
 

@@ -78,7 +78,7 @@ test('declining leaves nothing behind, and allowing survives a restart', async (
   const wanted = path.join(dir, 'Elsewhere', 'clip.mp4');
 
   // A first run, with nothing granted.
-  const first = new RootStore({ getPath: () => null, projectRoot: null });
+  const first = new RootStore({ env: {}, getPath: () => null, projectRoot: null });
   assert.equal(first.admits(wanted), false);
   const refusal = (() => { try { first.admit(wanted); } catch (error) { return error; } })();
   assert.equal(refusal.code, 'path_not_allowed');
@@ -95,7 +95,7 @@ test('declining leaves nothing behind, and allowing survives a restart', async (
   assert.equal(first.admits(wanted), true);
 
   // The editor restarts: a brand-new store, told nothing but what was written.
-  const second = new RootStore({ getPath: () => null, projectRoot: null });
+  const second = new RootStore({ env: {}, getPath: () => null, projectRoot: null });
   assert.equal(second.admits(wanted), false, 'a fresh store starts with nothing');
   for (const entry of (await readRoots(file)).roots) second.add(entry.path, 'consent');
   assert.equal(second.admits(wanted), true, 'the grant must survive the restart');
@@ -105,9 +105,10 @@ test('declining leaves nothing behind, and allowing survives a restart', async (
 test('a stored grant that policy now refuses is dropped rather than honoured', async () => {
   const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sve-consent-'));
   const file = path.join(dir, 'roots.json');
-  await writeRoots(file, [{ path: path.resolve('/usr/lib') }, { path: path.join(dir, 'Fine') }]);
+  const refused = process.platform === 'win32' ? 'C:\\Windows\\System32' : '/usr/lib';
+  await writeRoots(file, [{ path: refused }, { path: path.join(dir, 'Fine') }]);
 
-  const store = new RootStore({ platform: 'linux', env: {}, getPath: () => null, projectRoot: null });
+  const store = new RootStore({ env: {}, getPath: () => null, projectRoot: null });
   const kept = [];
   for (const entry of (await readRoots(file)).roots) {
     if (store.add(entry.path, 'consent').added) kept.push(entry.path);

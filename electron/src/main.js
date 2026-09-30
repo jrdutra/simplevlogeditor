@@ -84,6 +84,7 @@ function getShortEditor() {
   });
 }
 const { createLogger, safeError } = require('./structured-log');
+const { commandTimeout } = require('./command-timeout');
 const { IdempotencyLedger } = require('./idempotency-ledger');
 const { RecoveryCheckpointStore } = require('./recovery-checkpoint-store');
 const { RecoveryLocations, purgeRecoveryFiles } = require('./recovery-purge');
@@ -492,6 +493,7 @@ function callEditor(request) {
       const id = `agent-${++agentSequence}`;
       const timer = setTimeout(() => {
         agentPending.delete(id);
+        if (agentContents && !agentContents.isDestroyed()) agentContents.send('agent:cancel', { operationId });
         operation.state = 'failed';
         operation.stage = 'timeout';
         operation.elapsedMs = Date.now() - started;
@@ -499,7 +501,7 @@ function callEditor(request) {
         operation.error = { code: 'editor_timeout', message: `Editor command "${request.name}" timed out.` };
         settled = true;
         reject(Object.assign(new Error(operation.error.message), { code: operation.error.code, details: { operationId } }));
-      }, 30 * 60 * 1000);
+      }, commandTimeout(request));
       agentPending.set(id, {
         operationId,
         resolve: (value) => {
@@ -769,6 +771,7 @@ async function executeAgentRequest(request) {
       const queued = mediaImports.queue(args, {
         sessionId: editorSessionId,
         projectId: String(projectId),
+        projectInstanceId: current.result?.projectInstanceId,
         projectRevision: current.projectRevision
       });
       return agentResponse({ ...queued, async: true }, current.projectRevision);
@@ -782,7 +785,10 @@ async function executeAgentRequest(request) {
       return agentResponse(status, status.projectRevision);
     }
     case 'resume_import': {
-      const status = mediaImports.resume(args.jobId);
+      const current = await callEditor({ name: 'get_project', arguments: {} });
+      const status = mediaImports.resume(args.jobId, {
+        projectInstanceId: current.result?.projectInstanceId, projectRevision: current.projectRevision
+      });
       return agentResponse(status, status.projectRevision);
     }
     case 'health_check': {
@@ -829,6 +835,7 @@ async function executeAgentRequest(request) {
       const recentOperations = [...agentOperations.values()].slice(-20).map((operation) => ({
         operationId: operation.operationId, name: operation.name, state: operation.state,
         stage: operation.stage, percent: operation.percent, elapsedMs: operation.elapsedMs,
+        detail: operation.detail, clipId: operation.clipId, file: operation.file,
         projectRevision: operation.projectRevision, error: operation.error,
         startedAt: operation.startedAt, updatedAt: operation.updatedAt
       }));
@@ -1196,11 +1203,14 @@ function wireAgentBridge() {
     if (!fromOurApp(event.sender) || event.sender !== agentContents) return;
     const operation = agentOperations.get(String(progress?.operationId || ''));
     if (!operation) return;
+    if (TERMINAL_OPERATION_STATES.has(operation.state)) return;
+    const previousStage = operation.stage;
     operation.state = progress.state || 'processing';
     operation.stage = progress.stage || operation.stage;
     operation.percent = Number.isFinite(progress.percent) ? Math.max(0, Math.min(100, progress.percent)) : null;
     operation.clipId = progress.clipId || operation.clipId || null;
     operation.file = progress.file || operation.file || null;
+    if (typeof progress.detail === 'string') operation.detail = progress.detail.slice(0, 1000);
     operation.elapsedMs = Date.now() - Date.parse(operation.startedAt);
     operation.updatedAt = new Date().toISOString();
     operation.etaMs = Number.isFinite(progress.etaMs) ? Math.max(0, progress.etaMs) : null;
@@ -1208,6 +1218,10 @@ function wireAgentBridge() {
       if (Number.isFinite(progress[key])) operation[key] = progress[key];
     }
     if (typeof progress.clipName === 'string') operation.clipName = progress.clipName.slice(0, 500);
+    if (operation.name === 'transcribe' && operation.stage !== previousStage) {
+      log.info('transcription_progress', { operationId: operation.operationId, stage: operation.stage,
+        percent: operation.percent, detail: operation.detail, elapsedMs: operation.elapsedMs });
+    }
   });
 
   /*

@@ -3,6 +3,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { PassThrough } = require('node:stream');
+const path = require('node:path');
+const { pathToFileURL } = require('node:url');
 const { startMcpServer, TOOLS, EDIT_OPERATIONS } = require('./mcp-server');
 
 function harness(callEditor = async (request) => ({ apiVersion: 1, projectRevision: 3, result: request })) {
@@ -42,8 +44,26 @@ test('negotiates MCP and lists the editor tools', async () => {
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'get_operation_status'));
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'cancel_operation'));
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'get_waveform_page'));
+  const audioLevels = replies[1].result.tools.find((entry) => entry.name === 'get_audio_levels');
+  assert.deepEqual(audioLevels.inputSchema.required, ['clipId', 'start', 'end']);
+  assert.equal(audioLevels.inputSchema.properties.interval.minimum, .05);
+  assert.equal(replies[1].result.tools.find((entry) => entry.name === 'get_contact_sheet').inputSchema.properties.interval.minimum, .2);
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'set_project_soundtrack'));
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'finish_editing'));
+  const preview = replies[1].result.tools.find((entry) => entry.name === 'preview');
+  assert.ok(preview.inputSchema.properties.clipId);
+  assert.match(preview.description, /first kept frame/);
+  const packaging = replies[1].result.tools.find((entry) => entry.name === 'set_video_packaging');
+  assert.deepEqual(packaging.inputSchema.properties.thumbnails.items.required,
+    ['path', 'sourceTimestamp', 'sourceFramePath', 'tagStyleId', 'tagStyleReferencePath', 'letteringMethod', 'styleVerification']);
+  assert.equal(packaging.inputSchema.properties.thumbnails.items.properties.styleVerification.properties.checked.const, true);
+  const finishEditing = replies[1].result.tools.find((entry) => entry.name === 'finish_editing');
+  const policyReview = finishEditing.inputSchema.properties.youtubePolicyReview;
+  assert.equal(policyReview.additionalProperties, false);
+  assert.deepEqual(policyReview.required, ['reviewed', 'findings']);
+  assert.equal(policyReview.properties.findings.maxItems, 200);
+  assert.equal(policyReview.properties.findings.items.properties.action.const, 'removed');
+  assert.equal(policyReview.properties.findings.items.properties.policies.minItems, 1);
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'analyze_noise'));
   assert.ok(replies[1].result.tools.some((entry) => entry.name === 'suppress_noise'));
   const batch = replies[1].result.tools.find((entry) => entry.name === 'apply_edit_batch');
@@ -79,6 +99,26 @@ test('negotiates MCP and lists the editor tools', async () => {
     const mutation = replies[1].result.tools.find((entry) => entry.name === name);
     assert.ok(mutation.inputSchema.required.includes('requestId'), `${name} must require requestId`);
   }
+  mcp.close();
+});
+
+test('source audio is delivered natively without base64 in text or structured metadata', async () => {
+  const mcp = harness(async request => {
+    assert.equal(request.name, 'get_audio_levels');
+    assert.equal(request.arguments.interval, .2);
+    return { apiVersion: 2, projectRevision: 7, result: { start: 6, end: 14,
+      buckets: [{ start: 6, end: 6.2, rms: .5 }],
+      audio: { mimeType: 'audio/wav', data: 'UklGRg==', start: 6, end: 14 } } };
+  });
+  mcp.request({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'get_audio_levels',
+    arguments: { clipId: 'a', start: 6, end: 14, interval: .2, includeAudio: true } } });
+  const [reply] = await mcp.responses(1);
+  assert.equal(reply.result.isError, undefined);
+  assert.deepEqual(reply.result.content[1], { type: 'audio', mimeType: 'audio/wav', data: 'UklGRg==' });
+  assert.ok(!reply.result.content[0].text.includes('UklGRg=='));
+  assert.equal(reply.result.structuredContent.result.audio.data, undefined);
+  assert.equal(reply.result.structuredContent.projectRevision, 7);
+  assert.equal(reply.result.structuredContent.result.buckets[0].rms, .5);
   mcp.close();
 });
 
@@ -330,20 +370,22 @@ test('a client that does not offer roots is never asked', async () => {
 });
 
 test('roots/list_changed asks again, so connecting a folder mid-session is noticed', async () => {
+  const rootA = path.resolve('test-media', 'a');
+  const rootB = path.resolve('test-media', 'b');
   const mcp = rootsHarness();
   mcp.write(ROOTS_CAPABILITY);
   mcp.write({ jsonrpc: '2.0', method: 'notifications/initialized' });
   await mcp.settle(() => mcp.sent.filter((message) => message.method === 'roots/list').length === 1);
   const first = mcp.sent.find((message) => message.method === 'roots/list');
-  mcp.write({ jsonrpc: '2.0', id: first.id, result: { roots: [{ uri: 'file:///a' }] } });
+  mcp.write({ jsonrpc: '2.0', id: first.id, result: { roots: [{ uri: pathToFileURL(rootA).href }] } });
   await mcp.settle(() => mcp.reported.length === 1);
 
   mcp.write({ jsonrpc: '2.0', method: 'notifications/roots/list_changed' });
   await mcp.settle(() => mcp.sent.filter((message) => message.method === 'roots/list').length === 2);
   const second = mcp.sent.filter((message) => message.method === 'roots/list')[1];
-  mcp.write({ jsonrpc: '2.0', id: second.id, result: { roots: [{ uri: 'file:///a' }, { uri: 'file:///b' }] } });
+  mcp.write({ jsonrpc: '2.0', id: second.id, result: { roots: [{ uri: pathToFileURL(rootA).href }, { uri: pathToFileURL(rootB).href }] } });
   await mcp.settle(() => mcp.reported.length === 2);
-  assert.deepEqual(mcp.reported[1], ['/a', '/b']);
+  assert.deepEqual(mcp.reported[1], [rootA, rootB]);
   mcp.close();
 });
 

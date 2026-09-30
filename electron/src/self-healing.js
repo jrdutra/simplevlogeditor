@@ -12,7 +12,8 @@
  *
  * What may be retried blindly is decided by what the request does:
  *
- *   reads     retried on the same or on a fresh editor. Nothing can be done twice.
+ *   reads     lightweight reads may be retried on the same or a fresh editor.
+ *   transcribe never replayed; a failure reaches the client for explicit retry.
  *   changes   retried only on the same editor process, where the idempotency
  *             ledger replays a request that already ran instead of running it
  *             again. After a restart that ledger is gone, so instead of guessing
@@ -22,8 +23,8 @@
 
 /** Requests that read, analyse or look: repeating them changes nothing. */
 const READS = new Set([
-  'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'get_waveform_page',
-  'transcribe', 'get_frames', 'get_contact_sheet', 'analyze_silence', 'analyze_noise',
+  'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'get_waveform_page', 'get_audio_levels',
+  'get_frames', 'get_contact_sheet', 'analyze_silence', 'analyze_noise',
   'health_check', 'get_diagnostics', 'get_recovery_state', 'get_import_status', 'get_operation_status',
   'preview', 'checkpoint_project', 'save_project'
 ]);
@@ -62,6 +63,16 @@ async function callWithRecovery(manager, request, options = {}) {
       return response;
     } catch (error) {
       lastError = error;
+      if (request.name === 'transcribe' && (RESTART_CODES.has(error.code) || WAIT_CODES.has(error.code))) {
+        // A manual restart/cancel is not authorisation to restart an expensive
+        // transcription. Replaying hides the original stall and can re-block
+        // the restored project's queue before the user has inspected it.
+        throw Object.assign(new Error(`Transcription was interrupted (${error.code}); it was not restarted automatically. The saved project and edits are preserved. Read health_check/get_project, then retry explicitly with a new requestId.`), {
+          code: 'transcription_interrupted', details: { recoverable: false, cause: error.code,
+            requestId: request.arguments?.requestId, nextStep: 'health_check, get_project, then an explicit transcribe with a new requestId' }
+        });
+      }
+      if (request.name === 'transcribe') throw error;
       if (!isRecoverable(error) || attempt === attempts) throw error;
       logger.warn('self_heal_retry', { request: request.name, attempt, code: error.code, message: error.message });
 

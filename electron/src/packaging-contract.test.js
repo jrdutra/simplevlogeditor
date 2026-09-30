@@ -86,6 +86,27 @@ test('a cover is accepted only on a background saved from the edit as it is now'
   assert.match(service, /earlier version of the edit/);
 });
 
+test('every delivered cover is pinned to the active lettering reference and a visual check', () => {
+  const thumbnails = method(service, 'async setThumbnails(');
+  assert.match(thumbnails, /get_packaging_tag_style/);
+  assert.match(thumbnails, /entry\.tagStyleId/);
+  assert.match(thumbnails, /entry\.tagStyleReferencePath/);
+  assert.match(thumbnails, /verification\.checked !== true/);
+  assert.match(server, /required: \['path', 'sourceTimestamp', 'sourceFramePath', 'tagStyleId', 'tagStyleReferencePath', 'letteringMethod', 'styleVerification'\]/);
+});
+
+test('selected clip preview uses the edited timeline and keeps a separate from-start action', () => {
+  const selected = method(editor, 'async openPreview(');
+  assert.match(selected, /await this\.seekToClip\(clip, null\)/);
+  assert.match(selected, /this\.player!\.play\(\)/);
+  assert.doesNotMatch(selected, /mediaObjectUrl\(clip\.file\)/);
+  const agent = method(editor, 'private async agentPreview(');
+  assert.match(agent, /previewTargetForClip\(this\.previewPlan, clipId\)/);
+  const html = read('ferramentas/editor-de-video/editor-de-video.component.html');
+  assert.match(html, /previewProjectFromStart\(\)[\s\S]*?Preview from start/);
+  assert.match(server, /clipId: \{ type: 'string', description: 'Optional selected timeline clip\/cut/);
+});
+
 test('get_contact_sheet passes composited through to the capture', () => {
   assert.match(method(editor, 'private async agentContactSheet('), /composited: args\['composited'\] === true/);
   assert.match(server, /tool\('get_contact_sheet'[\s\S]*?composited: \{ type: 'boolean'/);

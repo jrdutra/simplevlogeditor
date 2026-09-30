@@ -61,6 +61,17 @@ test('render and AI completion are depth-styled modals that hand off cleanly to 
   assert.match(component, /agentFinishEditing[\s\S]*?this\.agentLogOpen = false[\s\S]*?this\.agentCompletionOpen = true/);
 });
 
+test('AI completion renders an auditable YouTube policy alert only for committed removals', () => {
+  assert.match(component, /youtubePolicyReview\(args\['youtubePolicyReview'\]\)/);
+  assert.match(component, /finding\['action'\] !== 'removed'/);
+  assert.match(component, /end <= start/);
+  assert.match(html, /YouTube policy issues removed/);
+  assert.match(html, /Removed content/);
+  assert.match(html, /Continuity check/);
+  assert.match(html, /finding\.policies/);
+  assert.match(css, /\.agente-conclusao-modal\.agente-conclusao-politica/);
+});
+
 test('edit batches advertise an unambiguous terminal state and restore their snapshot on failure', () => {
   assert.match(component, /const before = this\.snapshot\(\)/);
   assert.match(component, /terminalState: 'applied'/);
@@ -86,6 +97,16 @@ test('agent output is staged so cancellation cannot delete an older destination'
   assert.match(main, /fs\.rename\(output\.temporary, output\.file\)/);
   assert.match(main, /agent:output-abort[\s\S]*?fs\.unlink\(output\.temporary\)/);
   assert.doesNotMatch(main, /agent:output-abort[\s\S]{0,500}?fs\.unlink\(output\.file\)/);
+});
+
+test('agent export adapts IPC to a realm-local WritableStream and commits only after render', () => {
+  assert.match(desktop, /new WritableStream<AgentOutputChunk>/);
+  assert.match(desktop, /stream,[\s\S]*?commit: async/);
+  assert.match(desktop, /!this\.bridge\.abortAgentOutput/);
+  assert.doesNotMatch(desktop, /abort:[^\n]*closeAgentOutput/);
+  assert.match(component, /handle: handle\.stream/);
+  assert.match(component, /await this\.renderer\.render\([\s\S]*?await handle\.commit\(\)/);
+  assert.match(component, /catch \(error\)[\s\S]*?handle\?\.abort\(\)/);
 });
 
 test('manual editor saves update the Electron recovery checkpoint', () => {

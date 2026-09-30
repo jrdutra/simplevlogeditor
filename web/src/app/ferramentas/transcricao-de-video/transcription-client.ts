@@ -9,16 +9,44 @@ export function transcribe(samples: Float32Array, options: TranscribeOptions,
   if (signal.aborted) return Promise.reject(new TranscriptionCanceled());
   if (typeof Worker === 'undefined') return Promise.reject(new TranscriptionError('This browser cannot run speech recognition workers.'));
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./transcription.worker', import.meta.url), { type: 'module' });
+    let worker: Worker;
+    try { worker = new Worker(new URL('./transcription.worker', import.meta.url), { type: 'module' }); }
+    catch (error) {
+      reject(new TranscriptionError(`Could not start the recognition worker: ${error instanceof Error ? error.message : String(error)}`,
+        `Model: ${options.model}. Check worker loading and browser security settings.`,
+        { code: 'worker_startup_failed', stage: 'worker-startup', cause: error }));
+      return;
+    }
     let stage = 'worker-startup';
-    const cleanup = () => { worker.terminate(); signal.removeEventListener('abort', abort); };
+    let settled = false;
+    let watchdog: ReturnType<typeof setTimeout>;
+    let token = '';
+    const cleanup = () => { settled = true; clearTimeout(watchdog); worker.terminate(); signal.removeEventListener('abort', abort); };
     const abort = () => { cleanup(); reject(new TranscriptionCanceled()); };
+    const report = (progress: TranscriptionProgress) => {
+      if (settled || signal.aborted) return;
+      stage = progress.stage;
+      const nextToken = `${stage}|${progress.ratio}|${progress.detail}`;
+      if (token !== nextToken) {
+        token = nextToken;
+        clearTimeout(watchdog);
+        const budget = options.stageTimeoutMs ?? 5 * 60_000;
+        const timeoutMs = stage === 'worker-startup' ? Math.min(budget, 60_000) : budget;
+        watchdog = setTimeout(() => {
+          cleanup();
+          reject(new TranscriptionError(`The recognition worker made no progress during ${stage} for ${timeoutMs} ms.`,
+            `Model: ${options.model}; language: ${options.language || 'auto'}. Check model download, worker startup and memory.`,
+            { code: 'transcription_stalled', stage, details: { timeoutMs, model: options.model }, recoverable: false }));
+        }, timeoutMs);
+      }
+      onProgress(progress);
+    };
     signal.addEventListener('abort', abort, { once: true });
     worker.onmessage = ({ data }: MessageEvent<TranscriptionResponse>) => {
-      if (signal.aborted) return;
+      if (settled || signal.aborted) return;
       switch (data.type) {
-        case 'progress': stage = data.progress.stage; onProgress(data.progress); break;
-        case 'partial': onPartial(data.words); break;
+        case 'progress': report(data.progress); break;
+        case 'partial': onPartial(data.words); report({ stage: 'listening', ratio: null, detail: `${data.words.length} words recognized` }); break;
         case 'done': cleanup(); onProgress({ stage: 'done', ratio: 1, detail: '' }); resolve(data.words); break;
         case 'error': {
           cleanup();
@@ -45,7 +73,11 @@ export function transcribe(samples: Float32Array, options: TranscribeOptions,
     worker.onmessageerror = () => { cleanup(); reject(new TranscriptionError(
       `The recognition worker returned unreadable data during ${stage}.`, '', { code: 'worker_message_error', stage }
     )); };
-    try { worker.postMessage({ samples, options }, [samples.buffer]); }
+    try {
+      report({ stage: 'worker-startup', ratio: null, detail: options.model });
+      if (signal.aborted) { abort(); return; }
+      worker.postMessage({ samples, options }, [samples.buffer]);
+    }
     catch (error) { cleanup(); reject(new TranscriptionError(
       `Could not send decoded audio to the recognition worker: ${error instanceof Error ? error.message : String(error)}`,
       '', { code: 'worker_transfer_failed', stage: 'worker-transfer', cause: error }

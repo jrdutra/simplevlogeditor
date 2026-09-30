@@ -43,6 +43,10 @@ import { HelpPanelComponent } from '../../shared/ui/help-panel.component';
 type ShapeField = keyof typeof SHAPE_LIMITS;
 
 const STAGE_LABEL: Record<TranscriptionStage, string> = {
+  'loading-decoder': 'Loading audio decoder', 'probing-audio-track': 'Reading the audio track',
+  'checking-codec-support': 'Checking audio support', 'reading-media-duration': 'Reading audio duration',
+  'reading-sample-rate': 'Reading audio format', resampling: 'Preparing 16 kHz audio',
+  'worker-startup': 'Starting speech recognition', 'initializing-model': 'Initializing speech model',
   reading: 'Reading the sound',
   downloading: 'Fetching the speech model',
   listening: 'Listening',

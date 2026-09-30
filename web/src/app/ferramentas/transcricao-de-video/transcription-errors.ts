@@ -17,7 +17,9 @@ export class TranscriptionError extends Error {
     this.code = options.code ?? 'transcription_failed';
     this.stage = options.stage ?? 'unknown';
     this.details = options.details;
-    this.recoverable = options.recoverable ?? true;
+    // A failed model/decoder is not made healthy by silently repeating the
+    // same expensive request or reopening the editor three times.
+    this.recoverable = options.recoverable ?? false;
   }
 }
 

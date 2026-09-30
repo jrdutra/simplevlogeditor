@@ -37,9 +37,9 @@
            the reader is already looking at, and it leaves them hunting at the
            top of the page for the way out of a panel at the bottom. -->
       @if (clips.length && !previewOpen) {
-        <button mat-stroked-button class="btn-previa" (click)="togglePreview()" [disabled]="exporting !== null">
+        <button mat-stroked-button class="btn-previa" (click)="previewProjectFromStart()" [disabled]="exporting !== null">
           <mat-icon>smart_display</mat-icon>
-          Preview
+          Preview from start
         </button>
       }
     </div>
@@ -291,6 +291,10 @@
         (dblclick)="resetVideoHeight()"></div>
 
       <div class="previa-transporte">
+        <button type="button" class="previa-botao previa-botao-menor" (click)="previewProjectFromStart()"
+          title="Play the project from the beginning" aria-label="Play the project from the beginning">
+          <mat-icon>replay</mat-icon>
+        </button>
         <button type="button" class="previa-botao" (click)="togglePlayback()"
           [attr.aria-label]="previewPlaying ? 'Pause the preview' : 'Play the preview'">
           <mat-icon>{{ previewPlaying ? 'pause' : 'play_arrow' }}</mat-icon>
@@ -1854,11 +1858,50 @@
   @if (agentCompletionOpen) {
     <div class="agente-conclusao-fundo" appBodyPortal>
       <section class="agente-conclusao-modal" [class]="agentControllerTheme"
+        [class.agente-conclusao-politica]="(agentCompletionPolicyReview?.findings?.length ?? 0) > 0"
         role="dialog" aria-modal="true" aria-labelledby="agente-conclusao-titulo">
         <span class="agente-marca"><img [src]="agentControllerIcon" alt="" aria-hidden="true"></span>
         <div>
-          <h2 id="agente-conclusao-titulo">AI editing is complete</h2>
+          <h2 id="agente-conclusao-titulo">
+            {{ (agentCompletionPolicyReview?.findings?.length ?? 0) > 0 ? 'YouTube policy issues removed' : 'AI editing is complete' }}
+          </h2>
           <p>{{ agentCompletionSummary }}</p>
+          @if (agentCompletionPolicyReview?.findings?.length) {
+            <div class="agente-politica-alerta" role="alert">
+              <div class="agente-politica-cabecalho">
+                <mat-icon>policy</mat-icon>
+                <div>
+                  <strong>{{ agentCompletionPolicyReview!.findings.length }} source segment(s) removed</strong>
+                  <span>The edit was changed before completion because these passages conflicted with YouTube policy.</span>
+                </div>
+              </div>
+              @if (agentCompletionPolicyReview?.summary) {
+                <p class="agente-politica-resumo">{{ agentCompletionPolicyReview!.summary }}</p>
+              }
+              <div class="agente-politica-lista">
+                @for (finding of agentCompletionPolicyReview!.findings; track $index) {
+                  <details class="agente-politica-item" [open]="$index === 0">
+                    <summary>
+                      <span>{{ finding.mediaName }} · {{ formatTime(finding.start) }}–{{ formatTime(finding.end) }}</span>
+                      <strong>{{ finding.policies[0].name }}{{ finding.policies.length > 1 ? ' +' + (finding.policies.length - 1) : '' }}</strong>
+                    </summary>
+                    <dl>
+                      <div><dt>Removed content</dt><dd>{{ finding.excerpt }}</dd></div>
+                      <div>
+                        <dt>{{ finding.policies.length === 1 ? 'Policy' : 'Policies' }}</dt>
+                        <dd>
+                          @for (policy of finding.policies; track policy.id) {
+                            <span class="agente-politica-regra"><strong>{{ policy.id }} · {{ policy.name }}</strong>{{ policy.rule }}</span>
+                          }
+                        </dd>
+                      </div>
+                      <div><dt>Continuity check</dt><dd>{{ finding.continuity }}</dd></div>
+                    </dl>
+                  </details>
+                }
+              </div>
+            </div>
+          }
           <p>Would you like to watch the preview first or render the video now?</p>
         </div>
         <div class="agente-conclusao-acoes">

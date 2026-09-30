@@ -38,6 +38,17 @@ interface LaidOutLine {
   words: { text: string; start: number; offset: number; width: number }[];
 }
 
+export interface TextLayoutMetrics {
+  lines: readonly string[];
+  requestedFontSize: number;
+  fontSize: number;
+  left: number;
+  right: number;
+  top: number;
+  bottom: number;
+  fitted: boolean;
+}
+
 interface Layout {
   lines: LaidOutLine[];
   fontSize: number;
@@ -183,7 +194,7 @@ function drawText(context: SceneContext, scene: TextScene, time: number): void {
       drawGlitch(context, scene, layout, progress);
       break;
     default:
-      for (const line of layout.lines) paintText(context, scene, line.text, line.x, line.y);
+      for (const line of layout.lines) paintText(context, scene, line.text, line.x, line.y, layout.fontSize);
   }
 }
 
@@ -196,48 +207,70 @@ function drawText(context: SceneContext, scene: TextScene, time: number): void {
  * away and leaves the per-letter animations visibly loose.
  */
 function layOutText(context: SceneContext, scene: TextScene): Layout {
-  const fontSize = scene.height * scene.fontScale;
-  const margin = scene.height * scene.margin;
-  const maxWidth = scene.width - margin * 2;
+  const requested = Math.max(8, scene.height * scene.fontScale);
+  const minimum = Math.min(8, requested);
+  let low = minimum;
+  let high = requested;
+  let fitted = layoutAt(context, scene, minimum);
 
-  applyFont(context, scene, fontSize);
-
-  const paragraphs = scene.text.replace(/\r/g, '').split('\n');
-  const wrapped: string[] = [];
-
-  for (const paragraph of paragraphs) {
-    if (!paragraph.trim()) {
-      wrapped.push('');
-      continue;
+  // The font is the size control. Shrinking the box while leaving oversized
+  // letters behind was the reason long chapter titles lost their last glyphs.
+  // A binary search keeps the user's requested size whenever it fits and finds
+  // the largest safe size when it does not.
+  for (let pass = 0; pass < 18; pass++) {
+    const size = (low + high) / 2;
+    const candidate = layoutAt(context, scene, size);
+    if (candidate.fits) {
+      fitted = candidate;
+      low = size;
+    } else {
+      high = size;
     }
-
-    let line = '';
-    for (const word of paragraph.split(/\s+/).filter(Boolean)) {
-      const candidate = line ? `${line} ${word}` : word;
-      if (line && context.measureText(candidate).width > maxWidth) {
-        wrapped.push(line);
-        line = word;
-      } else {
-        line = candidate;
-      }
-    }
-    wrapped.push(line);
   }
 
-  const lineStep = fontSize * scene.lineHeight;
-  const blockHeight = lineStep * wrapped.length;
+  return fitted.layout;
+}
 
-  const top =
-    scene.vertical === 'top'
-      ? margin
-      : scene.vertical === 'bottom'
-        ? scene.height - margin - blockHeight
-        : (scene.height - blockHeight) / 2;
+/** Public diagnostics used by the editor and its rendered-frame tests. */
+export function measureTextLayout(context: SceneContext, scene: TextScene): TextLayoutMetrics {
+  const layout = layOutText(context, scene);
+  return {
+    lines: layout.lines.map(line => line.text),
+    requestedFontSize: Math.max(8, scene.height * scene.fontScale),
+    fontSize: layout.fontSize,
+    left: layout.left,
+    right: layout.right,
+    top: layout.top,
+    bottom: layout.top + layout.height,
+    fitted: layout.fontSize < Math.max(8, scene.height * scene.fontScale) - 0.1
+  };
+}
+
+function layoutAt(context: SceneContext, scene: TextScene, fontSize: number): { layout: Layout; fits: boolean } {
+  applyFont(context, scene, fontSize);
+
+  const margin = Math.max(0, scene.height * scene.margin);
+  const effectPad = visualPadding(scene, fontSize);
+  const scale = animationScale(scene);
+  const inset = margin + effectPad;
+  const maxWidth = Math.max(1, (scene.width - inset * 2) / scale);
+  const maxHeight = Math.max(1, (scene.height - inset * 2) / scale);
+  const wrapped = wrapText(context, scene.text, maxWidth);
+  const lineStep = fontSize * scene.lineHeight;
+
+  const measurements = wrapped.map(text => context.measureText(text));
+  const ascent = Math.max(fontSize * 0.8, ...measurements.map(value => value.actualBoundingBoxAscent || 0));
+  const descent = Math.max(fontSize * 0.2, ...measurements.map(value => value.actualBoundingBoxDescent || 0));
+  const blockHeight = ascent + descent + Math.max(0, wrapped.length - 1) * lineStep;
+  const top = scene.vertical === 'top'
+    ? inset
+    : scene.vertical === 'bottom'
+      ? scene.height - inset - blockHeight
+      : (scene.height - blockHeight) / 2;
 
   const lines: LaidOutLine[] = wrapped.map((text, index) => {
-    const width = context.measureText(text).width;
-    const x = alignedX(scene.align, width, margin, scene.width);
-
+    const width = measurements[index].width;
+    const x = alignedX(scene.align, width, inset, scene.width);
     const charOffsets: number[] = [];
     for (let i = 0; i <= text.length; i++) charOffsets.push(context.measureText(text.slice(0, i)).width);
 
@@ -246,33 +279,111 @@ function layOutText(context: SceneContext, scene: TextScene): Layout {
     let match: RegExpExecArray | null;
     while ((match = pattern.exec(text))) {
       words.push({
-        text: match[0],
-        start: match.index,
-        offset: charOffsets[match.index],
+        text: match[0], start: match.index, offset: charOffsets[match.index],
         width: charOffsets[match.index + match[0].length] - charOffsets[match.index]
       });
     }
 
-    return {
-      text,
-      x,
-      // The baseline sits inside the line box, leaving the descender room.
-      y: top + index * lineStep + fontSize * 0.8,
-      width,
-      charOffsets,
-      words
-    };
+    return { text, x, y: top + ascent + index * lineStep, width, charOffsets, words };
   });
 
-  return {
-    lines,
-    fontSize,
-    lineStep,
-    top,
-    height: blockHeight,
-    left: Math.min(...lines.map((line) => line.x)),
-    right: Math.max(...lines.map((line) => line.x + line.width))
-  };
+  const left = lines.length ? Math.min(...lines.map(line => line.x)) : inset;
+  const right = lines.length ? Math.max(...lines.map(line => line.x + line.width)) : inset;
+  const layout = { lines, fontSize, lineStep, top, height: blockHeight, left, right };
+  const widthFits = measurements.every(value => value.width <= maxWidth + 0.5);
+  const heightFits = blockHeight <= maxHeight + 0.5;
+  return { layout, fits: widthFits && heightFits };
+}
+
+/** Balanced word wrapping: avoids a single orphan word when two even lines fit. */
+function wrapText(context: SceneContext, raw: string, maxWidth: number): string[] {
+  const output: string[] = [];
+  for (const paragraph of raw.replace(/\r/g, '').split('\n')) {
+    const words = paragraph.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) {
+      output.push('');
+      continue;
+    }
+
+    // A URL or long compound can exceed the frame by itself. Split only that
+    // token, on Unicode characters, instead of allowing one clipped line.
+    const normalized: string[] = [];
+    for (const word of words) {
+      if (context.measureText(word).width <= maxWidth) {
+        normalized.push(word);
+        continue;
+      }
+      let piece = '';
+      for (const character of Array.from(word)) {
+        const candidate = piece + character;
+        if (piece && context.measureText(candidate).width > maxWidth) {
+          normalized.push(piece);
+          piece = character;
+        } else {
+          piece = candidate;
+        }
+      }
+      if (piece) normalized.push(piece);
+    }
+
+    output.push(...balancedLines(context, normalized, maxWidth));
+  }
+  return output.length ? output : [''];
+}
+
+function balancedLines(context: SceneContext, words: readonly string[], maxWidth: number): string[] {
+  const count = words.length;
+  const cost = Array(count + 1).fill(Number.POSITIVE_INFINITY) as number[];
+  const next = Array(count).fill(count) as number[];
+  cost[count] = 0;
+  const linePenalty = maxWidth * maxWidth * 0.035;
+
+  for (let start = count - 1; start >= 0; start--) {
+    for (let end = start + 1; end <= count; end++) {
+      const line = words.slice(start, end).join(' ');
+      const width = context.measureText(line).width;
+      if (width > maxWidth && end > start + 1) break;
+      if (width > maxWidth) continue;
+      const leftover = maxWidth - width;
+      const last = end === count;
+      const widow = last && end - start === 1 && count > 2 ? linePenalty * 2 : 0;
+      const candidate = (last ? leftover * leftover * 0.12 : leftover * leftover) + linePenalty + widow + cost[end];
+      if (candidate < cost[start]) {
+        cost[start] = candidate;
+        next[start] = end;
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  for (let at = 0; at < count;) {
+    const end = Math.max(at + 1, next[at] || at + 1);
+    lines.push(words.slice(at, end).join(' '));
+    at = end;
+  }
+  return lines;
+}
+
+function visualPadding(scene: TextScene, fontSize: number): number {
+  const legibility = scene.legibility === 'shadow'
+    ? fontSize * 0.24
+    : scene.legibility === 'outline'
+      ? fontSize * 0.09
+      : 0;
+  const motion = scene.animation === 'tracking-in'
+    ? fontSize * 0.9
+    : scene.animation === 'glitch'
+      ? fontSize * 0.18
+      : scene.animation === 'word-drop'
+        ? fontSize * 0.12
+        : 0;
+  return Math.max(legibility, motion);
+}
+
+function animationScale(scene: TextScene): number {
+  if (scene.animation === 'blur-words') return 1.08;
+  if (scene.animation === 'scale-up') return 1.03;
+  return 1;
 }
 
 function alignedX(align: HorizontalAlign, lineWidth: number, margin: number, frameWidth: number): number {
@@ -300,20 +411,20 @@ function applyFont(context: SceneContext, scene: TextScene, fontSize: number): v
  * The order matters: the outline is stroked before the fill, so the dark edge
  * sits behind the letter instead of eating into it.
  */
-function paintText(context: SceneContext, scene: TextScene, text: string, x: number, y: number): void {
+function paintText(
+  context: SceneContext, scene: TextScene, text: string, x: number, y: number, fontSize: number
+): void {
   if (!text) return;
-
-  const size = scene.height * scene.fontScale;
 
   if (scene.legibility === 'shadow') {
     context.shadowColor = 'rgba(0, 0, 0, 0.65)';
-    context.shadowBlur = size * 0.16;
-    context.shadowOffsetY = size * 0.05;
+    context.shadowBlur = fontSize * 0.16;
+    context.shadowOffsetY = fontSize * 0.05;
   }
 
   if (scene.legibility === 'outline') {
     context.lineJoin = 'round';
-    context.lineWidth = size * 0.14;
+    context.lineWidth = fontSize * 0.14;
     context.strokeStyle = 'rgba(0, 0, 0, 0.85)';
     context.strokeText(text, x, y);
   }
@@ -362,7 +473,7 @@ function drawTypewriter(
 
   for (const line of layout.lines) {
     const take = Math.max(0, Math.min(line.text.length, revealed));
-    if (take > 0) paintText(context, scene, line.text.slice(0, take), line.x, line.y);
+    if (take > 0) paintText(context, scene, line.text.slice(0, take), line.x, line.y, layout.fontSize);
     revealed -= line.text.length;
 
     const finished = progress >= 1;
@@ -388,7 +499,7 @@ function drawRisingLetters(context: SceneContext, scene: TextScene, layout: Layo
       context.save();
       context.globalAlpha = local;
       const lift = (1 - local) * layout.fontSize * 0.45;
-      paintText(context, scene, character, line.x + line.charOffsets[i], line.y + lift);
+      paintText(context, scene, character, line.x + line.charOffsets[i], line.y + lift, layout.fontSize);
       context.restore();
     }
   }
@@ -418,7 +529,7 @@ function drawBlurredWords(context: SceneContext, scene: TextScene, layout: Layou
       context.scale(scale, scale);
       context.translate(-(x + word.width / 2), -(line.y - layout.fontSize * 0.35));
 
-      paintText(context, scene, word.text, x, line.y);
+      paintText(context, scene, word.text, x, line.y, layout.fontSize);
       context.restore();
     }
   }
@@ -444,7 +555,7 @@ function drawWipe(context: SceneContext, scene: TextScene, layout: Layout, progr
     // always runs with the reading direction of the block rather than against.
     context.rect(scene.align === 'right' ? line.x + line.width - revealed : line.x, top, revealed, height);
     context.clip();
-    paintText(context, scene, line.text, line.x, line.y);
+    paintText(context, scene, line.text, line.x, line.y, layout.fontSize);
     context.restore();
   });
 }
@@ -505,7 +616,7 @@ function drawWholeBlock(
     context.translate(-centreX, -centreY);
   }
 
-  for (const line of layout.lines) paintText(context, scene, line.text, line.x, line.y);
+  for (const line of layout.lines) paintText(context, scene, line.text, line.x, line.y, layout.fontSize);
   context.restore();
 }
 
@@ -525,7 +636,7 @@ function drawSlidingLines(context: SceneContext, scene: TextScene, layout: Layou
 
     context.save();
     context.globalAlpha = local;
-    paintText(context, scene, line.text, line.x + travel, line.y);
+    paintText(context, scene, line.text, line.x + travel, line.y, layout.fontSize);
     context.restore();
   });
 }
@@ -548,7 +659,7 @@ function drawDroppingWords(context: SceneContext, scene: TextScene, layout: Layo
 
       context.save();
       context.globalAlpha = Math.min(1, local * 1.6);
-      paintText(context, scene, word.text, line.x + word.offset, line.y - drop);
+      paintText(context, scene, word.text, line.x + word.offset, line.y - drop, layout.fontSize);
       context.restore();
     }
   }
@@ -578,7 +689,7 @@ function drawTrackingIn(context: SceneContext, scene: TextScene, layout: Layout,
 
       context.save();
       context.globalAlpha = eased;
-      paintText(context, scene, character, line.x + offset + away, line.y);
+      paintText(context, scene, character, line.x + offset + away, line.y, layout.fontSize);
       context.restore();
     }
   }
@@ -602,7 +713,7 @@ function drawLineReveal(context: SceneContext, scene: TextScene, layout: Layout,
     context.beginPath();
     context.rect(layout.left - layout.fontSize, top, layout.right - layout.left + layout.fontSize * 2, height);
     context.clip();
-    paintText(context, scene, line.text, line.x, line.y + (1 - eased) * height);
+    paintText(context, scene, line.text, line.x, line.y + (1 - eased) * height, layout.fontSize);
     context.restore();
   });
 }
@@ -642,7 +753,7 @@ function drawGlitch(context: SceneContext, scene: TextScene, layout: Layout, pro
       context.globalCompositeOperation = 'source-over';
     }
 
-    paintText(context, scene, line.text, line.x + wobble * layout.fontSize * 0.05, line.y);
+    paintText(context, scene, line.text, line.x + wobble * layout.fontSize * 0.05, line.y, layout.fontSize);
     context.restore();
   }
 }

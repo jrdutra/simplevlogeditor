@@ -59,8 +59,8 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
     },
     commands: [
       'get_editor_capabilities', 'get_project', 'list_assets', 'get_timeline', 'add_media', 'open_project', 'save_project', 'set_project_soundtrack', 'finish_editing', 'preview',
-      'analyze_silence', 'analyze_noise', 'suppress_noise', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export',
-      'get_packaging_sources', 'save_frames', 'get_packaging_tag_style'
+      'analyze_silence', 'analyze_noise', 'suppress_noise', 'get_waveform_page', 'get_audio_levels', 'transcribe', 'get_frames', 'get_contact_sheet', 'apply_edit_batch', 'undo', 'redo', 'export',
+      'get_packaging_sources', 'save_frames', 'get_packaging_tag_style', 'get_analysis_blocks', 'prepare_packaging_background'
     ],
     operationTypes: [
       'remove_clip', 'move_clip', 'duplicate_clip', 'add_text_clip', 'update_text_clip', 'set_text_background',
@@ -161,6 +161,10 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
     },
     audio: {
       defaultTarget: 'project',
+      sourceInspection: { command: 'get_audio_levels', timeSpace: 'source', defaultInterval: .2,
+        intervalSeconds: { min: .05, max: 1 }, maxRangeSeconds: 120, maxAudioPreviewSeconds: 12,
+        measurements: ['rms', 'peak', 'rmsDbfs', 'peakDbfs', 'coverage', 'channels'],
+        includeAudio: 'Optional native MCP WAV excerpt for listening. Original source before edits. Levels alone do not identify speech or meaningful sounds.' },
       note: 'Omit clipId when attaching generally requested music or background audio. Use clipId only for an explicitly named section.'
     },
     noiseSuppression: {
@@ -175,7 +179,7 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
     semantics: {
       mutable: ['add_media', 'open_project', 'set_project_soundtrack', 'suppress_noise', 'apply_edit_batch', 'undo', 'redo'],
       derivedState: ['analyze_silence', 'analyze_noise'],
-      readOnly: ['get_project', 'list_assets', 'get_timeline', 'get_waveform_page', 'transcribe', 'get_frames', 'get_contact_sheet'],
+      readOnly: ['get_project', 'list_assets', 'get_timeline', 'get_waveform_page', 'get_audio_levels', 'transcribe', 'get_frames', 'get_contact_sheet', 'get_analysis_blocks'],
       waveform: 'analyze_silence returns summary metadata by default; use includeWaveform with a bounded page or get_waveform_page.'
     }
   };

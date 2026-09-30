@@ -4,13 +4,10 @@ import express from 'express';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 import bootstrap from './src/main.server';
+import { normalizeHost, siteAssets } from './server-assets';
 
 const CANONICAL_HOST = 'simplevlogeditor.com';
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1', '::1']);
-
-function normalizeHost(host: string | undefined): string {
-  return (host ?? '').split(',')[0].trim().split(':')[0].toLowerCase();
-}
 
 function normalizeProtocol(protocol: string | string[] | undefined): string {
   const value = Array.isArray(protocol) ? protocol[0] : protocol;
@@ -86,7 +83,7 @@ export function app(): express.Express {
     next();
   });
 
-  server.get('*.*', express.static(browserDistFolder, { maxAge: '1y' }));
+  server.get('*.*', siteAssets(browserDistFolder));
 
   server.get('*', (req, res, next) => {
     const { protocol, originalUrl, baseUrl, headers } = req;

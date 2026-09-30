@@ -57,7 +57,9 @@ export const SPEECH_LANGUAGES: readonly { code: string; label: string }[] = [
 ];
 
 /** Where the job is, for the progress bar and the line above it. */
-export type TranscriptionStage = 'reading' | 'downloading' | 'listening' | 'done';
+export type TranscriptionStage = 'loading-decoder' | 'probing-audio-track' | 'checking-codec-support'
+  | 'reading-media-duration' | 'reading-sample-rate' | 'reading' | 'resampling'
+  | 'worker-startup' | 'downloading' | 'initializing-model' | 'listening' | 'done';
 
 export interface TranscriptionProgress {
   stage: TranscriptionStage;

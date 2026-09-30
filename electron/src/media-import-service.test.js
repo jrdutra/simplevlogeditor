@@ -79,6 +79,86 @@ test('reports a missing FFprobe executable with a reproducible error code', asyn
   );
 });
 
+test('an already cancelled probe still handles a missing executable without an unhandled error', async () => {
+  const controller = new AbortController(); controller.abort();
+  await assert.rejects(probeWithFfprobe(path.join(ROOT, 'video.mp4'), {
+    executable: `missing-ffprobe-${process.pid}.exe`, signal: controller.signal
+  }), error => error.code === 'cancelled');
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+test('an import request id cannot replay a different file list', async () => {
+  const { service } = harness();
+  const queued = service.queue({ paths: [path.join(ROOT, 'one.mp4')], requestId: 'conflict' });
+  assert.throws(() => service.queue({ paths: [path.join(ROOT, 'two.mp4')], requestId: 'conflict' }), error => error.code === 'idempotency_conflict');
+  await finished(service, queued.jobId);
+});
+
+test('resuming after restart retries probing and missing files without duplicating committed ones', async () => {
+  const { service, committed } = harness();
+  service.stateFile = 'state.json';
+  service.fs.readFile = async () => JSON.stringify({ jobs: [{ jobId: 'restored', requestId: 'restore', state: 'running',
+    maxConcurrency: 2, skipDuplicates: true, projectRevision: null, importedAssetIds: ['a'], files: [
+      { path: path.join(ROOT, 'done.mp4'), status: 'imported' },
+      { path: path.join(ROOT, 'pending.mp4'), status: 'probing' },
+      { path: path.join(ROOT, 'missing.mp4'), status: 'missing' }
+    ] }] });
+  await service.restore(); service.stateFile = undefined;
+  assert.equal(service.status('restored').state, 'interrupted');
+  service.resume('restored');
+  const status = await finished(service, 'restored');
+  assert.equal(status.state, 'completed');
+  assert.deepEqual(committed, [path.join(ROOT, 'pending.mp4'), path.join(ROOT, 'missing.mp4')]);
+});
+
+test('cancelling during revision backoff prevents a later commit', async () => {
+  const { service, committed } = harness();
+  const original = service.callEditor;
+  let attempted; const firstAttempt = new Promise(resolve => { attempted = resolve; });
+  let attempts = 0;
+  service.callEditor = async request => {
+    if (request.name === '__import_media_path' && ++attempts === 1) {
+      attempted(); throw Object.assign(new Error('revision moved'), { code: 'revision_conflict' });
+    }
+    return original(request);
+  };
+  const job = service.queue({ paths: [path.join(ROOT, 'cancel.mp4')] });
+  await firstAttempt; service.cancel(job.jobId);
+  assert.equal((await finished(service, job.jobId)).state, 'cancelled');
+  assert.equal(attempts, 1); assert.deepEqual(committed, []);
+});
+
+test('a queued import cannot migrate into a different project', async () => {
+  const { service, committed } = harness();
+  const original = service.callEditor;
+  service.callEditor = async request => request.name === 'get_project'
+    ? { projectRevision: 2, result: { projectInstanceId: 2 } } : original(request);
+  const job = service.queue({ paths: [path.join(ROOT, 'old-project.mp4')] }, { projectInstanceId: 1 });
+  assert.equal((await finished(service, job.jobId)).state, 'interrupted');
+  assert.deepEqual(committed, []);
+  service.resume(job.jobId, { projectInstanceId: 2, projectRevision: 2 });
+  assert.equal((await finished(service, job.jobId)).state, 'completed');
+});
+
+test('state writes are serialized and purge waits for pending writes', async () => {
+  const { service } = harness();
+  const files = new Map(); let active = 0, peak = 0;
+  let started; const writing = new Promise(resolve => { started = resolve; });
+  Object.assign(service.fs, { mkdir: async () => {},
+    writeFile: async (name, data) => { active++; peak = Math.max(peak, active); started(); await new Promise(resolve => setTimeout(resolve, 5)); files.set(name, data); active--; },
+    rename: async (from, to) => { assert.ok(files.has(from)); files.set(to, files.get(from)); files.delete(from); },
+    readdir: async () => [...files.keys()].map(name => path.basename(name)),
+    unlink: async name => { files.delete(name); }
+  });
+  service.stateFile = path.join(ROOT, 'state.json');
+  const job = service.queue({ paths: [path.join(ROOT, 'one.mp4'), path.join(ROOT, 'two.mp4')] });
+  await writing;
+  service.cancel(job.jobId);
+  await service.purge();
+  await service.pumpPromise; await service.persistence;
+  assert.equal(peak, 1); assert.equal(files.size, 0);
+});
+
 test('imports twelve 512 MB files by descriptor, in order, with bounded concurrency and idempotency', async () => {
   const { service, committed, peak } = harness();
   const paths = Array.from({ length: 12 }, (_, i) => path.join(ROOT, `Câmera ${String(i + 1).padStart(2, '0')}.mp4`));

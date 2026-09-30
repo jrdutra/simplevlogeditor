@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const { editorEndpoint } = require('./ipc-endpoint');
 const { splitRoots } = require('./mcp-roots');
 const { createLogger } = require('./structured-log');
+const { commandTimeout } = require('./command-timeout');
 
 const RETRY_MS = 750;
 /**
@@ -17,7 +18,6 @@ const RETRY_MS = 750;
  */
 const CLIENT_HEALTHCHECK_MS = 7_000;
 const START_TIMEOUT_MS = 30_000;
-const CALL_TIMEOUT_MS = 30 * 60_000;
 const HEARTBEAT_TIMEOUT_MS = 20_000;
 
 /**
@@ -387,7 +387,7 @@ class EditorProcessManager {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(recoverable(`Editor command "${request.name}" timed out.`, 'editor_timeout'));
-      }, CALL_TIMEOUT_MS);
+      }, commandTimeout(request, 20_000));
       this.pending.set(id, { resolve, reject, timer });
       socket.write(JSON.stringify({ id, request }) + '\n', (error) => {
         if (!error) return;

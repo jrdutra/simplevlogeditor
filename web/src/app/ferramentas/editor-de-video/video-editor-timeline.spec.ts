@@ -27,8 +27,10 @@ import {
   isTrimmed,
   keepRangesFor,
   outputTimeOf,
+  previewTargetForClip,
   reframeSize,
   slicePlan,
+  silenceCutRatio,
   sourceTimeAt,
   tagAt,
   transitionAt,
@@ -179,6 +181,22 @@ describe('effectiveEdits', () => {
 });
 
 describe('keepRangesFor', () => {
+  it('detecting silence alone leaves the video intact until cutting is enabled', () => {
+    const clip = mediaClip('single-source', 20, { detected: [{ start: 4, end: 8, source: 'automatic', enabled: true }] });
+    expect(keepRangesFor(clip, { ...DEFAULT_EDITS, cutSilence: false })).toEqual([{ start: 0, end: 20 }]);
+    expect(keepRangesFor(clip, { ...DEFAULT_EDITS, cutSilence: true })).toEqual([{ start: 0, end: 4 }, { start: 8, end: 20 }]);
+  });
+
+  it('measures silence against each split, including a silence crossing its boundary', () => {
+    const detected: EditableRange[] = [
+      { start: 1, end: 89, source: 'automatic', enabled: true },
+      { start: 99, end: 103, source: 'automatic', enabled: true }
+    ];
+    const last = mediaClip('last-block', 110, { inPoint: 100, detected });
+    expect(silenceCutRatio(last, { ...DEFAULT_EDITS, cutSilence: true })).toBeCloseTo(.3);
+    expect(silenceCutRatio(last, { ...DEFAULT_EDITS, cutSilence: false })).toBe(0);
+    expect(keepRangesFor(last, { ...DEFAULT_EDITS, cutSilence: true })).toEqual([{ start: 103, end: 110 }]);
+  });
   it('keeps the whole clip when nothing is cut', () => {
     const clip = mediaClip('a', 10, { detected: [range(2, 4)] });
 
@@ -473,6 +491,63 @@ describe('buildProjectPlan', () => {
     expect(plan.silentCount).toBe(1);
     expect(plan.audioOnlyCount).toBe(1);
     expect(plan.hasPicture).toBeTrue();
+  });
+});
+
+describe('edited preview targets', () => {
+  it('opens a middle clip at its first kept frame on the edited clock', () => {
+    const first = mediaClip('first', 8);
+    const middle = mediaClip('middle', 12, {
+      inPoint: 2,
+      outPoint: 11,
+      manualCuts: [{ start: 2, end: 4, source: 'manual', enabled: true }],
+      overrides: { ...cloneEdits(DEFAULT_EDITS), speed: 2 }
+    });
+    const last = mediaClip('last', 5);
+    const plan = buildProjectPlan([first, middle, last], project(), 'video');
+    const target = previewTargetForClip(plan, 'middle')!;
+
+    expect(target.outputTime).toBeCloseTo(8);
+    expect(target.sourceTime).toBeCloseTo(4);
+    expect(sourceTimeAt(plan.clips[target.clipIndex], target.outputTime).sourceTime).toBeCloseTo(4);
+  });
+
+  it('opens the last clip on its incoming transition without reverting to project zero', () => {
+    const clips: EditorClip[] = [
+      mediaClip('first', 6),
+      transitionClip('join', 0.6),
+      mediaClip('middle', 7),
+      transitionClip('join-2', 0.4),
+      mediaClip('last', 9, { inPoint: 1, outPoint: 8 })
+    ];
+    const plan = buildProjectPlan(clips, project(), 'video');
+    const target = previewTargetForClip(plan, 'last')!;
+
+    expect(target.outputTime).toBeCloseTo(plan.clips[2].outputStart);
+    expect(target.outputTime).toBeGreaterThan(0);
+    expect(target.sourceTime).toBeCloseTo(plan.clips[2].keepRanges[0].start);
+    expect(transitionAt(plan, target.outputTime)?.toIndex).toBe(2);
+  });
+
+  it('keeps source mapping stable after pause, an arbitrary seek and resume', () => {
+    const clip = mediaClip('paced', 20, {
+      manualCuts: [
+        { start: 3, end: 5, source: 'manual', enabled: true },
+        { start: 12, end: 15, source: 'manual', enabled: true }
+      ],
+      overrides: { ...cloneEdits(DEFAULT_EDITS), speed: 2 }
+    });
+    const plan = buildProjectPlan([mediaClip('lead', 4), clip], project(), 'video');
+    const entry = plan.clips[1];
+    const opened = previewTargetForClip(plan, clip.id)!;
+    const soughtOutput = opened.outputTime + 4;
+    const beforePause = sourceTimeAt(entry, soughtOutput);
+    const afterResume = sourceTimeAt(entry, soughtOutput);
+
+    expect(beforePause).toEqual(afterResume);
+    expect(beforePause.sourceTime).toBeCloseTo(10);
+    // Picture and original audio both use this same mapping in TimelinePlayer.
+    expect(entry.sound.kind).toBe('original');
   });
 });
 

@@ -82,6 +82,76 @@ interface DesktopBridge {
   onRootState?(listener: (state: RootState) => void): () => void;
 }
 
+/** The seekable chunk shape consumed by Mediabunny's StreamTarget. */
+export interface AgentOutputChunk {
+  type?: 'write';
+  data: BufferSource;
+  position?: number;
+}
+
+/**
+ * A staged desktop output.
+ *
+ * `stream` is deliberately created in the renderer realm. Mediabunny checks it
+ * with `instanceof WritableStream`, so an IPC proxy object is not sufficient.
+ * Closing the stream only finishes queued writes; `commit` is the separate,
+ * atomic rename from the Electron temporary file to the requested path.
+ */
+export interface AgentOutputHandle {
+  stream: WritableStream<AgentOutputChunk>;
+  commit(): Promise<void>;
+  abort(): Promise<void>;
+}
+
+interface AgentOutputBridge {
+  write(id: string, position: number, data: ArrayBuffer): Promise<number>;
+  commit(id: string): Promise<void>;
+  abort(id: string): Promise<void>;
+}
+
+/** Builds the real, realm-local WritableStream around the narrow IPC writer. */
+export function createAgentOutputHandle(id: string, bridge: AgentOutputBridge): AgentOutputHandle {
+  let cursor = 0;
+  let state: 'open' | 'closed' | 'committed' | 'aborted' = 'open';
+
+  const abortFile = async (): Promise<void> => {
+    if (state === 'committed' || state === 'aborted') return;
+    state = 'aborted';
+    await bridge.abort(id);
+  };
+
+  const stream = new WritableStream<AgentOutputChunk>({
+    write: async (chunk) => {
+      if (state !== 'open') throw new Error('The export destination is closed.');
+      if (!chunk?.data) return;
+      const source = chunk.data instanceof ArrayBuffer
+        ? new Uint8Array(chunk.data)
+        : new Uint8Array(chunk.data.buffer, chunk.data.byteOffset, chunk.data.byteLength);
+      // Electron serializes this one bounded muxer chunk. The complete video is
+      // never assembled in the renderer or sent through IPC as one allocation.
+      const bytes = source.slice().buffer;
+      const position = chunk.position ?? cursor;
+      cursor = await bridge.write(id, position, bytes);
+    },
+    close: () => {
+      if (state === 'open') state = 'closed';
+    },
+    abort: abortFile
+  });
+
+  return {
+    stream,
+    commit: async () => {
+      if (state === 'committed') return;
+      if (state === 'aborted') throw new Error('The export destination was aborted.');
+      if (state !== 'closed') throw new Error('Close the export stream before committing it.');
+      await bridge.commit(id);
+      state = 'committed';
+    },
+    abort: abortFile
+  };
+}
+
 /** A persistent shell handler can decline a command so the active tool may handle it. */
 export const AGENT_REQUEST_NOT_HANDLED = Symbol('agent-request-not-handled');
 type AgentRequestHandler = (request: unknown) => Promise<unknown> | unknown;
@@ -536,32 +606,22 @@ export class DesktopService {
     return this.bridge.ensureAgentFolder(path);
   }
 
-  async openAgentOutput(path: string): Promise<{
-    write(chunk: { data?: BufferSource; position?: number } | BufferSource): Promise<void>;
-    close(): Promise<void>;
-    abort(): Promise<void>;
-  }> {
-    if (!this.bridge?.openAgentOutput || !this.bridge.writeAgentOutput || !this.bridge.closeAgentOutput) {
+  async openAgentOutput(path: string): Promise<AgentOutputHandle> {
+    if (
+      !this.bridge?.openAgentOutput
+      || !this.bridge.writeAgentOutput
+      || !this.bridge.closeAgentOutput
+      || !this.bridge.abortAgentOutput
+    ) {
       throw new Error('Automated export is only available in the desktop app.');
     }
     await this.ensureAllowed([path], 'write this file');
     const id = await this.bridge.openAgentOutput(path);
-    let cursor = 0;
-    return {
-      write: async (chunk) => {
-        const wrapped = typeof chunk === 'object' && chunk !== null && 'data' in chunk
-          ? chunk as { data?: BufferSource; position?: number }
-          : { data: chunk as BufferSource };
-        if (!wrapped.data) return;
-        const bytes = wrapped.data instanceof ArrayBuffer
-          ? wrapped.data
-          : wrapped.data.buffer.slice(wrapped.data.byteOffset, wrapped.data.byteOffset + wrapped.data.byteLength);
-        const position = wrapped.position ?? cursor;
-        cursor = await this.bridge!.writeAgentOutput!(id, position, bytes);
-      },
-      close: () => this.bridge!.closeAgentOutput!(id),
-      abort: () => this.bridge?.abortAgentOutput?.(id) ?? this.bridge!.closeAgentOutput!(id)
-    };
+    return createAgentOutputHandle(id, {
+      write: (outputId, position, data) => this.bridge!.writeAgentOutput!(outputId, position, data),
+      commit: (outputId) => this.bridge!.closeAgentOutput!(outputId),
+      abort: (outputId) => this.bridge!.abortAgentOutput!(outputId)
+    });
   }
 
   minimize(): void {

@@ -215,12 +215,15 @@ export function keepRangesFor(clip: EditorClip, edits: ClipEdits): TimeRange[] {
 /** Share of the source removed specifically by enabled automatic silence cuts. */
 export function silenceCutRatio(clip: EditorClip, edits: ClipEdits): number {
   if (!isMediaClip(clip) || !edits.cutSilence) return 0;
-  const duration = sourceDuration(clip);
+  const bounds = clipBounds(clip);
+  const duration = bounds.end - bounds.start;
   if (duration <= EPSILON) return 0;
 
   const detected = mergeEditableRanges(
-    clip.detected.filter((range) => range.enabled),
-    duration
+    clip.detected.filter((range) => range.enabled).map(range => ({ ...range,
+      start: Math.max(bounds.start, range.start), end: Math.min(bounds.end, range.end)
+    })).filter(range => range.end > range.start),
+    sourceDuration(clip)
   );
   return Math.min(1, totalDuration(detected) / duration);
 }
@@ -1577,6 +1580,24 @@ export function clipAt(plan: ProjectPlan, time: number): ClipPlan | null {
     if (time >= entry.outputStart && time < entry.outputStart + entry.outputDuration) return entry;
   }
   return plan.clips[plan.clips.length - 1] ?? null;
+}
+
+/**
+ * Where the edited preview must begin for one selected timeline item.
+ *
+ * This is derived from the built plan, never from the source file. Trims and
+ * removed ranges decide `sourceTime`; speed, preceding clips and incoming
+ * transitions decide `outputTime`.
+ */
+export function previewTargetForClip(
+  plan: ProjectPlan,
+  clipId: string
+): { clipIndex: number; outputTime: number; rangeIndex: number; sourceTime: number } | null {
+  const clipIndex = plan.clips.findIndex(entry => entry.clip.id === clipId);
+  if (clipIndex < 0) return null;
+  const entry = plan.clips[clipIndex];
+  const mapped = sourceTimeAt(entry, entry.outputStart);
+  return { clipIndex, outputTime: entry.outputStart, ...mapped };
 }
 
 /** The clips that still need an analysis before the plan they describe is true. */

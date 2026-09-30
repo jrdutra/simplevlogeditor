@@ -2,6 +2,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const path = require('node:path');
 const { EventEmitter } = require('node:events');
 const { EditorProcessManager } = require('./editor-process-manager');
 
@@ -149,12 +150,13 @@ test('client roots reach the editor as soon as they are known, and only when the
   await manager.ensureEditorRunning();
   socket.written.length = 0;
 
-  assert.equal(manager.setClientRoots(['/home/joao/Videos']), true);
+  const mediaRoot = path.resolve('test-media', 'Videos');
+  assert.equal(manager.setClientRoots([mediaRoot]), true);
   const sent = socket.written.filter((envelope) => envelope.type === 'roots');
   assert.equal(sent.length, 1);
-  assert.deepEqual(sent[0].roots, ['/home/joao/Videos']);
+  assert.deepEqual(sent[0].roots, [mediaRoot]);
 
-  assert.equal(manager.setClientRoots(['/home/joao/Videos']), false, 'the same answer must not be resent');
+  assert.equal(manager.setClientRoots([mediaRoot]), false, 'the same answer must not be resent');
   assert.equal(socket.written.filter((envelope) => envelope.type === 'roots').length, 1);
   manager.close();
 });
@@ -163,9 +165,10 @@ test('a relative root from a client is dropped rather than resolved against this
   const socket = new RecordingSocket();
   const manager = connected(socket);
   await manager.ensureEditorRunning();
-  manager.setClientRoots(['not/absolute', '/home/joao/Videos']);
+  const mediaRoot = path.resolve('test-media', 'Videos');
+  manager.setClientRoots(['not/absolute', mediaRoot]);
   const sent = socket.written.filter((envelope) => envelope.type === 'roots').at(-1);
-  assert.deepEqual(sent.roots, ['/home/joao/Videos']);
+  assert.deepEqual(sent.roots, [mediaRoot]);
   manager.close();
 });
 

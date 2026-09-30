@@ -1221,6 +1221,41 @@
 }
 .agente-conclusao-modal h2 { margin: 0 0 0.45rem; color: #eff6ff; }
 .agente-conclusao-modal p { margin: 0.25rem 0; color: #a9c3e6; line-height: 1.5; }
+.agente-conclusao-modal.agente-conclusao-politica {
+  width: min(58rem, calc(100vw - 2rem));
+  border-color: rgba(251, 191, 36, 0.82);
+  box-shadow: 0 32px 82px rgba(0, 0, 0, 0.72), 0 13px 30px rgba(0, 0, 0, 0.5),
+    inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 0 42px rgba(245, 158, 11, 0.28);
+}
+.agente-politica-alerta {
+  margin: 1rem 0;
+  padding: 0.9rem;
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  border-radius: 14px;
+  background: rgba(120, 53, 15, 0.2);
+}
+.agente-politica-cabecalho { display: flex; align-items: flex-start; gap: 0.65rem; color: #fde68a; }
+.agente-politica-cabecalho mat-icon { flex: 0 0 auto; }
+.agente-politica-cabecalho strong,
+.agente-politica-cabecalho span { display: block; }
+.agente-politica-cabecalho span { margin-top: 0.2rem; color: #fcd34d; line-height: 1.35; }
+.agente-politica-resumo { margin-top: 0.75rem !important; color: #fde7b0 !important; }
+.agente-politica-lista { display: grid; gap: 0.55rem; margin-top: 0.8rem; }
+.agente-politica-item {
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.58);
+}
+.agente-politica-item summary { cursor: pointer; padding: 0.7rem 0.8rem; color: #f8fafc; }
+.agente-politica-item summary span,
+.agente-politica-item summary strong { display: block; }
+.agente-politica-item summary strong { margin-top: 0.15rem; color: #fbbf24; }
+.agente-politica-item dl { margin: 0; padding: 0 0.8rem 0.75rem; }
+.agente-politica-item dl div { margin-top: 0.55rem; }
+.agente-politica-item dt { color: #fcd34d; font-size: 0.78rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
+.agente-politica-item dd { margin: 0.15rem 0 0; color: #dbeafe; line-height: 1.45; white-space: pre-wrap; }
+.agente-politica-regra { display: block; margin-top: 0.35rem; }
+.agente-politica-regra strong { display: block; color: #f8fafc; }
 .agente-conclusao-acoes {
   grid-column: 1 / -1;
   display: flex;

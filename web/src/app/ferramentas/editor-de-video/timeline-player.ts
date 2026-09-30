@@ -602,7 +602,9 @@ export class TimelinePlayer {
   private maskIdentity(entry: ClipPlan): string {
     const media = isMediaClip(entry.clip) ? entry.clip : null;
     if (media && !this.subjectFileIds.has(media.file)) this.subjectFileIds.set(media.file,this.nextSubjectFileId++);
-    return `${entry.clip.id}@${media ? this.subjectFileIds.get(media.file) : 0}`;
+    // Even a cut shorter than one preview frame changes which picture owns the matte.
+    const rangeIndex = sourceTimeAt(entry, this.time).rangeIndex;
+    return `${entry.clip.id}@${media ? this.subjectFileIds.get(media.file) : 0}:range-${rangeIndex}`;
   }
 
   private effectFrameStatus(lane: number, ready: boolean, surface: SubjectSurface = 'effect', time = -1): string {

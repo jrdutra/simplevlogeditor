@@ -47,7 +47,12 @@ import {
 import type { SceneBackground, TextScene } from '../criador-de-video-texto/text-video.models';
 import { groupWords } from '../transcricao-de-video/recognition-timing';
 import { readSpeechAudio, transcribe } from '../transcricao-de-video/speech-recognizer';
+import { analysisBlocks, appliedSilenceSeconds, silenceInBounds, silenceSummary } from './editorial-analysis';
+import { readAgentAudioRange } from './agent-audio-decoder';
+import { correctPackagingPixels, BackgroundAdjustments } from '../video-packaging/packaging-colour';
+import { samePath } from '../video-packaging/packaging-paths';
 import { TranscriptionCanceled, TranscriptionError } from '../transcricao-de-video/transcription-errors';
+import { transcriptionStep } from '../transcricao-de-video/transcription-lifecycle';
 import {
   SPEECH_LANGUAGES,
   SPEECH_MODELS,
@@ -239,6 +244,7 @@ import {
   isOverridden,
   isTrimmed,
   keepRangesFor,
+  previewTargetForClip,
   removedRanges,
   slicePlan,
   sourceDuration,
@@ -375,6 +381,10 @@ const REDETECT_DELAY = 100;
  * of the two modules is talking — only what is happening to their recording.
  */
 const TRANSCRIPT_STAGE: Record<string, string> = {
+  'loading-decoder': 'Loading audio decoder', 'probing-audio-track': 'Reading the audio track',
+  'checking-codec-support': 'Checking audio support', 'reading-media-duration': 'Reading audio duration',
+  'reading-sample-rate': 'Reading audio format', resampling: 'Preparing 16 kHz audio',
+  'worker-startup': 'Starting speech recognition', 'initializing-model': 'Initializing speech model',
   reading: 'Reading the sound',
   loading: 'Fetching the noise model',
   downloading: 'Fetching the speech model',
@@ -790,6 +800,23 @@ interface AgentDiagnostic {
   request: EditorAgentRequest;
 }
 
+interface YoutubePolicyFinding {
+  clipId: string;
+  mediaName: string;
+  start: number;
+  end: number;
+  excerpt: string;
+  policies: Array<{ id: string; name: string; rule: string }>;
+  continuity: string;
+}
+
+interface YoutubePolicyReview {
+  reviewed: boolean;
+  summary: string;
+  reviewedScopes: string[];
+  findings: YoutubePolicyFinding[];
+}
+
 const AGENT_LOG_LIMIT = 500;
 /** How long an export waits for automatic listening before taking it over. */
 const EXPORT_LISTENING_WAIT_MS = 90_000;
@@ -1094,12 +1121,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private lastRevisionAt = new Date().toISOString();
   agentCompletionOpen = false;
   agentCompletionSummary = '';
+  agentCompletionPolicyReview: YoutubePolicyReview | null = null;
   private agentLogSeq = 0;
   private agentLogFollowing = true;
   private agentLogDirty = false;
   private agentTranscriptionQueue: Promise<void> = Promise.resolve();
   private lastAgentTranscriptStage = '';
   private agentTranscriptStageTimeout?: (stage: string) => void;
+  private agentTranscriptStallMs?: number;
   @ViewChild('agentLogConsole') private agentLogConsole?: ElementRef<HTMLDivElement>;
 
   /* ------------------------------------------------------- the transcript */
@@ -1536,10 +1565,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // now (AgentActivityService), because the log is global. What stays here is
     // the one thing only this editor knows: what the edit currently is.
     this.stopEditFingerprint = this.packaging.registerEditFingerprint(() => this.currentEditFingerprint());
+    this.stopPackagingTextWriter = this.packaging.registerTextWriter(async text => {
+      const folder = await this.ensurePackagingFolder();
+      await this.desktop.ensureAgentFolder(folder);
+      return this.writePackagingFile(folder, 'video-packaging.txt', new TextEncoder().encode(text));
+    });
   }
 
   /** Released on destroy, so a torn-down editor never vouches for frames. */
   private stopEditFingerprint: (() => void) | null = null;
+  private stopPackagingTextWriter: (() => void) | null = null;
   private fingerprintCache: { plan: ProjectPlan; value: string } | null = null;
 
   /** The plan is cached until the edit changes, so its fingerprint can be too. */
@@ -1621,6 +1656,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   ngOnDestroy(): void {
+    this.stopPackagingTextWriter?.();
+    this.stopPackagingTextWriter = null;
     this.stopEditFingerprint?.();
     this.stopEditFingerprint = null;
     onFilesChosenThroughPicker(null);
@@ -1695,6 +1732,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   private applyRestored(restored: RestoredProject): void {
+    this.projectInstanceId++;
+    this.history.length = 0;
+    this.future.length = 0;
+    this.pending = null;
+    this.pendingSignature = '';
+    this.heardByClip.clear();
     this.packagingOutputFolder = null;
     this.restoring = true;
 
@@ -2860,6 +2903,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * back on the next reload — not even for six hundred milliseconds.
    */
   clear(): void {
+    this.projectInstanceId++;
+    this.heardByClip.clear();
     this.packagingOutputFolder = null;
     this.closeAllDialogs();
     this.closeTimelinePreview();
@@ -3125,11 +3170,17 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.resumePreview();
   }
 
-  openPreview(clip: EditorClip): void {
+  async openPreview(clip: EditorClip): Promise<void> {
     if (!isMediaClip(clip) || !isPlatformBrowser(this.platformId) || clip.awaitingFile) return;
-    this.suspendPreview();
-    clip.previewUrl ??= mediaObjectUrl(clip.file);
-    this.preview = clip;
+    // Preview the edited timeline, not the raw file. The plan supplies the
+    // first kept frame after trims/cuts and one shared clock for picture/audio.
+    this.preview = null;
+    await this.seekToClip(clip, null);
+    if (this.player && !this.player.playing) {
+      await this.zone.runOutsideAngular(() => this.player!.play());
+      this.previewPlaying = this.player.playing;
+      this.cdr.markForCheck();
+    }
   }
 
   closePreview(): void {
@@ -3348,9 +3399,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * with the other now does it through the identifier they share.
    */
   playFrom(clip: EditorClip): void {
-    const entry = this.previewPlan.clips.find((candidate) => candidate.clip.id === clip.id);
-    if (!entry || !this.player) return;
-    this.onScrub(entry.outputStart);
+    const target = previewTargetForClip(this.previewPlan, clip.id);
+    if (!target || !this.player) return;
+    this.onScrub(target.outputTime);
+  }
+
+  /** A separate, explicit transport action for watching the project at 00:00. */
+  async previewProjectFromStart(): Promise<void> {
+    if (!this.previewOpen) await this.openTimelinePreview();
+    if (!this.player) return;
+    this.onScrub(0);
+    if (!this.player.playing) await this.zone.runOutsideAngular(() => this.player!.play());
+    this.previewPlaying = this.player.playing;
+    this.cdr.markForCheck();
   }
 
   /**
@@ -9030,18 +9091,33 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * transcript and an afternoon.
    */
   private async wordsFor(clip: MediaClip, entry: ClipPlan, signal: AbortSignal): Promise<Cue[]> {
+    if (signal.aborted) throw new TranscriptionCanceled();
+    // Keep the cache identity and processing options consistent if UI settings
+    // change while decoding or downloading a model.
+    const model = this.transcriptModelId;
+    const language = this.transcriptLanguage;
+    const denoise = this.transcriptDenoise;
+    const engine = this.transcriptEngine;
+    const attenuationDb = this.transcriptStrength.attenuationDb;
+    const start = entry.keepRanges[0]?.start ?? 0;
+    const end = entry.keepRanges[entry.keepRanges.length - 1]?.end ?? clip.summary.durationSeconds;
     const key = [
       clip.id,
+      this.agentAssetId(clip),
+      clip.sourcePath ?? clip.fileRef?.path ?? '',
       this.transcriptModelId,
       this.transcriptLanguage || 'auto',
-      this.transcriptDenoise ? `${this.transcriptEngine}:${this.transcriptStrength.attenuationDb}` : 'raw'
+      this.transcriptDenoise ? `${this.transcriptEngine}:${this.transcriptStrength.attenuationDb}` : 'raw',
+      entry.keepRanges[0]?.start ?? 0,
+      entry.keepRanges[entry.keepRanges.length - 1]?.end ?? clip.summary.durationSeconds
     ].join('|');
 
-    const remembered = this.heardByClip.get(key);
+    const remembered = this.cachedSourceTranscript(clip, start, end);
     if (remembered) return remembered;
 
-    const report = (progress: TranscriptionProgress | SuppressionProgress) =>
-      this.zone.run(() => this.reportTranscript(progress));
+    const report = (progress: TranscriptionProgress | SuppressionProgress) => {
+      if (!signal.aborted) this.zone.run(() => this.reportTranscript(progress));
+    };
 
     const decoded = await readSpeechAudio(clip.file, report, signal);
     if (signal.aborted) throw new TranscriptionCanceled();
@@ -9051,13 +9127,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // of the buffer they are handed, and a view would hand them the whole file.
     let listened = decoded.slice(span.from, span.to);
 
-    if (this.transcriptDenoise) {
+    if (denoise) {
       const cleaned = await suppress(
         {
           channels: [listened],
           rate: SPEECH_RATE,
-          engine: this.transcriptEngine,
-          attenuationDb: this.transcriptStrength.attenuationDb,
+          engine,
+          attenuationDb,
           preserveHighs: false
         },
         report,
@@ -9069,11 +9145,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const offset = span.from / SPEECH_RATE;
     const heard = await transcribe(
       listened,
-      { model: this.transcriptModelId, language: this.transcriptLanguage },
+      { model, language, stageTimeoutMs: this.agentTranscriptStallMs },
       report,
       signal
     );
 
+    if (signal.aborted) throw new TranscriptionCanceled();
     const words = offset
       ? heard.map((word) => ({ ...word, start: word.start + offset, end: word.end + offset }))
       : heard;
@@ -9094,9 +9171,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.transcriptDetail = progress.detail ?? '';
     this.transcriptRatio = progress.ratio === null ? null : Math.min(1, Math.max(0, progress.ratio));
     if (this.agentWorking) {
+      this.desktop.reportAgentProgress({ operationId: this.currentAgentOperationId,
+        state: 'processing', stage: progress.stage,
+        percent: this.transcriptRatio === null ? null : this.transcriptRatio * 100,
+        detail: this.transcriptDetail });
+      this.agentTranscriptStageTimeout?.(`${progress.stage}|${progress.ratio}|${progress.detail}`);
       if (progress.stage !== this.lastAgentTranscriptStage) {
         this.lastAgentTranscriptStage = progress.stage;
-        this.agentTranscriptStageTimeout?.(progress.stage);
         // A new stage is worth a line whatever the throttle thinks: it is the
         // difference between "still fetching the model" and "actually
         // listening", which is the question a reader is asking.
@@ -9771,6 +9852,10 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     clip.outPoint = sourceTime;
     this.clips.splice(index + 1, 0, second);
+    // Transcript cues describe the shared source, so each half can reuse them.
+    for (const [key, words] of [...this.heardByClip.entries()]) {
+      if (key.startsWith(`${clip.id}|`)) this.heardByClip.set(`${second.id}${key.slice(clip.id.length)}`, words);
+    }
     // Two clips now, each of them a timelapse, and the target is per clip — so
     // both halves are re-timed to it rather than keeping the speed that made
     // the whole take fit.
@@ -10902,6 +10987,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         case 'get_project': result = this.agentProject(); break;
         case 'list_assets': result = this.agentAssets(); break;
         case 'get_timeline': result = this.agentTimeline(); break;
+        case 'get_analysis_blocks': result = this.agentAnalysisBlocks(args); break;
         case 'add_media': result = await this.agentAddMedia(args); break;
         case '__has_media_path': result = this.agentHasMediaPath(args); break;
         case '__import_media_path': result = await this.agentImportMediaPath(args); break;
@@ -10927,11 +11013,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         case 'analyze_noise': result = await this.agentAnalyzeNoise(args, operationController.signal, operationId); break;
         case 'suppress_noise': result = await this.agentSuppressNoise(args, operationController.signal, operationId); break;
         case 'get_waveform_page': result = this.agentWaveformPage(args); break;
+        case 'get_audio_levels': result = await this.agentAudioLevels(args, operationController.signal); break;
         case 'transcribe': result = await this.agentTranscribe(args, operationController.signal); break;
         case 'get_frames': result = await this.agentFrames(args as unknown as EditorAgentFrameRequest, operationController.signal, operationId); break;
         case 'get_contact_sheet': result = await this.agentContactSheet(args, operationController.signal, operationId); break;
         case 'get_packaging_sources': this.packaging.noteAgentCommand(request.name); result = this.agentPackagingSources(); break;
         case 'save_frames': this.packaging.noteAgentCommand(request.name); result = await this.agentSaveFrames(args, operationController.signal, operationId); break;
+        case 'prepare_packaging_background': this.packaging.noteAgentCommand(request.name); result = await this.agentPreparePackagingBackground(args, operationController.signal); break;
         case 'get_packaging_tag_style': this.packaging.noteAgentCommand(request.name); result = await this.agentPackagingTagStyle(); break;
         case 'export': result = await this.agentExport(args, operationController.signal, operationId); break;
         default: throw new EditorAgentError(`Unknown editor command "${request.name}".`, 'unknown_command');
@@ -11037,6 +11125,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'undo': return 'Undoing the last edit';
       case 'redo': return 'Redoing the last edit';
       case 'analyze_silence': return args['clipId'] ? `Finding pauses in ${mediaName()}` : 'Finding pauses in all videos';
+      case 'get_audio_levels': return `Inspecting source audio in ${mediaName()} from ${this.formatTime(Number(args['start']))} to ${this.formatTime(Number(args['end']))}`;
       case 'analyze_noise': return args['clipId'] ? `Analyzing noise in ${mediaName()}` : 'Analyzing noise in all videos';
       case 'suppress_noise': return `Removing noise from ${mediaName()}`;
       // The settings are half of what a reader wants to know here: a transcript
@@ -11072,6 +11161,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       __import_media_path: 'Media file import', __has_media_path: 'Duplicate check',
       apply_edit_batch: 'Edit batch', undo: 'Undo', redo: 'Redo',
       analyze_silence: 'Silence analysis', get_waveform_page: 'Waveform page', transcribe: 'Video understanding', get_frames: 'Frame inspection',
+      get_audio_levels: 'Source audio inspection',
       analyze_noise: 'Noise analysis', suppress_noise: 'Noise suppression',
       get_contact_sheet: 'Visual inspection', export: 'Export'
     };
@@ -11158,7 +11248,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       code?: string; stage?: string; details?: unknown; cause?: unknown;
       exitCode?: number; signal?: string; stdout?: string; stderr?: string;
     };
-    const retryable = ['transcribe', 'analyze_silence', 'analyze_noise', 'get_frames', 'get_contact_sheet', 'get_project', 'list_assets', 'get_timeline']
+    const retryable = ['transcribe', 'analyze_silence', 'analyze_noise', 'get_audio_levels', 'get_frames', 'get_contact_sheet', 'get_project', 'list_assets', 'get_timeline']
       .includes(request.name) || (request.name === 'apply_edit_batch' && request.arguments?.['dryRun'] === true);
     const recentLogs = this.agentLog.slice(-40).map((line) =>
       `[${line.timestamp}] [${line.level}] [${line.module}] ${line.text}`);
@@ -11237,6 +11327,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   private agentProject(): unknown {
     return {
+      projectInstanceId: this.projectInstanceId,
       apiVersion: EDITOR_AGENT_API_VERSION,
       revision: this.revision,
       duration: this.plan.totalDuration,
@@ -11378,6 +11469,13 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** Commits one already-probed descriptor. No video bytes cross this call. */
   private async agentImportMediaPath(args: Record<string, unknown>): Promise<unknown> {
+    const expectedProject = args['expectedProjectInstanceId'] ?? this.projectInstanceId;
+    const checkProject = () => {
+      if (expectedProject !== this.projectInstanceId) throw new EditorAgentError(
+        'The project changed during media import. Inspect the current project before resuming the import.', 'project_changed'
+      );
+    };
+    checkProject();
     const descriptor = args['descriptor'] as DesktopFileDescriptor | undefined;
     const summary = args['summary'] as MediaSummary | undefined;
     if (!descriptor || typeof descriptor.url !== 'string' || typeof descriptor.filePath !== 'string' || !summary) {
@@ -11396,6 +11494,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     // video gets the same check here, so the timelapse target and the agent's
     // reading of the clip work the same whichever way it was imported.
     await this.probe.detectTimelapseFor(file, summary);
+    checkProject();
     const waiting = this.clips.find((candidate): candidate is MediaClip =>
       isMediaClip(candidate) && !!candidate.awaitingFile && !!candidate.sourcePath &&
       this.agentPathKey(candidate.sourcePath) === this.agentPathKey(descriptor.filePath!)
@@ -11632,12 +11731,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       : serializeProject(this.clips, this.project, this.nextId, { projectRevision: this.revision });
     const bytes = new TextEncoder().encode(JSON.stringify(content, null, 2));
     const handle = await this.desktop.openAgentOutput(path);
+    const writer = handle.stream.getWriter();
     try {
-      await handle.write(bytes);
-      await handle.close();
+      await writer.write({ type: 'write', data: bytes, position: 0 });
+      await writer.close();
+      await handle.commit();
     } catch (error) {
       await handle.abort().catch(() => undefined);
       throw error;
+    } finally {
+      writer.releaseLock();
     }
     return { path, kind, bytes: bytes.byteLength, savedProjectRevision: this.revision };
   }
@@ -11669,10 +11772,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (!['open', 'play', 'pause', 'seek', 'close'].includes(action)) {
       throw new EditorAgentError('preview action must be open, play, pause, seek or close.', 'invalid_arguments');
     }
-    if (action === 'close') this.closeTimelinePreview();
-    else {
+    let target: ReturnType<typeof previewTargetForClip> = null;
+    if (action === 'close') {
+      this.closeTimelinePreview();
+    } else {
       await this.openTimelinePreview();
-      if (action === 'seek') this.onScrub(finiteNumber(args['time'], 'time'));
+      if (args['clipId'] !== undefined) {
+        const clipId = stringValue(args['clipId'], 'clipId');
+        target = previewTargetForClip(this.previewPlan, clipId);
+        if (!target) throw new EditorAgentError(`No playable timeline item has id "${clipId}".`, 'invalid_target');
+        this.onScrub(target.outputTime);
+      } else if (action === 'seek') {
+        this.onScrub(finiteNumber(args['time'], 'time'));
+      }
       if (action === 'play' && this.player && !this.player.playing) {
         await this.zone.runOutsideAngular(() => this.player!.play());
         this.previewPlaying = true;
@@ -11683,13 +11795,20 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       }
     }
     this.cdr.markForCheck();
-    return { open: this.previewOpen, playing: this.previewPlaying, time: this.previewTime, duration: this.plan.totalDuration };
+    return {
+      open: this.previewOpen,
+      playing: this.previewPlaying,
+      time: this.previewTime,
+      duration: this.previewPlan.totalDuration,
+      target: target ? { ...target, clipId: String(args['clipId']) } : null
+    };
   }
 
   private agentFinishEditing(args: Record<string, unknown>): unknown {
     this.agentCompletionSummary = typeof args['summary'] === 'string' && args['summary'].trim()
       ? args['summary'].trim().slice(0, 1000)
       : 'The AI edit is complete and the recovery checkpoint is ready.';
+    this.agentCompletionPolicyReview = this.youtubePolicyReview(args['youtubePolicyReview']);
     // The completion choice replaces the activity console. Keeping the console
     // open would cover the preview as soon as the user chooses to watch it.
     this.agentLogOpen = false;
@@ -11701,6 +11820,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       shown: true,
       choices: ['preview', 'render'],
       projectRevision: this.revision,
+      youtubePolicyReview: {
+        received: this.agentCompletionPolicyReview !== null,
+        reviewed: this.agentCompletionPolicyReview?.reviewed === true,
+        removedSegments: this.agentCompletionPolicyReview?.findings.length ?? 0
+      },
       // The reader's own setting, in the project: whether this edit ends here
       // or goes on to its covers, titles, description and tags.
       videoPackaging: {
@@ -11709,6 +11833,51 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           ? 'Automatic Video Packaging is on for this project: run create-video-packaging now.'
           : 'Automatic Video Packaging is off for this project: the edit is the whole job. Do not generate covers, titles, a description or tags unless the user asks for them.'
       }
+    };
+  }
+
+  private youtubePolicyReview(value: unknown): YoutubePolicyReview | null {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+    const report = value as Record<string, unknown>;
+    const text = (entry: unknown, limit: number): string => typeof entry === 'string'
+      ? entry.trim().slice(0, limit)
+      : '';
+    const reviewedScopes = Array.isArray(report['reviewedScopes'])
+      ? report['reviewedScopes'].slice(0, 20).map(item => text(item, 120)).filter(Boolean)
+      : [];
+    const findings: YoutubePolicyFinding[] = [];
+    if (Array.isArray(report['findings'])) {
+      for (const raw of report['findings'].slice(0, 200)) {
+        if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+        const finding = raw as Record<string, unknown>;
+        const start = Number(finding['start']);
+        const end = Number(finding['end']);
+        if (finding['action'] !== 'removed' || !Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start) continue;
+        const mediaName = text(finding['mediaName'], 240);
+        const excerpt = text(finding['excerpt'], 1000);
+        const continuity = text(finding['continuity'], 1000);
+        const policies = Array.isArray(finding['policies'])
+          ? finding['policies'].slice(0, 8).flatMap(rawPolicy => {
+              if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) return [];
+              const policy = rawPolicy as Record<string, unknown>;
+              const id = text(policy['id'], 100);
+              const name = text(policy['name'], 240);
+              const rule = text(policy['rule'], 1000);
+              return id && name && rule ? [{ id, name, rule }] : [];
+            })
+          : [];
+        if (!mediaName || !excerpt || !policies.length || !continuity) continue;
+        findings.push({
+          clipId: text(finding['clipId'], 160), mediaName, start, end, excerpt,
+          policies, continuity
+        });
+      }
+    }
+    return {
+      reviewed: report['reviewed'] === true,
+      summary: text(report['summary'], 1000),
+      reviewedScopes,
+      findings
     };
   }
 
@@ -12167,7 +12336,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         const clip: TextClip = {
           kind: 'text',
           id: `text-${this.nextId++}`,
-          draft: this.agentTextDraft(DEFAULT_TEXT_DRAFT, operation.text, operation.draft, operation.durationSeconds),
+          draft: this.agentTextDraft({ ...DEFAULT_TEXT_DRAFT, revealSeconds: .7 }, operation.text, operation.draft, operation.durationSeconds),
           backgroundFile: null,
           backgroundUrl: null,
           replacementAudio: null,
@@ -12234,7 +12403,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           throw new EditorAgentError('The split must leave at least 0.2 seconds on both sides.', 'invalid_range');
         }
         this.splitClip(clip, sourceTime);
-        return;
+        return { clipId: this.clips[this.clips.indexOf(clip) + 1].id, originalClipId: clip.id };
       }
       case 'trim_clip': {
         const clip = this.agentMediaClip(operation.clipId);
@@ -12708,7 +12877,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     if (durationSeconds !== undefined) {
       const duration = finiteNumber(durationSeconds, 'durationSeconds');
       if (duration < 0.2 || duration > 120) throw new EditorAgentError('durationSeconds must be between 0.2 and 120.', 'invalid_arguments');
-      next.revealSeconds = Math.min(next.revealSeconds, duration);
+      // An explicit total shorter than the animation used to leave no readable hold.
+      next.revealSeconds = Math.min(next.revealSeconds, Math.max(0, duration - Math.min(duration, readingSeconds(next.text))));
       next.holdSeconds = Math.max(0, duration - next.revealSeconds);
       next.holdAuto = false;
     }
@@ -12989,7 +13159,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   private async agentAnalyzeSilence(args: Record<string, unknown>, signal?: AbortSignal, operationId = ''): Promise<unknown> {
-    const targets = args['clipId'] ? [this.agentMediaClip(args['clipId'])] : this.clips.filter(isMediaClip);
+    const targets = args['clipId'] ? [this.agentMediaClip(args['clipId'])] : this.clips.filter(isMediaClip)
+      .filter(clip => clip.summary.audioUsable && clip.summary.kind !== 'image' && !clip.awaitingFile);
     const revisionBefore = this.revision;
     this.pushAgentLog('action', `Analyzing ${targets.length} clip(s) with ${this.analysisLanes} bounded worker lane(s)`, 'analyze_silence', 'DEBUG');
     this.clearMessages();
@@ -13017,6 +13188,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       clipId: clip.id,
       sourceDuration: clip.summary.durationSeconds,
       silenceRanges: clip.detected,
+      clipBounds: clipBounds(clip),
+      scopedSilenceRanges: silenceInBounds(clip.detected, clipBounds(clip)),
+      statistics: silenceSummary(silenceInBounds(clip.detected, clipBounds(clip))),
+      cutSilenceEnabled: this.editsFor(clip).cutSilence,
+      appliedSilenceSeconds: this.editsFor(clip).cutSilence
+        ? appliedSilenceSeconds(silenceInBounds(clip.detected, clipBounds(clip)),
+          this.plan.clips.find(entry => entry.clip.id === clip.id)?.keepRanges ?? []) : 0,
+      nextStep: 'Detection alone does not enable cuts. Review scopedSilenceRanges using their original rangeIndex, set_clip_edits cutSilence:true, preserve meaningful pauses with set_detected_range, then verify get_timeline keepRanges and outputDuration.',
       waveform: clip.analysis ? {
         duration: clip.analysis.waveform.duration,
         secondsPerBucket: clip.analysis.waveform.secondsPerBucket,
@@ -13025,6 +13204,23 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         ...(includeWaveform ? this.agentWaveformValues(clip, offset, limit) : {})
       } : null
     })).map((result) => ({ ...result, revisionBefore, projectRevision: this.revision, mutatesProject: this.revision !== revisionBefore }));
+  }
+
+  private async agentAudioLevels(args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    const clip = this.agentMediaClip(args['clipId']);
+    if (!clip.file) throw new EditorAgentError('Relink this source before inspecting its audio.', 'media_unavailable');
+    const requestedStart = finiteNumber(args['start'], 'start');
+    const requestedEnd = finiteNumber(args['end'], 'end');
+    if (requestedStart < 0 || requestedEnd <= requestedStart) throw new EditorAgentError('Use 0 <= start < end in source seconds.', 'invalid_range');
+    // Source bounds, not container bounds: a split still needs four seconds of
+    // context from the adjacent container before its boundary is safe to cut.
+    const start = Math.min(clip.summary.durationSeconds, requestedStart);
+    const end = Math.min(clip.summary.durationSeconds, requestedEnd);
+    const interval = args['interval'] === undefined ? .2 : finiteNumber(args['interval'], 'interval');
+    const result = await readAgentAudioRange(clip.file, start, end, interval, args['includeAudio'] === true,
+      signal, percent => this.agentProgress('get_audio_levels', 'Inspecting source audio', percent));
+    return { clipId: clip.id, assetId: this.agentAssetId(clip), timeSpace: 'source',
+      requestedRange: { start: requestedStart, end: requestedEnd }, ...result };
   }
 
   private agentWaveformPage(args: Record<string, unknown>): unknown {
@@ -13147,21 +13343,26 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const entry = this.plan.clips.find((candidate) => candidate.clip.id === clip.id);
     if (!entry) throw new EditorAgentError('The clip is not present in the playable timeline.', 'not_found');
     const fullEntry = { ...entry, keepRanges: [{ start: 0, end: clip.summary.durationSeconds }] };
+    this.desktop.reportAgentProgress({ operationId: this.currentAgentOperationId,
+      state: 'processing', stage: 'preparing-audio', percent: null, clipId: clip.id, file: clip.summary.fileName });
     const controller = new AbortController();
     const cancel = () => controller.abort();
     outerSignal?.addEventListener('abort', cancel, { once: true });
-    // Older agents send 60s/120s, which interrupts a healthy Whisper run.
-    // Keep explicit longer budgets, but always allow at least ten minutes.
-    const timeoutMs = Math.max(10 * 60_000, Math.min(3_600_000, Number(args['timeoutMs']) || 10 * 60_000));
-    const stageTimeoutMs = Math.max(10 * 60_000, Math.min(3_600_000, Number(args['stageTimeoutMs']) || 10 * 60_000));
+    if (outerSignal?.aborted) controller.abort();
+    const timeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['timeoutMs']) || 30 * 60_000));
+    const stageTimeoutMs = Math.max(1000, Math.min(3_600_000, Number(args['stageTimeoutMs']) || 5 * 60_000));
+    this.agentTranscriptStallMs = stageTimeoutMs;
     let timedOut = false;
     const timer = setTimeout(() => { timedOut = true; controller.abort(); }, timeoutMs);
     let stageTimedOut = false;
     let timedOutStage = 'starting';
     let stageTimer: ReturnType<typeof setTimeout> | undefined;
-    const armStageTimeout = (stage: string): void => {
+    let lastProgressToken = '';
+    const armStageTimeout = (token: string): void => {
+      if (token === lastProgressToken) return;
+      lastProgressToken = token;
       if (stageTimer) clearTimeout(stageTimer);
-      timedOutStage = stage;
+      timedOutStage = token.split('|')[0];
       stageTimer = setTimeout(() => { stageTimedOut = true; controller.abort(); }, stageTimeoutMs);
     };
     this.agentTranscriptStageTimeout = armStageTimeout;
@@ -13169,7 +13370,11 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.lastAgentTranscriptStage = '';
     let words: Cue[];
     try {
-      words = await this.wordsFor(clip, fullEntry, controller.signal);
+      // Reject on abort even if a third-party promise never acknowledges it.
+      // This releases both the transcription queue and the MCP edit queue.
+      words = await transcriptionStep(() => this.wordsFor(clip, fullEntry, controller.signal), {
+        signal: controller.signal, stage: 'transcription', timeoutMs: timeoutMs + 1000
+      });
     } catch (error) {
       if (stageTimedOut) {
         throw new TranscriptionError(
@@ -13180,9 +13385,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       }
       if (timedOut) {
         throw new TranscriptionError(
-          `Transcription timed out after ${timeoutMs} ms during ${this.transcriptStage || 'audio preparation'}.`,
+          `Transcription timed out after ${timeoutMs} ms during ${timedOutStage}.`,
           'Increase timeoutMs or use a smaller model/shorter clip.',
-          { code: 'transcription_timeout', stage: this.transcriptStage || 'audio-preparation', cause: error }
+          { code: 'transcription_timeout', stage: timedOutStage, details: { timeoutMs }, cause: error }
         );
       }
       if (outerSignal?.aborted || controller.signal.aborted) throw new TranscriptionCanceled();
@@ -13191,6 +13396,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       clearTimeout(timer);
       if (stageTimer) clearTimeout(stageTimer);
       if (this.agentTranscriptStageTimeout === armStageTimeout) this.agentTranscriptStageTimeout = undefined;
+      this.agentTranscriptStallMs = undefined;
       outerSignal?.removeEventListener('abort', cancel);
     }
     return {
@@ -13199,19 +13405,51 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       timeSpace: 'source',
       language: this.transcriptLanguage || 'auto',
       model: this.transcriptModelId,
-      words,
+      ...(args['includeWords'] === false ? {
+        analysisBlocks: analysisBlocks(words, clipBounds(clip)).map(({ text, ...block }) => block)
+      } : { words, analysisBlocks: analysisBlocks(words, clipBounds(clip)),
+        segments: groupWords(words, DEFAULT_SHAPE.lineLength, DEFAULT_SHAPE.maxLines, DEFAULT_SHAPE.maxSeconds),
+        outputWords: placeWords(words, entry) }),
       quality: {
         wordCount: words.length,
         wordsPerMinute: clip.summary.durationSeconds > 0 ? Math.round(words.length * 60 / clip.summary.durationSeconds) : 0,
         reviewRecommended: words.length === 0 || (clip.summary.durationSeconds > 20 && words.length < 4),
         fallbackModel: 'onnx-community/whisper-large-v3-turbo_timestamped'
-      },
-      segments: groupWords(words, DEFAULT_SHAPE.lineLength, DEFAULT_SHAPE.maxLines, DEFAULT_SHAPE.maxSeconds),
-      outputWords: placeWords(words, entry)
+      }
     };
   }
 
   // ----------------------------------------------------------- video packaging
+
+  private cachedSourceTranscript(clip: MediaClip, start: number, end: number, matchOptions = true): Cue[] | undefined {
+    let prefix = `${clip.id}|${this.agentAssetId(clip)}|${clip.sourcePath ?? clip.fileRef?.path ?? ''}|`;
+    if (matchOptions) prefix += `${this.transcriptModelId}|${this.transcriptLanguage || 'auto'}|${
+      this.transcriptDenoise ? `${this.transcriptEngine}:${this.transcriptStrength.attenuationDb}` : 'raw'}|`;
+    return [...this.heardByClip.entries()].reverse().find(([key]) => {
+      if (!key.startsWith(prefix)) return false;
+      const scope = key.split('|').slice(-2).map(Number);
+      return scope[0] <= start && scope[1] >= end;
+    })?.[1];
+  }
+
+  private agentAnalysisBlocks(args: Record<string, unknown>): unknown {
+    const clip = this.agentMediaClip(args['clipId']);
+    const bounds = clipBounds(clip);
+    const cached = this.cachedSourceTranscript(clip, bounds.start, bounds.end, false);
+    if (clip.summary.audioUsable && !cached) {
+      throw new EditorAgentError('Transcribe this clip before semantic block analysis.', 'analysis_required');
+    }
+    const words = cached ?? [];
+    const blocks = analysisBlocks(words, bounds);
+    const index = args['blockIndex'] === undefined ? undefined : finiteNumber(args['blockIndex'], 'blockIndex');
+    const block = index === undefined ? undefined : blocks.find(item => item.index === index);
+    if (index !== undefined && !block) throw new EditorAgentError('Analysis block not found.', 'not_found');
+    return { clipId: clip.id, timeSpace: 'source', maxBlockSeconds: 300,
+      blocks: blocks.map(({ text, ...item }) => item),
+      ...(block ? { block, words: words.filter(word => (word.start + word.end) / 2 >= block.start &&
+        (word.start + word.end) / 2 < block.end), silenceRanges: silenceInBounds(clip.detected, block) } : {}),
+      nextStep: 'Review each block separately against its transcript and frames. Refine sentence/pause boundaries at topic changes; inspect both neighbouring blocks for continuity. Splitting is organisation, not removal of mistakes or silences.' };
+  }
 
   private packagingOutputFolder: string | null = null;
 
@@ -13261,12 +13499,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   private async writePackagingFile(folder: string, name: string, bytes: Uint8Array): Promise<string> {
     const target = joinPath(folder, name);
     const output = await this.desktop.openAgentOutput(target);
+    const writer = output.stream.getWriter();
     try {
-      await output.write(bytes);
-      await output.close();
+      await writer.write({ type: 'write', data: bytes, position: 0 });
+      await writer.close();
+      await output.commit();
     } catch (error) {
       await output.abort().catch(() => undefined);
       throw error;
+    } finally {
+      writer.releaseLock();
     }
     return target;
   }
@@ -13281,7 +13523,6 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    */
   private agentPackagingSources(): unknown {
     const media = this.clips.filter(isMediaClip);
-    const heard = [...this.heardByClip.keys()];
     let folder: string | null = null;
     try { folder = this.packagingFolder(); } catch { folder = null; }
 
@@ -13321,7 +13562,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         hasAudio: clip.summary.audioUsable === true,
         hasPicture: clip.summary.videoUsable === true || clip.summary.kind === 'image',
         isTimelapse: clip.summary.isTimelapse === true,
-        transcriptReady: heard.some((key) => key.startsWith(`${clip.id}|`)),
+        transcriptReady: this.cachedSourceTranscript(clip, 0, clip.summary.durationSeconds) !== undefined,
         // An analysis that found no pause is still an analysis.
         silenceAnalyzed: clip.analysis !== null || clip.analyzedWith !== null || clip.detected.length > 0,
         savedFrames: frames.filter((frame) => frame.clipId === clip.id).length
@@ -13418,6 +13659,44 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * be handed. The reader's own style when they loaded one, and otherwise the
    * one that ships with the editor.
    */
+  private async agentPreparePackagingBackground(args: Record<string, unknown>, signal: AbortSignal): Promise<unknown> {
+    if (signal.aborted) throw new EditorAgentError('Background preparation cancelled.', 'cancelled');
+    const sourceFramePath = stringValue(args['sourceFramePath'], 'sourceFramePath');
+    const frame = this.packaging.currentFrames().find(item => samePath(item.path, sourceFramePath));
+    if (!frame) throw new EditorAgentError('Use a current frame saved by save_frames.', 'invalid_arguments');
+    const requested: Partial<BackgroundAdjustments> = {};
+    for (const key of ['exposureStops', 'contrast', 'saturation'] as const) {
+      if (args[key] !== undefined) requested[key] = finiteNumber(args[key], key);
+    }
+    const [file] = await this.desktop.readAgentFiles([sourceFramePath]);
+    const bitmap = await imageBitmapForFile(file);
+    try {
+      const canvas = document.createElement('canvas');
+      canvas.width = bitmap.width;
+      canvas.height = bitmap.height;
+      const context = canvas.getContext('2d', { willReadFrequently: true });
+      if (!context) throw new EditorAgentError('Canvas is unavailable.', 'unsupported');
+      context.drawImage(bitmap, 0, 0);
+      const data = context.getImageData(0, 0, canvas.width, canvas.height);
+      const corrected = correctPackagingPixels(data.data, requested);
+      data.data.set(corrected.pixels);
+      context.putImageData(data, 0, 0);
+      const blob = await new Promise<Blob>((resolve, reject) => canvas.toBlob(result => result
+        ? resolve(result) : reject(new EditorAgentError('Could not encode the corrected background.', 'unsupported')), 'image/png'));
+      if (signal.aborted) throw new EditorAgentError('Background preparation cancelled.', 'cancelled');
+      if (!this.packaging.currentFrames().includes(frame)) throw new EditorAgentError('The edit changed; save the frame again.', 'revision_conflict');
+      const folder = joinPath(await this.ensurePackagingFolder(), 'backgrounds');
+      await this.desktop.ensureAgentFolder(folder);
+      const path = await this.writePackagingFile(folder, `${safeStem(file.name.replace(/\.[^.]+$/, ''))}-colour.png`,
+        new Uint8Array(await blob.arrayBuffer()));
+      this.packaging.recordPreparedBackground(sourceFramePath, path, corrected.adjustments);
+      return { path, sourceFramePath, sourceTimestamp: frame.outputTime, width: canvas.width, height: canvas.height,
+        adjustments: corrected.adjustments, medianLumaBefore: corrected.medianLuma,
+        method: 'deterministic-tonal-correction', geometryPreserved: true,
+        nextStep: 'Inspect this corrected background beside the source. Attach this path as the cover background with the active tag style; preserve people and scene geometry. Keep sourceFramePath and sourceTimestamp from this result in delivery metadata.' };
+    } finally { bitmap.close(); }
+  }
+
   private async agentPackagingTagStyle(): Promise<unknown> {
     // When the reader asked to be consulted, this is where the run pauses and
     // the picker comes up. Unanswered, it falls back to the saved style.
@@ -13427,8 +13706,19 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
     const blob = await this.packaging.tagStyleBytes();
     const bytes = new Uint8Array(await blob.arrayBuffer());
-    const name = `${safeStem(style.name.replace(/\.[^.]+$/, ''), 'tag-style')}.${extensionForMime(blob.type || 'image/png')}`;
+    const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+    const contentId = [...digest].map(value => value.toString(16).padStart(2, '0')).join('').slice(0, 16);
+    const assertStyleCurrent = () => {
+      const current = this.packaging.tagStyle();
+      if (current.id !== style.id || current.blob !== style.blob) {
+        throw new EditorAgentError('The active lettering changed while saving its reference. Read it again.', 'revision_conflict');
+      }
+    };
+    assertStyleCurrent();
+    // Custom references with the same name still get distinct provenance paths.
+    const name = `${safeStem(style.name.replace(/\.[^.]+$/, ''), 'tag-style')}-${contentId}.${extensionForMime(blob.type || 'image/png')}`;
     const path = await this.writePackagingFile(folder, name, bytes);
+    assertStyleCurrent();
     this.packaging.rememberTagStylePath(path);
 
     return {
@@ -13449,7 +13739,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const clip = this.agentMediaClip(args['clipId']);
     const start = args['start'] === undefined ? clip.inPoint ?? 0 : finiteNumber(args['start'], 'start');
     const end = args['end'] === undefined ? clip.outPoint ?? clip.summary.durationSeconds : finiteNumber(args['end'], 'end');
-    const interval = Math.max(0.25, args['interval'] === undefined ? 5 : finiteNumber(args['interval'], 'interval'));
+    const interval = Math.max(0.2, args['interval'] === undefined ? 5 : finiteNumber(args['interval'], 'interval'));
     if (end <= start) throw new EditorAgentError('end must be greater than start.', 'invalid_range');
     const timestamps: number[] = [];
     for (let at = start; at <= end && timestamps.length < 48; at += interval) timestamps.push(at);
@@ -13956,7 +14246,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         format,
         envelopes: this.buildEnvelopes(),
         destination: {
-          handle: handle as never,
+          // A real WritableStream in this renderer realm. Passing the IPC
+          // facade itself used to fail Mediabunny's nominal instance check.
+          handle: handle.stream,
           fileName: path.split(/[\\/]/).pop() ?? `edited.${format.extension}`,
           filePath: path
         },
@@ -13983,6 +14275,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           this.cdr.markForCheck();
         }
       });
+      // Mediabunny closing the stream only drains queued chunks. Publish the
+      // staged file after a successful finalize, never on cancel or failure.
+      await handle.commit();
       return { path, kind, duration: result.plan.totalDuration, partial: result.partial };
     } catch (error) {
       await handle?.abort().catch(() => undefined);
@@ -14297,6 +14592,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   // timeline changes rather than on every pass of change detection: a project
   // of thirty clips would otherwise re-plan every zoom several times a second.
   private revision = 0;
+  /** Changes when the active document is replaced, not when an edit advances its revision. */
+  private projectInstanceId = 0;
   private planRevision = -1;
   private planCache: ProjectPlan | null = null;
   /** The same edit planned with the silence left in, cached the same way. */

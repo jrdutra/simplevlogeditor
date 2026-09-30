@@ -49,7 +49,7 @@ export class SubjectEffectPreview {
     clipId: string, time: number, onReady: () => void): { source: FrameSource; mask: SubjectMask | null } | null {
     if (this.disposed) return null;
     const identity = `${clipId}:${width}x${height}:${fill}`;
-    if (identity !== this.identity || time < this.lastTime - .02 || time - this.lastTime > .5) {
+    if (identity !== this.identity || time < this.lastTime - .02 || time - this.lastTime > .2) {
       this.reset(); this.identity = identity;
     }
     this.lastTime = time;

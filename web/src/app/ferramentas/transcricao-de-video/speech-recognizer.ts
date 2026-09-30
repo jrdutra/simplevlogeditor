@@ -1,5 +1,6 @@
 import { loadMediabunny } from '../../services/mediabunny/mediabunny-loader';
-import { TranscriptionProgress, WHISPER_SAMPLE_RATE } from './transcription.models';
+import { TranscriptionProgress, TranscriptionStage, WHISPER_SAMPLE_RATE } from './transcription.models';
+import { transcriptionSamples, transcriptionStep } from './transcription-lifecycle';
 import { TranscriptionCanceled, TranscriptionError } from './transcription-errors';
 export { TranscriptionCanceled, TranscriptionError } from './transcription-errors';
 export { splitOnQuiet } from './speech-windowing';
@@ -58,16 +59,28 @@ export function downmix(input: Float32Array, channels: number): Float32Array {
 export async function readSpeechAudio(
   file: File,
   onProgress: (report: TranscriptionProgress) => void,
-  signal: AbortSignal
+  signal: AbortSignal,
+  options: { readTimeoutMs?: number } = {}
 ): Promise<Float32Array> {
   let stage = 'loading-decoder';
   let input: InstanceType<(Awaited<ReturnType<typeof loadMediabunny>>)['Input']> | null = null;
+  const timeoutMs = options.readTimeoutMs ?? 60_000;
+  const stop = () => input?.dispose();
+  const announce = (next: TranscriptionStage, detail = file.name) => {
+    stage = next;
+    if (signal.aborted) throw new TranscriptionCanceled();
+    onProgress({ stage: next, ratio: null, detail });
+  };
+  const wait = <T>(task: () => Promise<T>) => transcriptionStep(task, { signal, stage, timeoutMs, stop });
 
   try {
-    const library = await loadMediabunny();
-    input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
-    stage = 'probing-audio-track';
-    const track = await input.getPrimaryAudioTrack();
+    announce('loading-decoder');
+    const library = await wait(() => loadMediabunny());
+    // Decode seeks among ten-second ranges. Complete each HTTP byte read;
+    // a retained Blob stream must not occupy a local connection while idle.
+    input = new library.Input({ source: new library.BlobSource(file, { useStreamReader: false }), formats: library.ALL_FORMATS });
+    announce('probing-audio-track');
+    const track = await wait(() => input!.getPrimaryAudioTrack());
     if (!track) {
       throw new TranscriptionError(
         'This file has no sound in it.',
@@ -79,16 +92,18 @@ export async function readSpeechAudio(
     // it. Firefox has no AAC on some systems, and a Chromium build without the
     // proprietary codecs has neither AAC nor H.264 — asking first turns the
     // library's internal complaint into an answer the reader can act on.
-    stage = 'checking-codec-support';
-    if (!(await track.canDecode())) {
+    announce('checking-codec-support');
+    if (!(await wait(() => track.canDecode()))) {
       throw new TranscriptionError(
         `This browser has no decoder for the recording's audio (${track.codec ?? 'unknown codec'}).`,
         'Convert it first — the Video Editor exports WAV, and a WebM or Opus file is decoded everywhere.'
       );
     }
 
-    stage = 'reading-media-duration';
-    const seconds = await input.computeDuration();
+    announce('reading-media-duration');
+    // Video duration may require scanning video packets. Whisper only needs
+    // the audio clock, so probing must not decode/scan the picture track.
+    const seconds = await wait(() => track.computeDuration());
     if (seconds > MAX_MINUTES * 60) {
       throw new TranscriptionError(
         `This recording is ${Math.round(seconds / 60)} minutes long, and the limit is ${MAX_MINUTES}.`,
@@ -100,7 +115,8 @@ export async function readSpeechAudio(
       throw new TranscriptionError('The recording has no valid duration.', 'Try exporting it as WAV or MP4.');
     }
     const trackWithRate = track as typeof track & { sampleRate?: number; getSampleRate?: () => Promise<number> };
-    const rate = await audioTrackSampleRate(trackWithRate);
+    announce('reading-sample-rate');
+    const rate = await wait(() => audioTrackSampleRate(trackWithRate));
     if (!Number.isFinite(rate) || rate <= 0) throw new TranscriptionError('Invalid audio sample rate.');
     const decoded = new Float32Array(Math.ceil(seconds * WHISPER_SAMPLE_RATE));
     const sink = new library.AudioSampleSink(track);
@@ -108,13 +124,14 @@ export async function readSpeechAudio(
     // Resample bounded blocks with 50 ms of filter context. Sample timestamps
     // preserve initial delays and gaps instead of shifting captions earlier.
     stage = `decoding-${String(track.codec || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}-audio`;
+    onProgress({ stage: 'reading', ratio: 0, detail: `${file.name} (${track.codec ?? 'audio'})` });
     for (let start = 0; start < seconds; start += 10) {
       if (signal.aborted) throw new TranscriptionCanceled();
       const end = Math.min(seconds, start + 10);
       const from = Math.max(0, start - 0.05);
       const until = Math.min(seconds, end + 0.05);
       const mono = new Float32Array(Math.ceil((until - from) * rate));
-      for await (const sample of sink.samples(from, until)) {
+      for await (const sample of transcriptionSamples(sink.samples(from, until), { signal, stage, timeoutMs, stop })) {
         try {
           if (signal.aborted) throw new TranscriptionCanceled();
           if (sample.sampleRate !== rate) throw new TranscriptionError('Changing sample rates are not supported.');
@@ -128,17 +145,20 @@ export async function readSpeechAudio(
           frames += Math.max(0, count);
         } finally { sample.close(); }
       }
-      const converted = rate === WHISPER_SAMPLE_RATE ? mono : await resample(mono, rate);
+      if (rate !== WHISPER_SAMPLE_RATE) announce('resampling', `${file.name}: ${start.toFixed(1)}–${end.toFixed(1)}s`);
+      const converted = rate === WHISPER_SAMPLE_RATE ? mono : await wait(() => resample(mono, rate));
       if (signal.aborted) throw new TranscriptionCanceled();
       const skip = Math.round((start - from) * WHISPER_SAMPLE_RATE);
       const offset = Math.round(start * WHISPER_SAMPLE_RATE);
       const count = Math.min(Math.round((end - start) * WHISPER_SAMPLE_RATE), decoded.length - offset);
       decoded.set(converted.subarray(skip, skip + count), offset);
       onProgress({ stage: 'reading', ratio: end / seconds, detail: file.name });
+      stage = `decoding-${String(track.codec || 'unknown').toLowerCase().replace(/[^a-z0-9_-]+/g, '-')}-audio`;
     }
     if (!frames) throw new TranscriptionError('No audio samples could be decoded.');
     return decoded;
   } catch (error) {
+    if (signal.aborted) throw new TranscriptionCanceled();
     if (error instanceof TranscriptionCanceled || error instanceof TranscriptionError) throw error;
     const original = error instanceof Error ? error.message : String(error);
     throw new TranscriptionError(

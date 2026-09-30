@@ -1,10 +1,10 @@
 {
   "name": "simple-vlog-editor-ai-plugins",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "private": true,
   "description": "The Claude Code and Codex plugins for SimpleVlogEditor, their tests. Both find the SimpleVlogEditor installed on the computer.",
   "scripts": {
-    "test": "node --test tests/launcher.test.mjs"
+    "test": "node --test tests/launcher.test.mjs tests/workflow-contract.test.mjs tests/media-stream.test.mjs tests/frame-decoder.test.mjs"
   },
   "engines": {
     "node": ">=18"

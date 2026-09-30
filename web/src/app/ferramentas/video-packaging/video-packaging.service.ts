@@ -11,6 +11,7 @@ import {
 import { DEFAULT_TAG_STYLE_ID, TagStyleOption, tagStyleOf, TAG_STYLES } from './video-packaging-styles';
 import { readPackagingImage } from './packaging-image';
 import { samePath } from './packaging-paths';
+import { BackgroundAdjustments } from './packaging-colour';
 
 export interface ThumbnailResult {
   id: number;
@@ -20,6 +21,11 @@ export interface ThumbnailResult {
   fileName: string | null;
   sourceTimestamp: number | null;
   sourceFramePath: string | null;
+  tagStyleId: string | null;
+  tagStyleReferencePath: string | null;
+  letteringMethod: 'generated' | 'deterministic-overlay' | null;
+  styleVerification: string | null;
+  preparedBackgroundPath: string | null;
 }
 
 export interface VideoPackagingInput {
@@ -28,6 +34,11 @@ export interface VideoPackagingInput {
     altText?: string;
     sourceTimestamp?: number;
     sourceFramePath?: string;
+    preparedBackgroundPath?: string;
+    tagStyleId?: string;
+    tagStyleReferencePath?: string;
+    letteringMethod?: 'generated' | 'deterministic-overlay';
+    styleVerification?: { checked?: boolean; notes?: string };
   }[];
   titles?: readonly string[];
   description?: string;
@@ -71,6 +82,7 @@ export interface PackagingFrame {
   composited: true;
   /** The edit this frame was composed from. See `editFingerprint`. */
   editFingerprint: string;
+  preparedBackground?: { path: string; adjustments: BackgroundAdjustments };
 }
 
 /** The lettering in use: one of the sheets that ship with the editor, or the reader's own. */
@@ -105,6 +117,11 @@ export class VideoPackagingService {
     altText: string;
     sourceTimestamp: number | null;
     sourceFramePath: string | null;
+    preparedBackgroundPath: string | null;
+    tagStyleId: string | null;
+    tagStyleReferencePath: string | null;
+    letteringMethod: 'generated' | 'deterministic-overlay' | null;
+    styleVerification: string | null;
     width: number;
     height: number;
   }[]>([]);
@@ -123,6 +140,7 @@ export class VideoPackagingService {
    * longer contains.
    */
   private fingerprintProvider: (() => string) | null = null;
+  private textWriter: ((text: string) => Promise<unknown>) | null = null;
 
   // -------------------------------------------------------------- the lettering
 
@@ -148,7 +166,12 @@ export class VideoPackagingService {
       image: image?.blob ?? null,
       fileName: image?.fileName ?? null,
       sourceTimestamp: image?.sourceTimestamp ?? null,
-      sourceFramePath: image?.sourceFramePath ?? null
+      sourceFramePath: image?.sourceFramePath ?? null,
+      preparedBackgroundPath: image?.preparedBackgroundPath ?? null,
+      tagStyleId: image?.tagStyleId ?? null,
+      tagStyleReferencePath: image?.tagStyleReferencePath ?? null,
+      letteringMethod: image?.letteringMethod ?? null,
+      styleVerification: image?.styleVerification ?? null
     };
   }));
   readonly description = computed(() => this.descriptionValue() || EMPTY_DESCRIPTION);
@@ -207,6 +230,11 @@ export class VideoPackagingService {
     return () => {
       if (this.fingerprintProvider === provider) this.fingerprintProvider = null;
     };
+  }
+
+  registerTextWriter(writer: (text: string) => Promise<unknown>): () => void {
+    this.textWriter = writer;
+    return () => { if (this.textWriter === writer) this.textWriter = null; };
   }
 
   /** Null when no editor is open to say what the edit is. */
@@ -415,6 +443,13 @@ export class VideoPackagingService {
     if (input.description !== undefined) this.setDescription(input.description);
     if (input.tags !== undefined) this.setTags(input.tags);
 
+    if (this.desktop.isDesktop && this.titles().length === 3 && this.descriptionValue() && this.tagsValue().length) {
+      if (!this.textWriter) throw this.invalid('Open the video editor to save the Video Packaging text in the project folder.');
+      const titles = this.titles().map(title => title.replace(/[\r\n]+/g, ' ')).join('\n');
+      const text = `${titles}\n\n${this.descriptionValue()}\n\n${this.tagsValue().join(', ')}\n`;
+      await this.textWriter(text.replace(/\r\n?|\n/g, '\r\n'));
+    }
+
     return this.summary();
   }
 
@@ -423,12 +458,22 @@ export class VideoPackagingService {
     altText?: string;
     sourceTimestamp?: number;
     sourceFramePath?: string;
+    preparedBackgroundPath?: string;
+    tagStyleId?: string;
+    tagStyleReferencePath?: string;
+    letteringMethod?: 'generated' | 'deterministic-overlay';
+    styleVerification?: { checked?: boolean; notes?: string };
   }[]): Promise<void> {
     if (!Array.isArray(thumbnails) || thumbnails.length > 3) {
       throw this.invalid('thumbnails must contain at most three image paths.');
     }
     const paths = thumbnails.map((entry, index) => this.text(entry?.path, `thumbnails[${index}].path`, 32_768));
     const current = this.currentFrames();
+    const fingerprint = this.currentEditFingerprint();
+    const activeStyle = this.tagStyle();
+    if (!activeStyle.path) {
+      throw this.invalid('Read the active lettering with get_packaging_tag_style immediately before generating the covers.');
+    }
     for (const [index, entry] of thumbnails.entries()) {
       const at = this.seconds(entry.sourceTimestamp, `thumbnails[${index}].sourceTimestamp`);
       const source = this.text(entry.sourceFramePath, `thumbnails[${index}].sourceFramePath`, 32_768);
@@ -442,9 +487,36 @@ export class VideoPackagingService {
       if (Math.abs(saved.outputTime - at) > 0.05) {
         throw this.invalid(`Thumbnail ${index + 1}: sourceTimestamp must be that frame's outputTime (${saved.outputTime}s on the finished video), not ${at}s.`);
       }
+      if (entry.preparedBackgroundPath !== undefined && (!saved.preparedBackground ||
+          !samePath(entry.preparedBackgroundPath, saved.preparedBackground.path))) {
+        throw this.invalid(`Thumbnail ${index + 1} must use the corrected background returned by prepare_packaging_background for this frame.`);
+      }
+      const styleId = this.text(entry.tagStyleId, `thumbnails[${index}].tagStyleId`, 120);
+      const reference = this.text(entry.tagStyleReferencePath, `thumbnails[${index}].tagStyleReferencePath`, 32_768);
+      if (styleId !== activeStyle.id || !samePath(reference, activeStyle.path)) {
+        throw this.invalid(
+          `Thumbnail ${index + 1} was not generated from the active lettering style. Read it again with get_packaging_tag_style and regenerate this cover.`
+        );
+      }
+      if (!['generated', 'deterministic-overlay'].includes(String(entry.letteringMethod ?? ''))) {
+        throw this.invalid(`thumbnails[${index}].letteringMethod must be generated or deterministic-overlay.`);
+      }
+      const verification = entry.styleVerification;
+      if (!verification || verification.checked !== true) {
+        throw this.invalid(`Thumbnail ${index + 1} needs a visual style check before delivery.`);
+      }
+      this.text(verification.notes, `thumbnails[${index}].styleVerification.notes`, 2_000);
     }
     const files = paths.length ? await this.desktop.readAgentFiles(paths) : [];
-    await this.setThumbnailFiles(files, thumbnails);
+    const assertCurrent = () => {
+      const style = this.tagStyle();
+      if (style.id !== activeStyle.id || style.blob !== activeStyle.blob || !style.path || !samePath(style.path, activeStyle.path!) ||
+          (this.currentEditFingerprint() !== fingerprint && thumbnails.length > 0)) {
+        throw this.invalid('The edit or lettering changed while loading the covers. Save current frames and regenerate the covers.');
+      }
+    };
+    assertCurrent();
+    await this.setThumbnailFiles(files, thumbnails, assertCurrent);
   }
 
   /**
@@ -462,7 +534,13 @@ export class VideoPackagingService {
       altText?: string;
       sourceTimestamp?: number;
       sourceFramePath?: string;
-    }[] = []
+      preparedBackgroundPath?: string;
+      tagStyleId?: string;
+      tagStyleReferencePath?: string;
+      letteringMethod?: 'generated' | 'deterministic-overlay';
+      styleVerification?: { checked?: boolean; notes?: string };
+    }[] = [],
+    beforeCommit?: () => void
   ): Promise<void> {
     if (!Array.isArray(files) || files.length > 3) {
       throw this.invalid('files must contain at most three images.');
@@ -470,6 +548,9 @@ export class VideoPackagingService {
     const prepared = await Promise.all(files.map(async (file, index) => {
       const { blob, width, height } = await readPackagingImage(file);
       const item = metadata[index] ?? {};
+      if (item.sourceFramePath && Math.abs(width / height - 16 / 9) > .02) {
+        throw this.invalid('Generated YouTube thumbnails must be 16:9. Preserve the supplied picture inside that canvas.');
+      }
       return {
         blob,
         width,
@@ -481,10 +562,21 @@ export class VideoPackagingService {
           : this.seconds(item.sourceTimestamp, `thumbnails[${index}].sourceTimestamp`),
         sourceFramePath: item.sourceFramePath === undefined
           ? null
-          : this.text(item.sourceFramePath, `thumbnails[${index}].sourceFramePath`, 32_768)
+          : this.text(item.sourceFramePath, `thumbnails[${index}].sourceFramePath`, 32_768),
+        preparedBackgroundPath: item.preparedBackgroundPath === undefined ? null :
+          this.text(item.preparedBackgroundPath, `thumbnails[${index}].preparedBackgroundPath`, 32_768),
+        tagStyleId: item.tagStyleId === undefined
+          ? null
+          : this.text(item.tagStyleId, `thumbnails[${index}].tagStyleId`, 120),
+        tagStyleReferencePath: item.tagStyleReferencePath === undefined
+          ? null
+          : this.text(item.tagStyleReferencePath, `thumbnails[${index}].tagStyleReferencePath`, 32_768),
+        letteringMethod: item.letteringMethod ?? null,
+        styleVerification: item.styleVerification?.notes?.trim() || null
       };
     }));
 
+    beforeCommit?.();
     for (const current of this.images()) URL.revokeObjectURL(current.url);
     this.images.set(prepared.map(image => ({ ...image, url: URL.createObjectURL(image.blob) })));
   }
@@ -562,6 +654,12 @@ export class VideoPackagingService {
     this.framesValue.set([...kept.values()].slice(-64));
   }
 
+  recordPreparedBackground(sourcePath: string, path: string, adjustments: BackgroundAdjustments): void {
+    const frame = this.currentFrames().find(item => samePath(item.path, sourcePath));
+    if (!frame) throw this.invalid('The edit changed while preparing the background. Save the frame again.');
+    this.recordFrames([{ ...frame, preparedBackground: { path, adjustments } }]);
+  }
+
   clearFrames(): void {
     this.framesValue.set([]);
   }
@@ -609,7 +707,12 @@ export class VideoPackagingService {
         height: image.height,
         decoded: true,
         sourceTimestamp: image.sourceTimestamp,
-        sourceFramePath: image.sourceFramePath
+        sourceFramePath: image.sourceFramePath,
+        tagStyleId: image.tagStyleId,
+        tagStyleReferencePath: image.tagStyleReferencePath,
+        letteringMethod: image.letteringMethod,
+        styleVerification: image.styleVerification,
+        preparedBackgroundPath: image.preparedBackgroundPath
       })),
       titles: [...this.titles()],
       description: this.descriptionValue(),
