@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.app.json",
+  "compilerOptions": {
+    "outDir": "./out-tsc/mobile"
+  },
+  "files": ["src/main.mobile.ts"]
+}

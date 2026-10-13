@@ -1,0 +1,48 @@
+plugins {
+    id 'com.android.application'
+}
+
+def webDirectory = file('../../web')
+def webPackage = new groovy.json.JsonSlurper().parse(file('../../web/package.json'))
+
+android {
+    namespace 'com.simplevlogeditor.mobile'
+    compileSdk 36
+
+    defaultConfig {
+        applicationId 'com.simplevlogeditor.mobile'
+        minSdk 26
+        targetSdk 36
+        versionCode 1
+        versionName webPackage.version
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.assets.srcDir layout.buildDirectory.dir('generated/assets/mobile')
+    androidResources {
+        noCompress 'wasm', 'onnx', 'bin'
+    }
+}
+
+dependencies {
+    implementation 'androidx.activity:activity:1.11.0'
+    implementation 'androidx.webkit:webkit:1.14.0'
+}
+
+// A fresh Angular build is embedded automatically by Android Studio and Gradle.
+def prepareWeb = tasks.register('prepareWeb', Exec) {
+    workingDir rootProject.projectDir
+    commandLine providers.gradleProperty('nodeBinary').getOrElse('node'), 'scripts/prepare-web.mjs'
+    inputs.dir(new File(webDirectory, 'src'))
+    inputs.files(new File(webDirectory, 'angular.json'), new File(webDirectory, 'package.json'),
+        new File(webDirectory, 'package-lock.json'))
+    inputs.files(fileTree(webDirectory) { include 'tsconfig*.json' })
+    inputs.dir(rootProject.file('scripts'))
+    outputs.dir(layout.buildDirectory.dir('generated/assets/mobile'))
+}
+tasks.named('preBuild').configure { dependsOn prepareWeb }
