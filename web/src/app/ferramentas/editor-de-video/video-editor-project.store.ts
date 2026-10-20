@@ -129,6 +129,7 @@ export interface StoredClipImage {
 
 export interface StoredMediaClip {
   kind: 'media';
+  blurLicensePlates?: boolean;
   id: string;
   file: StoredFileRef;
   summary: MediaSummary;
@@ -318,6 +319,7 @@ export function serializeProject(
             // it was restored with is the one that has to survive.
             file: clip.awaitingFile && clip.fileRef ? clip.fileRef : refOf(clip.file, clip.sourcePath || clip.fileRef?.path),
             summary: { ...clip.summary },
+            blurLicensePlates: clip.summary.kind === 'video' && clip.blurLicensePlates === true,
             overrides: clip.overrides ? cloneEdits(clip.overrides) : null,
             detected: clip.detected.map((range) => ({ ...range })),
             manualCuts: clip.manualCuts.map((range) => ({ ...range })),
@@ -421,6 +423,7 @@ export function restoreProject(stored: StoredProject): RestoredProject {
           ...(clip.file.path ? { sourcePath: clip.file.path } : {}),
           awaitingFile: true,
           summary: { ...clip.summary },
+          blurLicensePlates: clip.summary.kind === 'video' && clip.blurLicensePlates === true,
           info: null,
           overrides: clip.overrides ? cloneEdits(clip.overrides) : null,
           detected: clip.detected.map((range) => ({ ...range })),

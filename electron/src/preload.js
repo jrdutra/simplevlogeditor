@@ -67,6 +67,9 @@ contextBridge.exposeInMainWorld('desktop', {
 
   /** The state right now, for the first paint. */
   getState: () => ipcRenderer.invoke('window:state'),
+  getUpdateNotice: () => ipcRenderer.invoke('updates:get'),
+  dismissUpdateNotice: () => ipcRenderer.invoke('updates:dismiss'),
+  openUpdatePage: () => ipcRenderer.invoke('updates:open'),
 
   /** Every state change from here on. Returns the unsubscribe. */
   onState: (listener) => {

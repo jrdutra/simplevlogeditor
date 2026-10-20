@@ -45,7 +45,11 @@ import type { ClipNoiseSettings } from './clip-noise';
 })
 export class ClipEditsPanelComponent {
   @Input({ required: true }) edits!: ClipEdits;
+  /** Editable values before timeline-derived fades; never persist the derived copy. */
+  @Input() storedEdits: ClipEdits | null = null;
   @Input() disabled = false;
+  @Input() automaticFadeIn = false;
+  @Input() automaticFadeOut = false;
   /** Prefix for the field ids, so two panels on one page stay distinct. */
   @Input() id = 'edits';
   /** Hidden for a text card, which has no source to cut. */
@@ -118,7 +122,7 @@ export class ClipEditsPanelComponent {
   }
 
   patch(change: Partial<ClipEdits>): void {
-    this.editsChange.emit(cloneEdits({ ...this.edits, ...change }));
+    this.editsChange.emit(cloneEdits({ ...(this.storedEdits ?? this.edits), ...change }));
   }
 
   onSpeed(value: string | number): void {

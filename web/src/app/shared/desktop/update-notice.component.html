@@ -1,0 +1,30 @@
+<dialog #dialog class="update-modal" aria-labelledby="update-notice-title" aria-describedby="update-notice-description" (cancel)="dismiss($event)">
+  @if (notice(); as update) {
+    <header class="update-modal__header">
+      <span class="update-modal__icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M4 15v5h16v-5" /></svg></span>
+      <div>
+        <p class="update-modal__eyebrow">SimpleVlogEditor</p>
+        <h2 id="update-notice-title">A new version is available</h2>
+      </div>
+      <button class="update-modal__close" type="button" aria-label="Close update notice" (click)="dismiss()">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" /></svg>
+      </button>
+    </header>
+    <div class="update-modal__body">
+      <p id="update-notice-description">A newer version of the editor is ready to download. You can update now or continue editing and update later.</p>
+      <dl class="update-modal__versions">
+        <div><dt>Installed version</dt><dd>v{{ update.installed }}</dd></div>
+        <div class="update-modal__latest"><dt>Latest version</dt><dd>v{{ update.published }}</dd></div>
+      </dl>
+      <p class="update-modal__hint">Keep the editor and your AI plugins up to date together.</p>
+      @if (error()) { <p class="update-modal__error" role="alert">{{ error() }}</p> }
+    </div>
+    <footer class="update-modal__actions">
+      <button type="button" class="update-modal__later" (click)="dismiss()">Later</button>
+      <button type="button" class="update-modal__download" autofocus [disabled]="opening()" (click)="openDownload()">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3h7v7m0-7L10 14m0-10H4v16h16v-6" /></svg>
+        {{ opening() ? 'Opening…' : 'Open download page' }}
+      </button>
+    </footer>
+  }
+</dialog>

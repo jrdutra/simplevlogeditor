@@ -25,6 +25,9 @@ import { activeNoiseAudio } from './clip-noise';
 import { createRenderInput, readRenderAudio } from './render-media';
 import { imageBehindSubject, imagesAt, loadPlanImages } from './clip-image';
 import { EMPTY_SIDE, FootageSide, SceneSide, StillSide, TransitionSide } from './transition-sides';
+import { JoinSoundMix, JoinSoundRouter } from './transition-audio';
+import { applyPlateFrameFade, freezePlateSource, LicensePlateBlurClient, PlateBlurError, plateDetectionPlan } from './license-plate-blur';
+import { clipBlursLicensePlates, hasLicensePlateBlur } from './license-plate-scope';
 import {
   CaptionSegment,
   ClipPlan,
@@ -436,6 +439,7 @@ export class VideoEditorRenderService {
     // Full analysis resolution, always: the preview may trade detail for a
     // clock, the file the reader keeps may not.
     const subjectSegmentation = new SubjectSegmentationClient({ adaptive: false });
+    const plateBlur = kind === 'video' && hasLicensePlateBlur(plan) ? new LicensePlateBlurClient() : null;
 
     // Cache parsed headers across split clips. These inputs use bounded reads:
     // retaining an input must not retain an idle HTTP stream in Electron.
@@ -448,7 +452,7 @@ export class VideoEditorRenderService {
       return created;
     };
     const effectContexts = new Set<FrameContext>();
-    const cancelSegmentation = () => subjectSegmentation.dispose();
+    const cancelSegmentation = () => { subjectSegmentation.dispose(); plateBlur?.dispose(); };
     signal.addEventListener('abort', cancelSegmentation, { once: true });
 
     try {
@@ -471,7 +475,7 @@ export class VideoEditorRenderService {
                 // Normalising the rate as well is what lets a still picture be
                 // written as one frame per second: the gaps are padded for us.
                 frameRate: plan.frameRate,
-                process: this.videoProcessor(plan, subjectSegmentation, signal, effectContexts, this.sectionAnnouncer(plan, log), composing)
+                process: this.videoProcessor(plan, subjectSegmentation, signal, effectContexts, this.sectionAnnouncer(plan, log), composing, plateBlur)
               }
             })
           : null;
@@ -516,10 +520,26 @@ export class VideoEditorRenderService {
       const soundEnds = new Map<number, number>();
       const soundStarts = new Map<number, number>();
 
+      /**
+       * The joins whose two sounds are heard together. Both clips' sound runs
+       * across the whole join; the part inside it is caught on its way to the
+       * encoder and written once, as a crossfade (see `transition-audio.ts`).
+       */
+      const mixInto = new Map<number, JoinSoundMix>();
+      const mixFrom = new Map<number, JoinSoundMix>();
+
       for (const join of plan.transitions) {
         stops.set(join.fromIndex, join.start);
-        soundEnds.set(join.fromIndex, join.soundSwitch);
-        soundStarts.set(join.toIndex, join.soundSwitch);
+        if (join.mixSound) {
+          const mix = new JoinSoundMix(join.start, join.end, plan.sampleRate, plan.channelCount);
+          mixInto.set(join.fromIndex, mix);
+          mixFrom.set(join.toIndex, mix);
+          soundEnds.set(join.fromIndex, join.end);
+          soundStarts.set(join.toIndex, join.start);
+        } else {
+          soundEnds.set(join.fromIndex, join.soundSwitch);
+          soundStarts.set(join.toIndex, join.soundSwitch);
+        }
       }
 
       const painter = new TransitionPainter();
@@ -565,6 +585,12 @@ export class VideoEditorRenderService {
         // refuses. Skipping it is the only thing that can be meant by it.
         if (entry.outputDuration <= EPSILON) {
           log('detail', 'nothing left after the cuts — skipped');
+          const orphan = mixFrom.get(index);
+          if (orphan) {
+            const router = new JoinSoundRouter(library, audioSource, cursor.audio, orphan, null);
+            await router.finish();
+            cursor.audio = router.last;
+          }
           continue;
         }
 
@@ -580,10 +606,22 @@ export class VideoEditorRenderService {
         };
 
         try {
+          const fromPrevious = mixFrom.get(index) ?? null;
+          const intoNext = mixInto.get(index) ?? null;
+          const router = fromPrevious || intoNext
+            ? new JoinSoundRouter(library, audioSource, cursor.audio, fromPrevious, intoNext)
+            : null;
+          const clipAudio = router ? router.source : audioSource;
           if (isMediaClip(entry.clip)) {
-            await this.writeMediaClip(library, entry, entry.clip, plan, options, videoSource, audioSource, cursor, tick, pictureEnd, sound, trace, openInput);
+            await this.writeMediaClip(library, entry, entry.clip, plan, options, videoSource, clipAudio, cursor, tick, pictureEnd, sound, trace, openInput);
           } else {
-            await this.writeTextClip(library, entry, entry.clip, plan, videoSource, audioSource, cursor, signal, tick, pictureEnd, sound);
+            await this.writeTextClip(library, entry, entry.clip, plan, videoSource, clipAudio, cursor, signal, tick, pictureEnd, sound);
+          }
+          if (router) {
+            // The writers count the held part of the join as written; the
+            // encoder's own position is the router's.
+            await router.finish();
+            cursor.audio = router.last;
           }
 
           const join = plan.transitions.find((candidate) => candidate.fromIndex === index);
@@ -605,7 +643,8 @@ export class VideoEditorRenderService {
                 cursor.video,
                 signal,
                 tick,
-                subjectSegmentation
+                subjectSegmentation,
+                plateBlur
               );
             }
           }
@@ -666,6 +705,7 @@ export class VideoEditorRenderService {
       for (const reader of readers.values()) reader.dispose();
       readers.clear();
       subjectSegmentation.dispose();
+      plateBlur?.dispose();
       effectContexts.forEach(disposeFrameEffects);
     }
   }
@@ -1719,7 +1759,8 @@ export class VideoEditorRenderService {
     lastTimestamp: number,
     signal: AbortSignal,
     tick: (seconds: number) => void,
-    subjectSegmentation: SubjectSegmentationClient
+    subjectSegmentation: SubjectSegmentationClient,
+    plateBlur: LicensePlateBlurClient | null = null
   ): Promise<number> {
     const canvas = canvasOfSize(plan.width, plan.height);
     const context = canvas.getContext('2d', { alpha: false }) as FrameContext | null;
@@ -1741,7 +1782,17 @@ export class VideoEditorRenderService {
         const timestamp = join.start + frame * step;
         if (timestamp <= last) continue;
 
-        const outFrame = await outgoing.frameAt(timestamp), inFrame = await incoming.frameAt(timestamp);
+        let outFrame = await outgoing.frameAt(timestamp), inFrame = await incoming.frameAt(timestamp);
+        const protectSide = async (source: FrameSource | null, entry: ClipPlan): Promise<FrameSource | null> => {
+          if (!clipBlursLicensePlates(entry.clip) || !source) return source;
+          if (!plateBlur) throw new PlateBlurError('The transition detector was not initialized.');
+          const frozen = freezePlateSource(source, Math.max(plan.width, plan.height))!;
+          await plateBlur.redact(frozen.context, `${entry.clip.id}:${sourceTimeAt(entry, timestamp).rangeIndex}`,
+            timestamp, signal);
+          return frozen;
+        };
+        outFrame = await protectSide(outFrame, from);
+        inFrame = await protectSide(inFrame, to);
         const maskFor = async (entry: ClipPlan, source: FrameSource | null) => {
           if (!source || !isMediaClip(entry.clip) ||
               !effectNeedsSubject(videoEffectSectionAt(plan.videoEffects, timestamp, entry.clip.id)?.effect ?? null)) return null;
@@ -2103,7 +2154,8 @@ export class VideoEditorRenderService {
     effectContexts: Set<FrameContext>,
     announce: (time: number) => void,
     /** Where the time spent drawing is added up, for the log to tell them apart. */
-    composing: { ms: number } = { ms: 0 }
+    composing: { ms: number } = { ms: 0 },
+    plateBlur: LicensePlateBlurClient | null = null
   ): (sample: VideoSample) => Promise<VideoSample | CanvasImageSource> {
     let canvas: OffscreenCanvas | HTMLCanvasElement | null = null;
     let context: FrameContext | null = null;
@@ -2168,8 +2220,16 @@ export class VideoEditorRenderService {
       if ((aiEffect || behindSubject || behindImage) && subjectSegmentation.state === 'unavailable') {
         throw subjectExportError(subjectSegmentation, aiEffect ? 'effect' : behindSubject ? 'caption' : 'image');
       }
-      composeFrame(context, plan, sample.timestamp, plan.width, plan.height, source, null, mask);
+      composeFrame(context, plateDetectionPlan(plan, clipBlursLicensePlates(entry?.clip)), sample.timestamp, plan.width, plan.height, source, null, mask);
       if (frameEffectWarning(context)) throw new EditorError(frameEffectWarning(context));
+
+      if (clipBlursLicensePlates(entry?.clip)) {
+        if (!plateBlur) throw new PlateBlurError('The export detector was not initialized.');
+        const sourceTime = entry ? sourceTimeAt(entry, sample.timestamp) : null;
+        await plateBlur.redact(context, `${entry?.clip.id ?? 'frame'}:${sourceTime?.rangeIndex ?? -1}`,
+          sample.timestamp, signal);
+        applyPlateFrameFade(context, fadeGainAt(plan.fades, sample.timestamp));
+      }
 
       return canvas;
       } finally {

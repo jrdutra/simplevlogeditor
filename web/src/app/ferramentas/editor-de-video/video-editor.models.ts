@@ -219,6 +219,15 @@ export interface ClipEdits {
   fadeOut: boolean;
   /** Length of each fade, in seconds, before it is clamped to the clip. */
   fadeSeconds: number;
+  /**
+   * A deliberate break to black and silence, including a continuing soundtrack.
+   * Faded edges take precedence over transition overlaps. Absent/false preserves
+   * the continuous-music behavior of existing projects.
+   */
+  fadeAudioWithVideo?: boolean;
+  /** Per-edge audio overrides. false fades only the picture; true includes music. */
+  fadeInAudio?: boolean;
+  fadeOutAudio?: boolean;
   /** Playback rate. 2 means the clip lasts half as long. */
   speed: number;
   audioMode: ClipAudioMode;
@@ -429,6 +438,8 @@ export type ReframeFit = 'fill' | 'fit';
 /** One piece of footage, audio or still image on the timeline. */
 export interface MediaClip {
   kind: 'media';
+  /** Video-container only; absent/false is off. Never inherited from project settings. */
+  blurLicensePlates?: boolean;
   /** Stable across reordering, so the list can be tracked without index churn. */
   id: string;
   file: File;
@@ -788,6 +799,13 @@ export interface TransitionPlan {
    * first syllable of every incoming one.
    */
   soundSwitch: number;
+  /**
+   * True when both sounds are heard across the join, the outgoing one fading
+   * out as the incoming one fades in. False only when the two clips carry the
+   * same supplied track on from one to the other; then the sound changes hands
+   * at `soundSwitch` as before. When true, `soundSwitch` is not used.
+   */
+  mixSound: boolean;
   /**
    * Seconds of the overlap paid for out of silence the cut would have removed.
    *

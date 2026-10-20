@@ -13,6 +13,25 @@ function project(threshold: number): ProjectSettings {
 }
 
 describe('video editor project persistence', () => {
+  it('ignores the removed project flag when reopening older documents', () => {
+    const stored = serializeProject([], project(.8), 1);
+    Object.assign(stored.settings, { blurLicensePlates: true });
+    const restored = restoreProject(stored);
+    expect('blurLicensePlates' in restored.project).toBeFalse();
+    expect('blurLicensePlates' in serializeProject(restored.clips, restored.project, 1).settings).toBeFalse();
+  });
+  it('keeps deliberate picture-and-sound fades when the project is reopened', () => {
+    const settings = project(0.8);
+    settings.edits = { ...settings.edits, fadeIn: true, fadeOut: true, fadeAudioWithVideo: true,
+      fadeInAudio: true, fadeOutAudio: false };
+    const restored = restoreProject(serializeProject([], settings, 1));
+    expect(restored.project.edits).toEqual(jasmine.objectContaining({
+      fadeIn: true, fadeOut: true, fadeAudioWithVideo: true, fadeInAudio: true, fadeOutAudio: false
+    }));
+    const legacy = serializeProject([], settings, 1);
+    delete legacy.settings.edits.fadeAudioWithVideo;
+    expect(restoreProject(legacy).project.edits.fadeAudioWithVideo).toBeUndefined();
+  });
   it('keeps a known media path after a handle reconnects it as a plain File', () => {
     const clip = {
       kind: 'media', id: 'clip-path', file: new File(['video'], 'vlog.mp4'),

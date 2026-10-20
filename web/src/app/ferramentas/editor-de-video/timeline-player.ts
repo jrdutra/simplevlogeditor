@@ -31,9 +31,11 @@ import { FrameSource, canvasOfSize, composeFrame } from './frame-compositor';
 import { imageBehindSubject, imagesAt, loadPlanImages } from './clip-image';
 import { SubjectSegmentationClient, SubjectSurface, subjectFailureMessage } from './subject-segmentation';
 import { SubjectEffectPreview } from './subject-effect-preview';
+import { freezePlateSource, LicensePlateBlurPreview, plateDetectionPlan } from './license-plate-blur';
+import { clipBlursLicensePlates, hasLicensePlateBlur, licensePlateBlurAt } from './license-plate-scope';
 import { zoomScaleAt } from '../../shared/media/auto-zoom';
 import { clampSpeed, isBackgroundCaption, volumeGain } from './video-editor-defaults';
-import { captionAt, clipIndexAt, fadeGainAt, sourceTimeAt, transitionAt, videoEffectSectionAt } from './video-editor-timeline';
+import { captionAt, clipIndexAt, fadeGainAt, sourceTimeAt, transitionAt, transitionProgress, videoEffectSectionAt } from './video-editor-timeline';
 import { TransitionPainter } from './video-transitions';
 import { ClipPlan, ProjectPlan, isMediaClip } from './video-editor.models';
 import { imageBitmapForFile, mediaObjectUrl } from '../../shared/desktop/path-backed-file';
@@ -85,6 +87,9 @@ export class TimelinePlayer {
   private plan: ProjectPlan | null = null;
   private time = 0;
   private running = false;
+  private starting = false;
+  private playRequest = 0;
+  private disposed = false;
   private raf = 0;
   private lastNow = 0;
 
@@ -123,7 +128,8 @@ export class TimelinePlayer {
   private incomingMounting = false;
   private readonly painter = new TransitionPainter();
   private readonly subjectSegmentation = new SubjectSegmentationClient();
-  private readonly effectFrames = [new SubjectEffectPreview(), new SubjectEffectPreview()];
+  private readonly platePreview = new LicensePlateBlurPreview();
+  private readonly effectFrames: SubjectEffectPreview[] = [new SubjectEffectPreview(), new SubjectEffectPreview()];
   private readonly subjectFileIds = new WeakMap<File, number>();
   private nextSubjectFileId = 1;
 
@@ -158,6 +164,20 @@ export class TimelinePlayer {
   private audioContext: AudioContext | null = null;
   private audioGain: GainNode | null = null;
 
+  /**
+   * A second sound element, for the incoming clip of a join.
+   *
+   * A transition lays the next shot over the end of the one before, sound
+   * included: during the join both are heard, the outgoing one fading out on the
+   * main element and the incoming one fading in on this one. When the join ends
+   * this element becomes the main one, so the incoming sound never restarts.
+   */
+  private audioB: HTMLAudioElement | null = null;
+  private audioGainB: GainNode | null = null;
+  /** Which clip the second sound element is set up for, or -1. */
+  private audioIncoming = -1;
+  private audioIncomingMounting = false;
+
   constructor(
     private readonly elements: PlayerElements,
     private readonly callbacks: PlayerCallbacks
@@ -168,6 +188,11 @@ export class TimelinePlayer {
     elements.video.preload = 'auto';
     elements.audio.preload = 'auto';
     this.disablePitchPreservation(elements.audio);
+    if (typeof document !== 'undefined') {
+      this.audioB = document.createElement('audio');
+      this.audioB.preload = 'auto';
+      this.disablePitchPreservation(this.audioB);
+    }
 
     if (elements.videoB) {
       // Always silent. The sound of a join comes from the outgoing shot, exactly
@@ -180,7 +205,7 @@ export class TimelinePlayer {
   }
 
   get playing(): boolean {
-    return this.running;
+    return this.running || this.starting;
   }
 
   get currentTime(): number {
@@ -204,6 +229,12 @@ export class TimelinePlayer {
    * for the one thing it is for: checking what a change did.
    */
   setPlan(plan: ProjectPlan): void {
+    if (this.disposed) return;
+    if (this.plan !== plan) this.platePreview.reset();
+    if (hasLicensePlateBlur(plan) && this.context) {
+      this.context.fillStyle = '#000';
+      this.context.fillRect(0, 0, this.context.canvas.width, this.context.canvas.height);
+    }
     const previous = this.plan?.clips[this.mounted] ?? null;
     const previousSound = this.plan?.clips[this.audioMounted] ?? null;
     this.plan = plan;
@@ -230,6 +261,8 @@ export class TimelinePlayer {
     // compositing a shot the reader has just taken off the timeline.
     this.incoming = -1;
     this.elements.videoB?.pause();
+    this.audioIncoming = -1;
+    this.audioB?.pause();
 
     this.draw();
 
@@ -247,6 +280,8 @@ export class TimelinePlayer {
   invalidateSound(): void {
     this.audioMounted = -1;
     this.elements.audio.pause();
+    this.audioIncoming = -1;
+    this.audioB?.pause();
   }
 
   /** True when the clip at the playhead is the same one, timed the same way. */
@@ -292,42 +327,53 @@ export class TimelinePlayer {
   }
 
   async play(): Promise<void> {
-    if (!this.plan || this.running) return;
-    if (this.time >= this.plan.totalDuration - 1e-3) this.time = 0;
+    if (!this.plan || this.running || this.starting || this.disposed) return;
+    const request = ++this.playRequest;
+    this.starting = true;
+    try {
+      if (this.time >= this.plan.totalDuration - 1e-3) this.time = 0;
 
-    this.ensureAudioGain();
-    await this.audioContext?.resume().catch(() => undefined);
+      this.ensureAudioGain();
+      await this.audioContext?.resume().catch(() => undefined);
+      if (request !== this.playRequest || !this.plan) return;
 
-    // `setPlan` draws immediately and therefore often starts both mounts just
-    // before the reader presses Play. Starting the wall clock while those
-    // seeks are still in flight makes the decoder chase a moving target: audio
-    // runs cleanly, while the picture is repeatedly re-seeked and appears as
-    // skipped frames. Warm the exact instant first, then start one clock.
-    this.draw();
-    await Promise.all([this.mountTask, this.audioMountTask]);
-    if (!this.plan) return;
+      // `setPlan` draws immediately and therefore often starts both mounts just
+      // before the reader presses Play. Starting the wall clock while those
+      // seeks are still in flight makes the decoder chase a moving target: audio
+      // runs cleanly, while the picture is repeatedly re-seeked and appears as
+      // skipped frames. Warm the exact instant first, then start one clock.
+      this.draw();
+      await Promise.all([this.mountTask, this.audioMountTask]);
+      if (request !== this.playRequest || !this.plan) return;
 
-    this.running = true;
-    // `play()` resolves only when the browser has actually started the media.
-    // Starting the project clock before that promise settles is especially
-    // visible at time zero, where neither decoder has any buffered runway yet.
-    await this.startMountedMedia();
-    if (!this.running || !this.plan) return;
-    this.lastNow = performance.now();
-    this.loop();
+      this.running = true;
+      this.starting = false;
+      // `play()` resolves only when the browser has actually started the media.
+      // Starting the project clock before that promise settles is especially
+      // visible at time zero, where neither decoder has any buffered runway yet.
+      await this.startMountedMedia();
+      if (request !== this.playRequest || !this.running || !this.plan) return;
+      this.lastNow = performance.now();
+      this.loop();
+    } finally {
+      if (request === this.playRequest) this.starting = false;
+    }
   }
 
   pause(): void {
+    this.playRequest++;
+    this.starting = false;
     this.running = false;
     this.elements.video.pause();
     this.elements.videoB?.pause();
     this.elements.audio.pause();
+    this.audioB?.pause();
     if (this.raf) cancelAnimationFrame(this.raf);
     this.raf = 0;
   }
 
   toggle(): void {
-    if (this.running) this.pause();
+    if (this.playing) this.pause();
     else void this.play();
   }
 
@@ -351,6 +397,7 @@ export class TimelinePlayer {
 
   seek(time: number): void {
     if (!this.plan) return;
+    this.platePreview.invalidate();
     this.effectFrames.forEach(lane => lane.reset());
     this.time = Math.max(0, Math.min(time, this.plan.totalDuration));
     // Forcing a remount rather than only moving the decoder: a seek may land in
@@ -365,11 +412,17 @@ export class TimelinePlayer {
     // of a second into the join it was supposed to open cleanly.
     this.incoming = -1;
     this.elements.videoB?.pause();
+    this.audioIncoming = -1;
+    this.audioB?.pause();
     this.draw();
   }
 
   dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
     this.pause();
+    // Late decoder, bitmap and AI completions must not revive a closed player.
+    this.plan = null;
     this.elements.video.removeAttribute('src');
     this.elements.video.load();
     this.elements.videoB?.removeAttribute('src');
@@ -377,10 +430,14 @@ export class TimelinePlayer {
     this.incoming = -1;
     this.elements.audio.removeAttribute('src');
     this.elements.audio.load();
+    this.audioB?.removeAttribute('src');
+    this.audioB?.load();
+    this.audioIncoming = -1;
     this.audioMounted = -1;
     void this.audioContext?.close().catch(() => undefined);
     this.audioContext = null;
     this.audioGain = null;
+    this.audioGainB = null;
 
     for (const url of this.urls.values()) URL.revokeObjectURL(url);
     this.urls.clear();
@@ -388,6 +445,8 @@ export class TimelinePlayer {
     this.bitmaps.clear();
     this.bitmapFiles.clear();
     this.subjectSegmentation.dispose();
+    disposeFrameEffects(this.platePreview.context(this.width, this.height));
+    this.platePreview.dispose();
     this.effectFrames.forEach(lane => lane.dispose());
     if (this.context) disposeFrameEffects(this.context);
   }
@@ -433,7 +492,14 @@ export class TimelinePlayer {
 
     // While a source is loading the clock holds still. Letting it run would
     // silently skip whatever the decoder was not ready to show.
-    if (!this.mounting && !this.audioMounting && !this.cutSyncing) this.time += elapsed;
+    //
+    // Except for the sound handing over inside a transition. Stopping the clock
+    // there froze the picture at the start of the join — the outgoing shot stood
+    // still while the next clip's sound loaded, and the transition then played
+    // as a jump. The animation keeps running and the sound joins in as soon as
+    // it is ready, aimed at the instant the clock has reached by then.
+    const inJoin = transitionAt(this.plan, this.time) !== null;
+    if (!this.mounting && (!this.audioMounting || inJoin) && !this.cutSyncing) this.time += elapsed;
 
     if (this.time >= this.plan.totalDuration) {
       this.time = this.plan.totalDuration;
@@ -451,7 +517,9 @@ export class TimelinePlayer {
 
   private draw(): void {
     const plan = this.plan;
-    const context = this.context;
+    const visibleContext = this.context;
+    const plateEnabled = !!plan && licensePlateBlurAt(plan, this.time);
+    const context = plateEnabled ? this.platePreview.context(this.width, this.height) : visibleContext;
     if (!plan || !context || !plan.clips.length) return;
 
     const index = clipIndexAt(plan, this.time);
@@ -462,7 +530,9 @@ export class TimelinePlayer {
     // Keeping this decision independent is what makes the preview agree with
     // the renderer's `soundSwitch` instead of following the outgoing picture.
     const join = transitionAt(plan, this.time);
-    const soundIndex = join && this.time >= join.soundSwitch ? join.toIndex : index;
+    // A join whose two sounds are heard together keeps the outgoing sound on the
+    // main element to the end; the incoming one plays on the second element.
+    const soundIndex = join && !join.mixSound && this.time >= join.soundSwitch ? join.toIndex : index;
     const soundEntry = plan.clips[soundIndex] ?? entry;
 
     // Faster than the element can play: the clock still advances at the output
@@ -477,6 +547,13 @@ export class TimelinePlayer {
       }
     }
 
+    // The join has just handed over to a shot the second decoder is already
+    // playing, on the right instant: it becomes the main one. Reloading the
+    // shot into the main decoder instead stopped the clock and, until it had
+    // loaded, drew the frame that decoder was still holding — the last frame of
+    // the clip before the transition, flashing back after the transition.
+    if (index !== this.mounted && !this.mounting) this.adoptIncoming(index, entry);
+
     if (index !== this.mounted && !this.mounting) {
       this.mounting = true;
       const task = this.mount(index).finally(() => {
@@ -487,6 +564,8 @@ export class TimelinePlayer {
     }
 
     if (this.mounted === index) this.follow(entry);
+
+    if (soundIndex !== this.audioMounted && !this.audioMounting) this.adoptIncomingAudio(soundIndex);
 
     if (soundIndex !== this.audioMounted && !this.audioMounting) {
       this.elements.audio.pause();
@@ -510,6 +589,18 @@ export class TimelinePlayer {
       ) ??
       null;
 
+    if (soon?.mixSound && this.audioIncoming !== soon.toIndex && !this.audioIncomingMounting) {
+      this.audioIncomingMounting = true;
+      void this.mountIncomingAudio(soon.toIndex).finally(() => {
+        this.audioIncomingMounting = false;
+      });
+    } else if (!soon?.mixSound && this.audioIncoming >= 0 && !this.audioIncomingMounting) {
+      this.audioB?.pause();
+      this.audioIncoming = -1;
+    }
+    if (join?.mixSound) this.followIncomingAudio(join);
+    else if (this.audioB && !this.audioB.paused) this.audioB.pause();
+
     if (soon && this.incoming !== soon.toIndex && !this.incomingMounting) {
       this.incomingMounting = true;
       void this.mountIncoming(soon.toIndex).finally(() => {
@@ -525,6 +616,7 @@ export class TimelinePlayer {
     this.applyGain(plan);
 
     let effectStatus = '';
+    let preparePlates: Parameters<LicensePlateBlurPreview['present']>[6];
     if (join) {
       // Both sides taken from the join rather than from `index`: during an
       // overlap `clipIndexAt` answers with the outgoing shot, and relying on
@@ -551,17 +643,56 @@ export class TimelinePlayer {
         return pair;
       };
       const outSource = this.sourceFor(outgoing);
-      const inSource = arriving && ready ? this.sourceFor(arriving, this.elements.videoB ?? null) : null;
+      // A second decoder that is still seeking shows the frame it was holding,
+      // which belongs to the shot of an earlier join. Until it is on its own
+      // frame the outgoing shot simply carries on underneath the animation.
+      const arrivingVideo = arriving && isMediaClip(arriving.clip) && arriving.clip.summary.kind !== 'image';
+      const incomingSettled = !arrivingVideo || (!!this.elements.videoB && !this.elements.videoB.seeking && this.elements.videoB.readyState >= 2);
+      const inSource = arriving && ready && incomingSettled
+        ? this.sourceFor(arriving, this.elements.videoB ?? null)
+        : arrivingVideo ? outSource : null;
       const outPair = transitionFrame(outgoing,outSource,this.elements.video,0);
       const inPair = transitionFrame(arriving,inSource,this.elements.videoB,1);
-      composeFrame(context, plan, this.time, this.width, this.height, outPair?.source ?? outSource, {
+      const transition = {
         entry: join,
         incoming: inPair?.source ?? inSource,
         painter: this.painter,
         outgoingMask: outPair?.mask,
         incomingMask: inPair?.mask
-      });
+      };
+      composeFrame(context, plan, this.time, this.width, this.height, outPair?.source ?? outSource, transition);
+      if (plateEnabled) {
+        const time = this.time, width = this.width, height = this.height;
+        const outPicture = outPair?.source ?? outSource, inPicture = inPair?.source ?? inSource;
+        const outIdentity = this.maskIdentity(outgoing), inIdentity = arriving ? this.maskIdentity(arriving) : '';
+        preparePlates = () => {
+          // Freeze both sources before awaiting inference; unchecked neighbours
+          // retain exactly their own picture, including during a dissolve.
+          const frozenOut = freezePlateSource(outPicture, Math.max(width, height));
+          const frozenIn = arrivingVideo && !(ready && incomingSettled)
+            ? frozenOut : freezePlateSource(inPicture, Math.max(width, height));
+          return async (client, target) => {
+            for (const [side, picture, identity] of [[outgoing, frozenOut, outIdentity],
+              [ready && incomingSettled ? arriving : null, frozenIn, inIdentity]] as const) {
+              if (side && picture && clipBlursLicensePlates(side.clip)) {
+                await client.redact(picture.context, identity, time);
+              }
+            }
+            try {
+              composeFrame(target, plan, time, width, height, frozenOut, { ...transition, incoming: frozenIn });
+            } finally { disposeFrameEffects(target); }
+          };
+        };
+      }
     } else {
+      // The main decoder is still loading this clip: what it holds is a frame of
+      // the clip before. The canvas keeps the last picture drawn rather than
+      // flashing that frame back on screen.
+      const mediaVideo = isMediaClip(entry.clip) && entry.clip.summary.kind !== 'image';
+      if (mediaVideo && this.mounted !== index) {
+        this.callbacks.onTick(this.time, index);
+        return;
+      }
       const source = this.sourceFor(entry);
       const caption = captionAt(plan.captions, this.time);
       const behindSubject = caption && isBackgroundCaption(caption.caption);
@@ -591,10 +722,23 @@ export class TimelinePlayer {
       const pair = source && needsSubject && pictureReady ? this.effectFrames[0].frame(
         source,this.width,this.height,scale,plan.fillFrame,maskClipId,sourceTime,() => { if(this.plan) this.draw(); }
       ) : null;
-      composeFrame(context, plan, this.time, this.width, this.height, pair?.source ?? source, null, pair?.mask ?? null,pair ? 1 : null);
+      composeFrame(context, plateDetectionPlan(plan, plateEnabled), this.time, this.width, this.height, pair?.source ?? source, null, pair?.mask ?? null,pair ? 1 : null);
       if (needsSubject) effectStatus = this.effectFrameStatus(0,!!pair,surface,sourceTime);
     }
-    this.callbacks.onEffectStatus?.(frameEffectWarning(context) || effectStatus);
+    let plateStatus = '';
+    if (plateEnabled && visibleContext) {
+      const identity = join ? `join:${join.fromIndex}:${join.toIndex}` : this.maskIdentity(entry);
+      // A bitmap, decoded seek or subject matte may arrive while paused at the
+      // same timeline instant. Do not keep the earlier protected placeholder.
+      const contentKey = [this.elements.video.currentTime, this.elements.video.readyState,
+        this.elements.video.seeking, this.elements.videoB?.currentTime, this.elements.videoB?.readyState,
+        this.elements.videoB?.seeking, this.incoming, this.bitmaps.size,
+        this.effectFrames[0].completedTime, this.effectFrames[1].completedTime].join(':');
+      plateStatus = this.platePreview.present(visibleContext, identity, this.time, () => {
+        if (this.plan) this.draw();
+      }, join ? 1 : fadeGainAt(plan.fades, this.time), contentKey, preparePlates);
+    }
+    this.callbacks.onEffectStatus?.(plateStatus || frameEffectWarning(context) || effectStatus);
 
     this.callbacks.onTick(this.time, index);
   }
@@ -681,7 +825,15 @@ export class TimelinePlayer {
     const wanted = Math.max(0, Math.min(1, clipGain * own));
     if (Math.abs(video.volume - wanted) > 0.001) video.volume = wanted;
 
-    const track = Math.max(0, clipGain * trackGain * own);
+    // Across a join whose sounds overlap, an equal-power crossfade: the main
+    // element carries the outgoing sound down while the second one brings the
+    // incoming sound up — what the export writes.
+    const join = transitionAt(plan, this.time);
+    const mixing = join?.mixSound === true;
+    const progress = mixing ? transitionProgress(join!, this.time) : 0;
+    const outgoingShare = mixing ? Math.cos((progress * Math.PI) / 2) : 1;
+
+    const track = Math.max(0, clipGain * trackGain * own * outgoingShare);
     if (this.audioGain) {
       if (Math.abs(this.audioGain.gain.value - track) > 0.001) this.audioGain.gain.value = track;
       if (audio.volume !== 1) audio.volume = 1;
@@ -690,6 +842,22 @@ export class TimelinePlayer {
       // exact; amplification above that is the only unavailable operation.
       const fallback = Math.min(1, track);
       if (Math.abs(audio.volume - fallback) > 0.001) audio.volume = fallback;
+    }
+
+    const second = this.audioB;
+    if (second) {
+      const arriving = mixing ? plan.clips[join!.toIndex] : null;
+      const arrivingTrack = arriving?.sound.kind === 'file' && plan.soundFades.length ? fadeGainAt(plan.soundFades, this.time) : 1;
+      const incoming = arriving
+        ? Math.max(0, clipGain * arrivingTrack * volumeGain(arriving.edits) * Math.sin((progress * Math.PI) / 2))
+        : 0;
+      if (this.audioGainB) {
+        if (Math.abs(this.audioGainB.gain.value - incoming) > 0.001) this.audioGainB.gain.value = incoming;
+        if (second.volume !== 1) second.volume = 1;
+      } else {
+        const fallback = Math.min(1, incoming);
+        if (Math.abs(second.volume - fallback) > 0.001) second.volume = fallback;
+      }
     }
   }
 
@@ -707,6 +875,14 @@ export class TimelinePlayer {
       gain.connect(context.destination);
       this.audioContext = context;
       this.audioGain = gain;
+      if (this.audioB) {
+        const sourceB = context.createMediaElementSource(this.audioB);
+        const gainB = context.createGain();
+        gainB.gain.value = 0;
+        sourceB.connect(gainB);
+        gainB.connect(context.destination);
+        this.audioGainB = gainB;
+      }
     } catch {
       // The element remains directly audible; `applyGain` uses its native
       // volume control as the conservative fallback.
@@ -943,11 +1119,11 @@ export class TimelinePlayer {
     if (this.running && !this.cutSyncing && audio.paused) void audio.play().catch(() => undefined);
   }
 
-  private audioTarget(entry: ClipPlan): { file: File; time: number; rate: number } | null {
+  private audioTarget(entry: ClipPlan, at = this.time): { file: File; time: number; rate: number } | null {
     if (entry.sound.kind === 'file') {
       return {
         file: entry.sound.file,
-        time: entry.sound.offset + Math.max(0, this.time - entry.outputStart),
+        time: entry.sound.offset + Math.max(0, at - entry.outputStart),
         rate: 1
       };
     }
@@ -964,9 +1140,121 @@ export class TimelinePlayer {
 
     return {
       file: activeNoiseAudio(clip) ?? clip.file,
-      time: sourceTimeAt(entry, this.time).sourceTime,
+      time: sourceTimeAt(entry, at).sourceTime,
       rate: clampSpeed(entry.edits.speed)
     };
+  }
+
+  /** Points the second sound element at the clip a join is about to bring in. */
+  private async mountIncomingAudio(index: number): Promise<void> {
+    const plan = this.plan;
+    const entry = plan?.clips[index];
+    const element = this.audioB;
+    if (!plan || !entry || !element) return;
+
+    const target = this.audioTarget(entry, Math.max(this.time, entry.outputStart));
+    if (!target) {
+      element.pause();
+      this.audioIncoming = index;
+      return;
+    }
+
+    const url = this.urlFor(target.file);
+    if (element.src !== url) {
+      element.src = url;
+      await this.settled(element);
+    }
+    if (this.plan !== plan) return;
+    this.applyRate(element, target.rate);
+    element.currentTime = Math.max(0, target.time);
+    await this.seekSettled(element);
+    if (this.plan !== plan) return;
+    this.audioIncoming = index;
+  }
+
+  /** Keeps the incoming sound on the join's clock while both are heard. */
+  private followIncomingAudio(join: { toIndex: number }): void {
+    const element = this.audioB;
+    const entry = this.plan?.clips[join.toIndex];
+    if (!element || !entry || this.audioIncoming !== join.toIndex) return;
+    const target = this.audioTarget(entry);
+    if (!target) {
+      if (!element.paused) element.pause();
+      return;
+    }
+    if (!element.seeking && Number.isFinite(element.duration) && Math.abs(element.currentTime - target.time) > DRIFT_SECONDS) {
+      element.currentTime = Math.max(0, target.time);
+    }
+    if (this.running && element.paused) void element.play().catch(() => undefined);
+  }
+
+  /**
+   * At the end of a join the incoming sound is already playing on the second
+   * element, on the right instant: that element becomes the main one rather
+   * than the main one being reloaded, which would stop the sound for a moment.
+   */
+  private adoptIncomingAudio(index: number): boolean {
+    const element = this.audioB;
+    if (!element || index !== this.audioIncoming || this.audioIncomingMounting) return false;
+    const entry = this.plan?.clips[index];
+    if (!entry) return false;
+    const target = this.audioTarget(entry);
+    if (target && (element.seeking || element.readyState < 2)) return false;
+
+    const previous = this.elements.audio;
+    previous.pause();
+    this.elements.audio = element;
+    this.audioB = previous;
+    const gain = this.audioGain;
+    this.audioGain = this.audioGainB;
+    this.audioGainB = gain;
+    if (this.audioGainB) this.audioGainB.gain.value = 0;
+
+    this.audioMounted = index;
+    this.audioIncoming = -1;
+    if (!target) element.pause();
+    else if (this.running && element.paused) void element.play().catch(() => undefined);
+    return true;
+  }
+
+  /**
+   * Makes the second decoder the main one when the clip it carries is the clip
+   * now on screen. Returns true when it did.
+   */
+  private adoptIncoming(index: number, entry: ClipPlan): boolean {
+    if (index !== this.incoming || this.incomingMounting) return false;
+    const clip = entry.clip;
+
+    if (isMediaClip(clip) && clip.summary.kind !== 'image') {
+      const next = this.elements.videoB;
+      if (!next || next.seeking || next.readyState < 2) return false;
+
+      const previous = this.elements.video;
+      previous.pause();
+      this.elements.video = next;
+      this.elements.videoB = previous;
+      // The AI-effect lanes follow their decoders.
+      const [main, second] = this.effectFrames;
+      this.effectFrames[0] = second;
+      this.effectFrames[1] = main;
+
+      next.muted = true;
+      this.scrubbing = !this.applyRate(next, entry.edits.speed);
+      this.mountedRange = sourceTimeAt(entry, this.time).rangeIndex;
+    } else {
+      // A still or a text card needs no decoder, only the bitmap the second
+      // mount already decoded.
+      this.elements.video.pause();
+      this.mountedRange = -1;
+    }
+
+    this.mounted = index;
+    this.incoming = -1;
+    this.lastNow = performance.now();
+    if (this.running && isMediaClip(clip) && clip.summary.kind !== 'image' && this.elements.video.paused) {
+      void this.elements.video.play().catch(() => undefined);
+    }
+    return true;
   }
 
   /**
@@ -998,6 +1286,9 @@ export class TimelinePlayer {
 
       this.applyRate(video, entry.edits.speed);
       video.currentTime = sourceTimeAt(entry, Math.max(this.time, entry.outputStart)).sourceTime;
+      // Marked ready only once it shows its own frame; the clock does not wait.
+      await this.seekSettled(video);
+      if (this.plan !== plan) return;
       if (this.running) await video.play().catch(() => undefined);
     } else {
       video?.pause();

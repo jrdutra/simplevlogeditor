@@ -41,7 +41,17 @@ function summaryFromProbe(file, stat, document) {
   const audio = streams.find((stream) => stream.codec_type === 'audio');
   const extension = path.extname(file).toLowerCase();
   const image = SUPPORTED.get(extension)?.startsWith('image/');
-  const duration = number(document.format?.duration, number(video?.duration, number(audio?.duration, image ? 5 : 0)));
+  // The picture and the sound decide how long a file is, not the container.
+  // DJI cameras write a telemetry subtitle track rounded up to a whole second
+  // (a 20.22 s take reports 21 s), and some FFprobe builds report the container
+  // duration from it: the clip then "lasted" 0.8 s past its last frame, which
+  // played as a frozen picture and silence at the end of every clip.
+  const streamDurations = [video, audio]
+    .map((stream) => number(stream?.duration, NaN))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const duration = !image && streamDurations.length
+    ? Math.max(...streamDurations)
+    : number(document.format?.duration, number(video?.duration, number(audio?.duration, image ? 5 : 0)));
   return {
     fileName: path.basename(file), fileSize: stat.size,
     containerName: document.format?.format_long_name || document.format?.format_name || extension.slice(1),

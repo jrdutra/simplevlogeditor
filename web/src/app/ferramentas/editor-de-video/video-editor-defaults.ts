@@ -181,7 +181,7 @@ export const CAPTION_FONTS: readonly { value: NonNullable<ClipCaption['fontFamil
   { value: 'rounded', label: 'Rounded' },
   { value: 'serif', label: 'Editorial serif' },
   { value: 'mono', label: 'Monospace' },
-  { value: 'impact', label: 'Condensed heavy' },
+  { value: 'impact', label: 'Impact' },
   { value: 'display', label: 'Display' },
   { value: 'geometric', label: 'Geometric' },
   { value: 'slab', label: 'Slab serif' },
@@ -213,6 +213,16 @@ export const CAPTION_PRESET_GROUPS: readonly { id: CaptionPresetGroupId; label: 
   { id: 'background', label: 'Background captions · Behind subject' }
 ];
 
+/** Shared by new background captions, the position control and MCP defaults. */
+export const DEFAULT_BACKGROUND_CAPTION_POSITION = { x: 0.3, y: 0.24 } as const;
+export const DEFAULT_BACKGROUND_CAPTION_FONT = { fontFamily: 'impact', fontWeight: 400 } as const;
+
+/** Impact is already heavy; an extra bold weight closes up its lettering. */
+export function backgroundCaptionFontWeight(caption: Pick<ClipCaption, 'fontFamily' | 'fontWeight'>): number {
+  return (caption.fontFamily ?? DEFAULT_BACKGROUND_CAPTION_FONT.fontFamily) === 'impact'
+    ? 400 : Math.min(900, Math.max(100, caption.fontWeight ?? 700));
+}
+
 export const CAPTION_PRESETS: readonly CaptionPresetDefinition[] = [
   { id: 'classic', group: 'classic', label: 'Classic · white, black outline + shadow', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: true, shadowColor: '#000000' } },
   { id: 'white-clean', group: 'classic', label: 'Clean · white, black outline', style: { fontFamily: 'sans', fontWeight: 700, italic: false, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 16, shadowEnabled: false, shadowColor: '#000000' } },
@@ -228,12 +238,13 @@ export const CAPTION_PRESETS: readonly CaptionPresetDefinition[] = [
   {
     id: 'behind-subject',
     group: 'background',
-    label: 'Upper center · Clean white',
+    label: 'Upper left · Heavy white',
     style: {
-      style: 'behind-subject', fontFamily: 'sans', fontWeight: 600, italic: false,
+      style: 'behind-subject', ...DEFAULT_BACKGROUND_CAPTION_FONT, italic: false,
       fontScale: 0.28, textColor: '#ffffff', outlineColor: '#000000', outlinePercent: 0,
       shadowEnabled: true, shadowColor: '#000000', shadowBlurPercent: 70, shadowOpacity: 0.9,
-      positionX: 0.5, positionY: 0.25, rotationDegrees: 0, uppercase: true
+      positionX: DEFAULT_BACKGROUND_CAPTION_POSITION.x, positionY: DEFAULT_BACKGROUND_CAPTION_POSITION.y,
+      rotationDegrees: 0, uppercase: true
     }
   },
   {
@@ -407,6 +418,7 @@ export const DEFAULT_EDITS: ClipEdits = {
   fadeIn: false,
   fadeOut: false,
   fadeSeconds: FADE_SECONDS.default,
+  fadeAudioWithVideo: false,
   speed: 1,
   audioMode: 'original',
   volumePercent: VOLUME_LIMITS.default
@@ -542,12 +554,16 @@ export function clampCaption(caption: ClipCaption): ClipCaption {
   return {
     ...caption,
     style: behindSubject ? 'behind-subject' : 'classic',
+    ...(behindSubject ? {
+      fontFamily: caption.fontFamily ?? DEFAULT_BACKGROUND_CAPTION_FONT.fontFamily,
+      fontWeight: backgroundCaptionFontWeight(caption)
+    } : {}),
     fontScale: clamp(caption.fontScale, behindSubject ? { min: 0.2, max: 0.4 } : { min: 0.02, max: 0.12 }),
     bottomMargin: clamp(caption.bottomMargin, CAPTION_LIMITS.bottomMargin),
     outlinePercent: clamp(caption.outlinePercent ?? DEFAULT_CAPTION.outlinePercent ?? 16, CAPTION_LIMITS.outlinePercent),
     fadeSeconds: clamp(caption.fadeSeconds, CAPTION_LIMITS.fadeSeconds),
-    positionX: clamp(caption.positionX ?? 0.5, CAPTION_LIMITS.positionX),
-    positionY: clamp(caption.positionY ?? (behindSubject ? 0.25 : 0.5), CAPTION_LIMITS.positionY),
+    positionX: clamp(caption.positionX ?? (behindSubject ? DEFAULT_BACKGROUND_CAPTION_POSITION.x : 0.5), CAPTION_LIMITS.positionX),
+    positionY: clamp(caption.positionY ?? (behindSubject ? DEFAULT_BACKGROUND_CAPTION_POSITION.y : 0.5), CAPTION_LIMITS.positionY),
     rotationDegrees: clamp(caption.rotationDegrees ?? 0, CAPTION_LIMITS.rotationDegrees),
     shadowBlurPercent: clamp(caption.shadowBlurPercent ?? 70, CAPTION_LIMITS.shadowBlurPercent),
     shadowOpacity: clamp(caption.shadowOpacity ?? 0.9, CAPTION_LIMITS.shadowOpacity),

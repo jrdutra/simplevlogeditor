@@ -64,6 +64,7 @@ export interface EditorAgentProjectPatch {
 }
 
 export type EditorAgentOperation =
+  | { type: 'set_license_plate_blur'; clipId: string; enabled: boolean }
   | { type: 'remove_clip'; clipId: string }
   | { type: 'move_clip'; clipId: string; toIndex: number }
   | { type: 'duplicate_clip'; clipId: string }

@@ -102,7 +102,8 @@ function fixture() {
   const subject = new Fixture();
   Object.assign(subject, { transcriptModelId: 'small', transcriptLanguage: 'pt', transcriptDenoise: false,
     transcriptStrength: { attenuationDb: 20 },
-    heardByClip: new Map(), agentAssetId: clip => clip.file.name, zone: { run: fn => fn() }, reportTranscript: () => {} });
+    heardByClip: new Map(), agentAssetId: clip => clip.file.name, zone: { run: fn => fn() }, reportTranscript: () => {},
+    pushAgentLog: () => {} });
   return { subject, calls };
 }
 
@@ -133,13 +134,26 @@ test('a brief explicit card total reserves readable hold instead of spending it 
   assert.equal(normal.revealSeconds + normal.holdSeconds, 8);
 });
 
-test('block reads reject a partial transcript that does not cover the current clip', () => {
+test('block reads request transcription instead of treating an incomplete transcript as reviewed', () => {
   const { subject } = fixture();
   const clip = { id: 'a', file: { name: 'one' }, summary: { durationSeconds: 900, audioUsable: true }, detected: [] };
   subject.agentMediaClip = () => clip;
   subject.heardByClip.set('a|one||small|pt|raw|200|220', [{ start: 201, end: 202, text: 'parcial' }]);
-  assert.throws(() => subject.agentAnalysisBlocks({ clipId: 'a' }), /Transcribe/);
+  const incomplete = subject.agentAnalysisBlocks({ clipId: 'a' });
+  assert.equal(incomplete.transcriptReady, false);
+  assert.deepEqual(incomplete.blocks, []);
+  assert.deepEqual(incomplete.requiredCommand, { name: 'transcribe', arguments: { clipId: 'a', includeWords: false } });
   subject.heardByClip.set('a|one||small|pt|raw|0|900', [{ start: 10, end: 11, text: 'completo' }]);
   assert.equal(subject.agentAnalysisBlocks({ clipId: 'a', blockIndex: 0 }).block.text, 'completo');
   assert.throws(() => subject.agentAnalysisBlocks({ clipId: 'a', blockIndex: 99 }), /not found/);
+});
+
+test('split clips reuse their shared full-source transcript without reusing another asset', () => {
+  const { subject } = fixture();
+  const clip = { id: 'split', file: { name: 'one' }, summary: { durationSeconds: 900, audioUsable: true }, detected: [] };
+  subject.agentMediaClip = () => clip;
+  subject.heardByClip.set('original|one||small|pt|raw|0|900', [{ start: 10, end: 11, text: 'completo' }]);
+  assert.equal(subject.agentAnalysisBlocks({ clipId: 'split', blockIndex: 0 }).block.text, 'completo');
+  clip.file = { name: 'another' };
+  assert.equal(subject.agentAnalysisBlocks({ clipId: 'split' }).transcriptReady, false);
 });

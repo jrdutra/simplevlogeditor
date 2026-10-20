@@ -107,11 +107,30 @@ function mostCommon<T>(values: readonly T[], keyOf: (value: T) => string): T | n
 }
 
 /** What this clip actually uses: its own settings, or the project's. */
-export function effectiveEdits(clip: EditorClip, project: ProjectSettings): ClipEdits {
+/** Required picture/sound edges follow the current order, skipping transition rows. */
+export function textCardFadeEdges(clip: EditorClip, clips: readonly EditorClip[]): { fadeIn: boolean; fadeOut: boolean } {
+  if (clip.kind === 'text') return { fadeIn: true, fadeOut: true };
+  if (!isMediaClip(clip) || clip.summary.kind !== 'video') return { fadeIn: false, fadeOut: false };
+  const playable = clips.filter(isPlayable);
+  const index = playable.findIndex(item => item.id === clip.id);
+  return { fadeIn: index > 0 && playable[index - 1].kind === 'text',
+    fadeOut: index >= 0 && playable[index + 1]?.kind === 'text' };
+}
+
+export function effectiveEdits(clip: EditorClip, project: ProjectSettings, clips: readonly EditorClip[] = []): ClipEdits {
   // A transition owns no settings of its own — it is a join, not a shot — so it
   // answers with the project's rather than making every caller check first.
   if (isTransitionClip(clip)) return project.edits;
-  return clip.overrides ?? project.edits;
+  const edits = clip.overrides ?? project.edits;
+  const automatic = textCardFadeEdges(clip, clips);
+  if (!automatic.fadeIn && !automatic.fadeOut) return edits;
+  return {
+    ...edits,
+    ...(automatic.fadeIn ? { fadeIn: true, fadeInAudio: true } : {}),
+    ...(automatic.fadeOut ? { fadeOut: true, fadeOutAudio: true } : {}),
+    ...(clip.kind === 'text' ? { fadeAudioWithVideo: true } : {}),
+    fadeSeconds: Number.isFinite(edits.fadeSeconds) && edits.fadeSeconds > 0 ? edits.fadeSeconds : 1
+  };
 }
 
 /** True when the clip has been given settings of its own. */
@@ -257,8 +276,8 @@ export interface PlanOptions {
  * together. Resolving them separately is how a preview ends up playing the
  * pauses while its transitions are still measured as if they were gone.
  */
-function planningEdits(clip: EditorClip, project: ProjectSettings, options: PlanOptions): ClipEdits {
-  const edits = effectiveEdits(clip, project);
+function planningEdits(clip: EditorClip, project: ProjectSettings, options: PlanOptions, clips: readonly EditorClip[]): ClipEdits {
+  const edits = effectiveEdits(clip, project, clips);
   return options.ignoreSilenceCuts && edits.cutSilence ? { ...edits, cutSilence: false } : edits;
 }
 
@@ -341,7 +360,7 @@ export function buildProjectPlan(
   const transitions: TransitionPlan[] = [];
 
   for (const [position, clip] of playable.entries()) {
-    const edits = planningEdits(clip, project, options);
+    const edits = planningEdits(clip, project, options, playable);
     const speed = clampSpeed(edits.speed);
     const duration = sourceDuration(clip);
     // The handles put back the silence at this clip's edges that the cut would
@@ -518,6 +537,12 @@ export function buildProjectPlan(
           ? outputStart
           : outputStart + Math.min(overlap, headSeconds);
 
+      // The two sounds are heard together across the join and crossfaded —
+      // except when both clips are playing the same supplied track, carried
+      // from one to the next: that is one piece of music, and laying it over
+      // itself would only make it echo.
+      const sameTrack = previous.sound.kind === 'file' && sound.kind === 'file' && previous.sound.file === sound.file;
+
       transitions.push({
         clipId: join.clipId,
         fromIndex: plans.length - 2,
@@ -526,6 +551,7 @@ export function buildProjectPlan(
         start: outputStart,
         end: outputStart + overlap,
         soundSwitch,
+        mixSound: !sameTrack,
         fromSilence: Math.min(overlap, restored[position]),
         overContent: restored[position] < overlap - EPSILON
       });
@@ -546,19 +572,26 @@ export function buildProjectPlan(
     // of each keeps the fade it was asked for, and a project set to fade every
     // clip still opens and closes the way it was told to.
     //
-    // The sound follows the picture rather than crossfading, because a
-    // transition does not mix the two tracks: it hands the sound over at one
-    // instant (`soundSwitch`). Two ramps meeting around that instant are not a
-    // crossfade, they are a dip to silence in the middle of the join.
+    // The transition already crossfades different tracks. Explicit fade breaks
+    // were excluded from joins by joinSettings. Keep the picture ramps, with
+    // each edge's audio override deciding whether continuing music also fades.
     if (joined && previous) {
       removeFadeOutAt(fades, previous.outputStart + previous.outputDuration);
       removeFadeOutAt(audioFades, previous.outputStart + previous.outputDuration);
     }
     appendFades(fades, edits, outputStart, outputDuration, joined);
-    if (inheritsPreviousSound && previous) {
+    if (inheritsPreviousSound && previous && !(previous.edits.fadeOutAudio ?? previous.edits.fadeAudioWithVideo)) {
       removeFadeOutAt(audioFades, previous.outputStart + previous.outputDuration);
     }
-    if (!continuing) appendFades(audioFades, edits, outputStart, outputDuration, joined);
+    const fadeAudio = !continuing || edits.fadeAudioWithVideo === true;
+    appendFades(audioFades, {
+      ...edits,
+      fadeIn: edits.fadeIn && (edits.fadeInAudio ?? fadeAudio),
+      fadeOut: edits.fadeOut && (edits.fadeOutAudio ?? fadeAudio),
+      // Keep each audio ramp aligned to its picture ramp on very short clips,
+      // even when the opposite end fades the picture only.
+      fadeSeconds: Math.min(edits.fadeSeconds, outputDuration / (edits.fadeIn && edits.fadeOut ? 2 : 1))
+    }, outputStart, outputDuration, joined);
     if (kind === 'video') {
       appendZooms(zooms, clip, edits, keepRanges, outputStart, speed);
       appendCaption(captions, clip, keepRanges, outputStart, outputDuration, speed);
@@ -793,6 +826,7 @@ function joinSettings(clips: readonly EditorClip[], project: ProjectSettings): (
   const joins: (Join | null)[] = [];
   let pending: TransitionClip | null = null;
   let seen = false;
+  let previous: EditorClip | null = null;
 
   for (const clip of clips) {
     if (isTransitionClip(clip)) {
@@ -807,31 +841,29 @@ function joinSettings(clips: readonly EditorClip[], project: ProjectSettings): (
     if (!seen) {
       joins.push(null);
     } else {
-      const settings = clampTransition(pending?.settings ?? project.defaultTransition);
+      const before = previous ? effectiveEdits(previous, project, clips) : null;
+      const after = effectiveEdits(clip, project, clips);
+      const fadeBreak = (before?.fadeOut && (before.fadeOutAudio !== undefined || before.fadeAudioWithVideo)) ||
+        (after.fadeIn && (after.fadeInAudio !== undefined || after.fadeAudioWithVideo));
+      const settings = fadeBreak ? null : clampTransition(pending?.settings ?? project.defaultTransition);
       joins.push(settings ? { settings, clipId: pending?.id ?? null } : null);
     }
 
     pending = null;
     seen = true;
+    previous = clip;
   }
 
   return joins;
 }
 
 /**
- * How much silence each join can be paid for out of, and from where.
+ * How long each join overlaps the two shots around it.
  *
- * This is the whole reason transitions here are not simply an overlap. A cut
- * throws away the pause at the end of one shot and the pause at the start of the
- * next; a transition wants exactly that much time and nothing else. So the
- * silence is bought back — but only as much of it as the animation is going to
- * spend, and split between the two sides so the animation sits *on* the join
- * rather than being dragged into one of the shots.
- *
- * Where there is not enough, the shortfall is simply played over content. That
- * is a deliberate answer to a real fork: a transition that silently shortens
- * itself gives the same animation a different length at every join, which reads
- * as a bug rather than as a decision.
+ * A transition is the next shot laid over the end of the one before, picture
+ * and sound, both exactly as they were cut. It used to buy back the silence the
+ * cut had removed at the join and play the animation over that; it no longer
+ * does (see below), so the handles this returns are always zero.
  */
 function silenceHandles(
   playable: readonly EditorClip[],
@@ -855,7 +887,7 @@ function silenceHandles(
    * its last two frames.
    */
   const plain = playable.map((clip) => {
-    const edits = planningEdits(clip, project, options);
+    const edits = planningEdits(clip, project, options, playable);
     return totalDuration(keepRangesFor(clip, edits)) / clampSpeed(edits.speed);
   });
   const spent = playable.map(() => 0);
@@ -863,13 +895,6 @@ function silenceHandles(
   for (let position = 1; position < playable.length; position++) {
     const join = joins[position];
     if (!join) continue;
-
-    const before = playable[position - 1];
-    const after = playable[position];
-    const editsBefore = planningEdits(before, project, options);
-    const editsAfter = planningEdits(after, project, options);
-    const speedBefore = clampSpeed(editsBefore.speed);
-    const speedAfter = clampSpeed(editsAfter.speed);
 
     // Never more than most of what is left of either shot, so that both are on
     // screen alone for at least a moment.
@@ -888,78 +913,16 @@ function silenceHandles(
     spent[position - 1] += overlap;
     spent[position] += overlap;
 
-    // Measured in source seconds, spent in output seconds: a clip running at
-    // double speed gives up two seconds of silence to buy one on screen. Sized
-    // from `overlap` rather than from what was asked for — buying back silence
-    // the join will not spend would leave dead air the cut had removed.
-    const tail = trailingSilence(before, editsBefore) / speedBefore;
-    const head = leadingSilence(after, editsAfter) / speedAfter;
-
-    let fromTail = Math.min(tail, overlap / 2);
-    let fromHead = Math.min(head, overlap - fromTail);
-    // A second pass at the tail: if the incoming shot had less to give than half,
-    // the outgoing one is allowed to make up the difference.
-    fromTail = Math.min(tail, overlap - fromHead);
-
-    handles[position - 1].tail = fromTail * speedBefore;
-    handles[position].head = fromHead * speedAfter;
-    restored[position] = fromTail + fromHead;
+    // No silence is bought back any more. A transition is now simply the next
+    // shot laid over the end of the one before, picture and sound, exactly as
+    // both were cut. Putting the removed pause back under the join made the
+    // outgoing shot play its dead air — often the last instants of the file,
+    // where the picture stops before the sound does — and it read as the last
+    // frame freezing before every transition. `handles` and `restored` stay at
+    // zero; they are kept so the plan keeps its shape.
   }
 
   return { handles, restored, overlaps };
-}
-
-/**
- * What a transition is allowed to buy back at a clip's edges.
- *
- * Detected silence only — never a region the reader drew by hand. Silence the
- * detector removed is the tool's own decision and giving some of it back to pay
- * for an animation is a trade the tool may make; a range the reader painted over
- * is them saying "this take is no good", and quietly putting a third of a second
- * of it back under a transition is the tool overruling them.
- *
- * Anything the reader cut by hand at the very edge therefore shrinks what is
- * available, because the kept range starts after it either way.
- */
-function reclaimable(clip: EditorClip, edits: ClipEdits): EditableRange[] {
-  if (!isMediaClip(clip) || !edits.cutSilence) return [];
-
-  const detected = clip.detected.filter((range) => range.enabled);
-  if (!detected.length) return [];
-
-  const manual = clip.manualCuts.filter((range) => range.enabled);
-  const duration = sourceDuration(clip);
-
-  return mergeEditableRanges(detected, duration).filter(
-    (range) => range.enabled && !manual.some((cut) => cut.start < range.end && cut.end > range.start)
-  );
-}
-
-/**
- * Silence at the very end of a clip that the cut would remove, in source seconds.
- *
- * Measured against the clip's own end rather than the file's. A clip trimmed to
- * the middle of a take has no silence at its edges to sell, and letting a
- * transition buy back a pause that sits past the out point would put footage
- * the reader deliberately cut off back on screen.
- */
-function trailingSilence(clip: EditorClip, edits: ClipEdits): number {
-  const removed = reclaimable(clip, edits);
-  const bounds = clipBounds(clip);
-  const last = removed[removed.length - 1];
-  if (!last || last.end < bounds.end - EPSILON) return 0;
-
-  return Math.max(0, Math.min(last.end, bounds.end) - Math.max(last.start, bounds.start));
-}
-
-/** The same at the head. */
-function leadingSilence(clip: EditorClip, edits: ClipEdits): number {
-  const removed = reclaimable(clip, edits);
-  const bounds = clipBounds(clip);
-  const first = removed[0];
-  if (!first || first.start > bounds.start + EPSILON) return 0;
-
-  return Math.max(0, Math.min(first.end, bounds.end) - Math.max(first.start, bounds.start));
 }
 
 /** Gives a clip's outermost kept ranges back the silence a transition will use. */

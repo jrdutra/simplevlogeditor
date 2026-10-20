@@ -1,7 +1,7 @@
 {
   "name": "simplevlogeditor-desktop",
   "productName": "SimpleVlogEditor",
-  "version": "2.1.1",
+  "version": "2.1.2",
   "private": true,
   "description": "SimpleVlogEditor as a Windows desktop application.",
   "author": "simplevlogeditor.com",
@@ -16,9 +16,9 @@
     "test:shorts": "node --test src/short-editor.test.js",
     "build:web": "npm --prefix ../web run build:site",
     "dist": "npm --prefix ../web run build",
-    "pack": "electron-builder --win && node scripts/publish-installer.js",
+    "pack": "electron-builder --win --config scripts/electron-builder.config.js && node scripts/publish-installer.js",
     "mcp:stdio": "electron . --mcp-stdio",
-    "pack:dir": "electron-builder --win dir"
+    "pack:dir": "electron-builder --win dir --config scripts/electron-builder.config.js"
   },
   "devDependencies": {
     "electron": "^44.3.0",

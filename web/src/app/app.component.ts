@@ -12,6 +12,7 @@ import { PrivacyPanelComponent } from './shared/ui/privacy-panel.component';
 import { PluginGuideClient, PluginGuideService } from './shared/ui/plugin-guide.service';
 import { SeoService } from './seo.service';
 import { WindowControlsComponent } from './shared/desktop/window-controls.component';
+import { UpdateNoticeComponent } from './shared/desktop/update-notice.component';
 import { TOOL_BY_ROUTE, TOOLS } from './tools.data';
 import {
   VideoPackagingInput,
@@ -34,7 +35,7 @@ import CURRENT_VERSION from '../currentversion.json';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, MatIconModule, RouterOutlet, RouterLink, RouterLinkActive, WindowControlsComponent, PrivacyPanelComponent, AboutPanelComponent, TagStylePickerComponent, AgentActivityComponent],
+  imports: [CommonModule, MatIconModule, RouterOutlet, RouterLink, RouterLinkActive, WindowControlsComponent, PrivacyPanelComponent, AboutPanelComponent, TagStylePickerComponent, AgentActivityComponent, UpdateNoticeComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
   changeDetection: ChangeDetectionStrategy.OnPush

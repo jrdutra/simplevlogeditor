@@ -28,6 +28,7 @@ import {
   CAPTION_FONTS,
   CAPTION_LIMITS,
   CAPTION_PRESETS,
+  DEFAULT_BACKGROUND_CAPTION_POSITION,
   MANUAL_ZOOM_LIMITS,
   REFRAME_FITS
 } from './video-editor-defaults';
@@ -66,7 +67,7 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
       'remove_clip', 'move_clip', 'duplicate_clip', 'add_text_clip', 'update_text_clip', 'set_text_background',
       'add_transition', 'update_transition', 'split_clip', 'trim_clip', 'clear_trim', 'set_image_duration',
       'delete_source_range', 'restore_source_ranges', 'set_detected_range', 'set_speed', 'set_volume', 'set_audio_mode', 'set_clip_edits',
-      'set_noise_suppression', 'set_video_effect', 'add_video_effect', 'update_video_effect', 'remove_video_effect',
+      'set_license_plate_blur', 'set_noise_suppression', 'set_video_effect', 'add_video_effect', 'update_video_effect', 'remove_video_effect',
       'clear_clip_overrides', 'attach_audio', 'detach_audio', 'add_caption', 'update_caption', 'remove_caption',
       'add_image', 'update_image', 'remove_image',
       'set_tag', 'remove_tag', 'add_push_in', 'update_push_in', 'remove_push_in',
@@ -147,10 +148,21 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
       styles: ['classic', 'behind-subject'],
       behindSubject: {
         positions: editor.behindSubjectPositions.map((item) => item.id),
+        defaultPosition: { id: 'upper-left', positionX: DEFAULT_BACKGROUND_CAPTION_POSITION.x,
+          positionY: DEFAULT_BACKGROUND_CAPTION_POSITION.y },
         positionCoordinates: 'normalized-frame',
         fontScale: { min: 0.2, max: 0.4 },
         fallback: 'The style remains behind-subject; when no person can be segmented, text is rendered normally in the same position.'
       }
+    },
+    licensePlateBlur: {
+        setting: 'blurLicensePlates', type: 'boolean', command: 'apply_edit_batch', operation: 'set_license_plate_blur',
+        scope: 'video-container-only', arguments: ['clipId', 'enabled'], default: false,
+        inference: 'local-wasm-worker', model: 'open-lpr-plate-yolox-tiny-640',
+        modelLocation: 'bundled-assets', outputs: ['preview', 'video-export', 'composited-frames'],
+        countries: 'Visual plate detection without country-specific OCR; no guarantee that every plate is detected.',
+        aiPolicy: 'Generative AI must visually inspect each video container and enable only when a car with an exposed plate is visible. No automatic enable for uninspected or inconclusive footage. Respect explicit opt-outs.',
+        failure: 'Preview hides unprocessed frames; export stops with plate_detection_failed if inference fails.'
     },
     project: {
       aspects: ASPECTS.map((item) => item.value),
@@ -161,6 +173,17 @@ export function editorCapabilities(editor: CapabilityInputs): unknown {
     },
     audio: {
       defaultTarget: 'project',
+      clipFades: {
+        operation: 'set_clip_edits',
+        automaticTextCardBoundaries: {
+          enabled: true, textCard: ['fadeIn', 'fadeOut', 'fadeInAudio', 'fadeOutAudio'],
+          previousVideo: ['fadeOut', 'fadeOutAudio'], nextVideo: ['fadeIn', 'fadeInAudio'],
+          note: 'Derived automatically from current container order on insertion, move, removal and reopen. Overrides picture-only fades and transition overlaps at text-card boundaries; unrelated video-to-video edges retain continuous music. Positive fadeSeconds are preserved; zero/invalid uses 1 second, clamped for short containers.'
+        },
+        fields: ['fadeIn', 'fadeOut', 'fadeSeconds', 'fadeAudioWithVideo', 'fadeInAudio', 'fadeOutAudio'],
+        edgeAudio: 'fadeInAudio/fadeOutAudio override fadeAudioWithVideo at that edge only: false fades the picture only, true also fades music. An explicitly configured faded edge overrides transition overlaps. For consecutive videos sharing continuous project music, use outgoing fadeOutAudio:false and incoming fadeInAudio:false; preserve audio fades at their other edges.',
+        note: 'Set fadeAudioWithVideo: true for a break to black and silence, including continuing project music. Faded edges override transition overlaps. Use on both ends of text cards, on their neighboring video edges, and after an opening timelapse.'
+      },
       sourceInspection: { command: 'get_audio_levels', timeSpace: 'source', defaultInterval: .2,
         intervalSeconds: { min: .05, max: 1 }, maxRangeSeconds: 120, maxAudioPreviewSeconds: 12,
         measurements: ['rms', 'peak', 'rmsDbfs', 'peakDbfs', 'coverage', 'channels'],

@@ -40,6 +40,12 @@ function plan(overrides: Partial<Record<string, unknown>> = {}): ProjectPlan {
 }
 
 describe('composed frame fidelity', () => {
+  it('invalidates saved composed frames when plate protection changes', () => {
+    const p = plan();
+    const before = editFingerprint(p);
+    Object.assign(p.clips[0].clip, { summary: { kind: 'video' }, blurLicensePlates: true });
+    expect(editFingerprint(p)).not.toBe(before);
+  });
   it('maps a kept instant to its place in the finished video', () => {
     const result = composedFidelity(plan(), 0, 2);
     expect(result.faithful).toBeTrue();

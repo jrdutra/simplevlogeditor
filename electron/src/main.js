@@ -92,7 +92,11 @@ const { preferredPort, rememberPort } = require('./stable-origin');
 const { editorLocationFile, rememberEditorLocation } = require('./editor-location');
 const { RootStore } = require('./mcp-roots');
 const { rootsFile, readRoots, writeRoots } = require('./roots-store-file');
-const { checkVersion, updateSentence } = require('./version-check');
+const { createUpdateNotice } = require('./update-notice');
+const updateNotice = createUpdateNotice({
+  installed: () => app.getVersion(),
+  openExternal: url => shell.openExternal(url)
+});
 
 /**
  * Below this the console stops being one.
@@ -1589,6 +1593,19 @@ function wireWindowControls() {
     return window ? stateOf(window) : { maximized: false, fullScreen: false, focused: true };
   });
 
+  ipcMain.handle('updates:get', (event) => {
+    if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
+    return updateNotice.get();
+  });
+  ipcMain.handle('updates:dismiss', (event) => {
+    if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
+    updateNotice.dismiss();
+  });
+  ipcMain.handle('updates:open', (event) => {
+    if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
+    return updateNotice.open();
+  });
+
   /*
    * Handing the page a gesture, so a project can open its own files.
    *
@@ -1713,27 +1730,10 @@ function wirePermissions(session) {
  * must not nag about a network it does not otherwise need.
  */
 async function announceOutdatedVersion() {
-  const report = await checkVersion({ installed: app.getVersion(), piece: 'desktop' });
-  if (!report || report.current) return;
+  const report = await updateNotice.get();
+  if (!report) return;
 
   log.warn('version_behind', { installed: report.installed, published: report.published });
-
-  const window = BrowserWindow.getAllWindows()[0] ?? null;
-  const options = {
-    type: 'warning',
-    title: 'A newer SimpleVlogEditor has been released',
-    message: `This application is version ${report.installed || 'unknown'}; the current release is ${report.published}.`,
-    detail: updateSentence(report, 'This application'),
-    buttons: ['Open the download page', 'Later'],
-    defaultId: 0,
-    cancelId: 1,
-    noLink: true
-  };
-
-  const { response } = window
-    ? await dialog.showMessageBox(window, options)
-    : await dialog.showMessageBox(options);
-  if (response === 0) await shell.openExternal(report.updateUrl).catch(() => {});
 }
 
 if (gotSingleInstanceLock) app.whenReady().then(async () => {

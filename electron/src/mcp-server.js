@@ -47,6 +47,10 @@ const EDIT_OPERATIONS = [
   editOperation('set_audio_mode', {
     clipId: { type: 'string' }, mode: { enum: ['original', 'replace', 'continue', 'mute'] }
   }, ['clipId', 'mode']),
+  editOperation('set_license_plate_blur', {
+    clipId: { type: 'string', description: 'One video container, identified by get_timeline. Images, audio and text cards are not supported.' },
+    enabled: { type: 'boolean', description: 'Local plate detection and blur for this video only; default false. Enable only after generative visual inspection finds a car with an exposed plate in this container. Respect explicit user opt-outs.' }
+  }, ['clipId', 'enabled']),
   editOperation('set_noise_suppression', {
     clipId: { type: 'string' },
     enabled: { type: 'boolean', description: 'Schedules per-clip suppression for export; it does not process immediately.' },
@@ -86,7 +90,7 @@ const EDIT_OPERATIONS = [
   }, ['clipId', 'videoEffectId']),
   editOperation('set_clip_edits', {
     clipId: { type: 'string' },
-    edits: { type: 'object', description: 'cutSilence, fades, speed, volumePercent, audioMode and nested silence/autoZoom settings.', additionalProperties: true }
+    edits: { type: 'object', description: 'cutSilence, fadeIn, fadeOut, fadeSeconds, fadeAudioWithVideo, fadeInAudio, fadeOutAudio, speed, volumePercent, audioMode and nested silence/autoZoom settings. fadeAudioWithVideo:true fades continuing music with the picture. Per-edge fadeInAudio/fadeOutAudio override it: false keeps audio continuous during that image fade; true includes audio. Explicitly configured faded edges take priority over overlapping transitions.', additionalProperties: true }
   }, ['clipId', 'edits']),
   editOperation('clear_clip_overrides', { clipId: { type: 'string' } }, ['clipId']),
   editOperation('attach_audio', {
@@ -99,7 +103,7 @@ const EDIT_OPERATIONS = [
     clipId: { type: 'string' }, start: { type: 'number' }, text: { type: 'string' }, duration: { type: 'number' },
     caption: {
       type: 'object',
-      description: 'The caption style, applied to the new caption in the same operation — never add a caption and then update it, because the id is only known afterwards and the batch result is what names it. Captions sit end to end on a container, so this fails with `no_room` when the ones already there reach its end: update the caption that is there instead of adding another. Read get_editor_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the legacy "behind-subject" ID remains upper-center. positionX/positionY are normalized frame coordinates.',
+      description: 'The caption style, applied to the new caption in the same operation — never add a caption and then update it, because the id is only known afterwards and the batch result is what names it. Captions sit end to end on a container, so this fails with `no_room` when the ones already there reach its end: update the caption that is there instead of adding another. Read get_editor_capabilities.captions.presetGroups, fonts and animations. Background presets place text behind a locally segmented person and may use subtle zoom or scroll motion; the generic "behind-subject" ID defaults to upper-left (positionX: 0.3, positionY: 0.24), with explicit user placement preserved. positionX/positionY are normalized frame coordinates.',
       additionalProperties: true
     }
   }, ['clipId', 'start', 'text']),
@@ -258,7 +262,7 @@ const TOOLS = [
   tool('get_project', 'Read the complete versioned editor project.', {}),
   tool('list_assets', 'List every unique media asset and the clips that use it.', {}),
   tool('get_timeline', 'Read clips, source/output timing, cuts, captions and audio state.', {}),
-  tool('get_analysis_blocks', 'Read transcript-based analysis blocks of at most 300 source seconds, preferring sentence ends and pauses. Transcribe first. Review every block separately and refine its semantic boundaries using the transcript and frames. blockIndex returns that block\'s words and scoped silence ranges with original detector indices. This read does not cut the timeline.', {
+  tool('get_analysis_blocks', 'Read transcript-based analysis blocks of at most 300 source seconds, preferring sentence ends and pauses. Transcribe first: a clip without a transcript in this editor session returns transcriptReady false, no blocks and the requiredCommand to run before reading again. Review every block separately and refine its semantic boundaries using the transcript and frames. blockIndex returns that block\'s words and scoped silence ranges with original detector indices. This read does not cut the timeline.', {
     clipId: { type: 'string' }, blockIndex: { type: 'integer', minimum: 0 }
   }, ['clipId']),
   tool('add_media', 'Compatibility entry point for path-only asynchronous media import. Returns a jobId immediately; poll get_import_status.', {

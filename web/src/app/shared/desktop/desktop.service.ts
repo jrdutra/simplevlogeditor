@@ -8,6 +8,12 @@ export interface DesktopWindowState {
   focused: boolean;
 }
 
+export interface DesktopUpdateNotice {
+  installed: string;
+  published: string;
+  updateUrl: string;
+}
+
 export interface AgentControlState {
   active: boolean;
   visible?: boolean;
@@ -47,6 +53,9 @@ interface DesktopBridge {
   toggleMaximize(): void;
   close(): void | Promise<void>;
   getState(): Promise<DesktopWindowState>;
+  getUpdateNotice?(): Promise<DesktopUpdateNotice | null>;
+  dismissUpdateNotice?(): Promise<void>;
+  openUpdatePage?(): Promise<boolean>;
   onState(listener: (state: DesktopWindowState) => void): () => void;
   onAgentControlState?(listener: (state: AgentControlState) => void): () => void;
   onAgentSystemEvent?(listener: (entry: AgentSystemEvent) => void): () => void;
@@ -113,11 +122,26 @@ interface AgentOutputBridge {
 export function createAgentOutputHandle(id: string, bridge: AgentOutputBridge): AgentOutputHandle {
   let cursor = 0;
   let state: 'open' | 'closed' | 'committed' | 'aborted' = 'open';
+  let commitTask: Promise<void> | null = null;
+  let abortTask: Promise<void> | null = null;
 
-  const abortFile = async (): Promise<void> => {
-    if (state === 'committed' || state === 'aborted') return;
-    state = 'aborted';
-    await bridge.abort(id);
+  const abortFile = (): Promise<void> => {
+    if (state === 'committed') return Promise.resolve();
+    if (abortTask) return abortTask;
+    // An atomic publication already in flight owns the destination. Wait for
+    // its outcome before attempting cleanup; never delete a committed export.
+    const committing = commitTask;
+    if (!committing) state = 'aborted';
+    abortTask = Promise.resolve().then(async () => {
+      if (committing) await committing.catch(() => undefined);
+      if (state === 'committed') return;
+      state = 'aborted';
+      await bridge.abort(id);
+    }).catch(error => {
+      abortTask = null; // A failed IPC cleanup can be retried.
+      throw error;
+    });
+    return abortTask;
   };
 
   const stream = new WritableStream<AgentOutputChunk>({
@@ -143,10 +167,16 @@ export function createAgentOutputHandle(id: string, bridge: AgentOutputBridge): 
     stream,
     commit: async () => {
       if (state === 'committed') return;
-      if (state === 'aborted') throw new Error('The export destination was aborted.');
+      if (state === 'aborted' || abortTask) throw new Error('The export destination was aborted.');
+      if (commitTask) return commitTask;
       if (state !== 'closed') throw new Error('Close the export stream before committing it.');
-      await bridge.commit(id);
-      state = 'committed';
+      commitTask = Promise.resolve().then(() => bridge.commit(id)).then(() => {
+        state = 'committed';
+      }).catch(error => {
+        commitTask = null;
+        throw error;
+      });
+      return commitTask;
     },
     abort: abortFile
   };
@@ -213,6 +243,18 @@ export class DesktopService {
 
   /** True only inside the desktop shell. */
   readonly isDesktop = !!this.bridge;
+
+  getUpdateNotice(): Promise<DesktopUpdateNotice | null> {
+    return this.bridge?.getUpdateNotice?.().catch(() => null) ?? Promise.resolve(null);
+  }
+
+  dismissUpdateNotice(): Promise<void> {
+    return this.bridge?.dismissUpdateNotice?.().catch(() => undefined) ?? Promise.resolve();
+  }
+
+  openUpdatePage(): Promise<boolean> {
+    return this.bridge?.openUpdatePage?.() ?? Promise.resolve(false);
+  }
 
   readonly maximized = signal(false);
   readonly fullScreen = signal(false);

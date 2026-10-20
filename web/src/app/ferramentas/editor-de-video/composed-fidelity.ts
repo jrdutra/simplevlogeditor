@@ -152,6 +152,7 @@ export function editFingerprint(plan: ProjectPlan): string {
     frame: [plan.width, plan.height, plan.frameRate, plan.fillFrame],
     clips: plan.clips.map(entry => ({
       id: entry.clip.id,
+      blurLicensePlates: isMediaClip(entry.clip) && entry.clip.summary?.kind === 'video' && entry.clip.blurLicensePlates === true,
       keep: entry.keepRanges,
       start: entry.outputStart,
       duration: entry.outputDuration,

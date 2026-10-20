@@ -1,4 +1,4 @@
-import { backgroundCaptionEnvelope, backgroundCaptionMotion, drawCaption } from './caption-renderer';
+import { backgroundCaptionEnvelope, backgroundCaptionFont, backgroundCaptionMotion, drawCaption } from './caption-renderer';
 import { DEFAULT_CAPTION, clampCaption } from './video-editor-defaults';
 import { ClipCaption } from './video-editor.models';
 import { SubjectSegmentationClient } from './subject-segmentation';
@@ -16,6 +16,18 @@ function contextStub(): CanvasRenderingContext2D {
 }
 
 describe('caption renderer', () => {
+  for (const installed of [true, false]) {
+    it(`uses ${installed ? 'regular Impact when available' : 'bold Arial when Impact is unavailable'}`, () => {
+      const context = contextStub();
+      context.font = '12px serif';
+      context.measureText = () => ({
+        width: installed && context.font.includes('Impact') ? 150 : 200
+      }) as TextMetrics;
+      expect(backgroundCaptionFont(context, { ...DEFAULT_CAPTION, fontFamily: 'impact', fontWeight: 900 }))
+        .toEqual(installed ? { family: 'Impact', weight: 400 } : { family: 'Arial, "Liberation Sans", sans-serif', weight: 700 });
+      expect(context.font).toBe('12px serif');
+    });
+  }
   it('keeps classic captions on the existing outlined path', () => {
     const context = contextStub();
     drawCaption(context, { ...DEFAULT_CAPTION, text: 'Classic caption' }, 1920, 1080);
@@ -48,7 +60,7 @@ describe('caption renderer', () => {
     drawCaption(context, caption, 320, 180);
     const automatic = context.getImageData(0, 0, 320, 180).data;
     context.clearRect(0, 0, 320, 180);
-    drawCaption(context, { ...caption, text: 'DOIS\nDIAS', uppercase: false }, 320, 180);
+    drawCaption(context, { ...caption, text: 'DOIS\nDIAS', uppercase: false, fontWeight: 400 }, 320, 180);
     expect(context.getImageData(0, 0, 320, 180).data).toEqual(automatic);
     expect(automatic.some((value) => value > 0)).toBeTrue();
   });

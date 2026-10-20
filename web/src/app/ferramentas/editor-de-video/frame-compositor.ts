@@ -16,6 +16,7 @@
 
 import { drawZoomed, zoomScaleAt } from '../../shared/media/auto-zoom';
 import { drawCaption } from './caption-renderer';
+import { licensePlateBlurAt } from './license-plate-scope';
 import { drawClipImage, imageBehindSubject, imagesAt } from './clip-image';
 import { drawTag } from './tag-renderer';
 import { captionAt, fadeGainAt, tagAt, transitionAt, transitionProgress, videoEffectAt } from './video-editor-timeline';
@@ -94,6 +95,7 @@ export function needsCompositing(plan: ProjectPlan, time: number): boolean {
   // for that separately and passes such a frame straight through, because asking
   // this question about it would send an already-finished picture round again.
   return (
+    licensePlateBlurAt(plan, time) ||
     // A reframed project crops, and cropping is something only a canvas can do:
     // the encoder's own transform letterboxes and has no other setting. So every
     // frame of such a project is composed, which is the price of the reframe and

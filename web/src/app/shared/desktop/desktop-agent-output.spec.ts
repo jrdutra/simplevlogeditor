@@ -3,6 +3,50 @@ import { Mp4OutputFormat, Output, StreamTarget, WebMOutputFormat } from 'mediabu
 import { AgentOutputHandle, createAgentOutputHandle } from './desktop.service';
 
 describe('desktop agent output stream', () => {
+  it('publishes only once when finalization and cancellation overlap', async () => {
+    let finish!: () => void;
+    const commit = jasmine.createSpy('commit').and.callFake(() => new Promise<void>(resolve => finish = resolve));
+    const abort = jasmine.createSpy('abort').and.resolveTo();
+    const handle = createAgentOutputHandle('out', { write: async () => 0, commit, abort });
+    const writer = handle.stream.getWriter();
+    await writer.close(); writer.releaseLock();
+    const first = handle.commit(), second = handle.commit();
+    await Promise.resolve();
+    const cancelled = handle.abort();
+    expect(abort).not.toHaveBeenCalled();
+    finish();
+    await Promise.all([first, second, cancelled]);
+    expect(commit).toHaveBeenCalledTimes(1);
+    expect(abort).not.toHaveBeenCalled();
+  });
+
+  it('cleans up when publication fails during a cancellation', async () => {
+    let fail!: (error: Error) => void;
+    const commit = () => new Promise<void>((_, reject) => fail = reject);
+    const abort = jasmine.createSpy('abort').and.resolveTo();
+    const handle = createAgentOutputHandle('out', { write: async () => 0, commit, abort });
+    const writer = handle.stream.getWriter();
+    await writer.close(); writer.releaseLock();
+    const publishing = handle.commit();
+    const rejected = expectAsync(publishing).toBeRejectedWithError('disk full');
+    await Promise.resolve();
+    const cancelled = handle.abort();
+    fail(new Error('disk full'));
+    await Promise.all([rejected, cancelled]);
+    expect(abort).toHaveBeenCalledTimes(1);
+    await expectAsync(handle.commit()).toBeRejectedWithError('The export destination was aborted.');
+  });
+
+  it('allows retrying cleanup after an IPC failure without reopening the stream', async () => {
+    const abort = jasmine.createSpy('abort').and.returnValues(
+      Promise.reject(new Error('disconnected')), Promise.resolve());
+    const handle = createAgentOutputHandle('out', { write: async () => 0, commit: async () => {}, abort });
+    await expectAsync(handle.abort()).toBeRejectedWithError('disconnected');
+    await handle.abort();
+    expect(abort).toHaveBeenCalledTimes(2);
+    await expectAsync(handle.commit()).toBeRejectedWithError('The export destination was aborted.');
+  });
+
   function output() {
     const writes: Array<{ id: string; position: number; bytes: number[] }> = [];
     const committed: string[] = [];

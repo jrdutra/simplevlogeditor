@@ -55,6 +55,14 @@ The same three steps run from either side: `npm run build` in `../web` ends by
 calling back here. `npm run build:site` there is the site alone, for when you
 are working on the site and do not want to wait for an installer.
 
+`npm run pack` and `npm run pack:dir` reuse the Electron runtime already installed
+in `node_modules/electron/dist` when its version and Windows x64 architecture match.
+This avoids downloading Electron again from GitHub during packaging. A missing,
+incomplete or incompatible local runtime falls back to electron-builder's normal
+cache/download path. Installer tools such as NSIS can still require network access
+on their first use. An `ENOTFOUND github.com` error means DNS/network resolution
+failed; the Angular CSS budget warning does not cause that packaging failure.
+
 `assets/download/**` is filtered out of what the installer packs, so the
 application does not contain a copy of itself, and the download button is hidden
 inside the desktop app in any case.

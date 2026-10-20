@@ -36,6 +36,7 @@ import {
   transitionAt,
   transitionProgress,
   trimmedDuration,
+  textCardFadeEdges,
   videoEffectAt,
   videoEffectGain,
   videoEffectSlotFor,
@@ -158,6 +159,190 @@ function silentClip(id: string, duration: number): MediaClip {
   clip.summary.hasAudioTrack = false;
   return clip;
 }
+
+describe('editorial fades through black and silence', () => {
+  it('fades only the images between videos continuing project music, overriding legacy audio fades and transitions', () => {
+    const before = silentClip('a', 10);
+    before.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeOut: true,
+      fadeAudioWithVideo: true, fadeOutAudio: false };
+    const after = silentClip('b', 10);
+    after.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeOut: true,
+      fadeAudioWithVideo: true, fadeInAudio: false };
+    const music = soundtrack();
+    const plan = buildProjectPlan([before, transitionClip('old-join'), after],
+      project({}, { defaultAudio: music, defaultTransition: transitionClip('default').settings }), 'video');
+    expect(plan.totalDuration).toBe(20);
+    expect(plan.transitions).toEqual([]);
+    expect(plan.clips.map(entry => entry.sound.kind === 'file' ? entry.sound.offset : -1)).toEqual([0, 10]);
+    expect(plan.clips.every(entry => entry.sound.kind === 'file' && entry.sound.file === music.file)).toBeTrue();
+    expect(plan.fades).toEqual([
+      { start: 0, end: 1, kind: 'in' }, { start: 9, end: 10, kind: 'out' },
+      { start: 10, end: 11, kind: 'in' }, { start: 19, end: 20, kind: 'out' }
+    ]);
+    expect(plan.audioFades).toEqual([
+      { start: 0, end: 1, kind: 'in' }, { start: 19, end: 20, kind: 'out' }
+    ]);
+    for (const time of [9.25, 9.75, 10, 10.25, 10.75]) {
+      expect(fadeGainAt(plan.audioFades, time) * fadeGainAt(plan.soundFades, time)).toBe(1);
+      expect(fadeGainAt(plan.fades, time)).toBeLessThan(1);
+    }
+  });
+
+  it('preserves a card-to-video sound fade at the other end of a picture-only video join', () => {
+    const card = textClip('chapter', 1, 5);
+    card.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeOut: true, fadeAudioWithVideo: true };
+    const first = silentClip('first', 10);
+    first.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeOut: true,
+      fadeAudioWithVideo: true, fadeInAudio: true, fadeOutAudio: false };
+    const next = silentClip('next', 10);
+    next.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeInAudio: false };
+    const plan = buildProjectPlan([card, first, next], project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(plan.audioFades).toEqual([
+      { start: 0, end: 1, kind: 'in' },
+      { start: 5, end: 6, kind: 'out' }, { start: 6, end: 7, kind: 'in' }
+    ]);
+    expect(fadeGainAt(plan.audioFades, 6)).toBe(0);
+    expect(fadeGainAt(plan.fades, 16)).toBe(0);
+    expect(fadeGainAt(plan.audioFades, 16)).toBe(1);
+    expect(fadeGainAt(plan.soundFades, 16)).toBe(1);
+  });
+
+  it('keeps a short clip audio entrance aligned to its picture when only the exit is picture-only', () => {
+    const clip = silentClip('short', 0.4);
+    clip.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeOut: true,
+      fadeInAudio: true, fadeOutAudio: false };
+    const plan = buildProjectPlan([clip], project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(plan.audioFades).toEqual([{ start: 0, end: 0.2, kind: 'in' }]);
+    expect(fadeGainAt(plan.audioFades, 0.1)).toBe(fadeGainAt(plan.fades, 0.1));
+  });
+
+  it('fades out an opening timelapse and fades in the next video after the timelapse speed change', () => {
+    const first = mediaClip('opening', 60);
+    first.summary.isTimelapse = true;
+    first.overrides = { ...cloneEdits(DEFAULT_EDITS), speed: 4, fadeOut: true, fadeAudioWithVideo: true };
+    const next = mediaClip('speech', 10, { overrides: {
+      ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeAudioWithVideo: true
+    } });
+    const plan = buildProjectPlan([first, transitionClip('old-join'), next],
+      project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(plan.totalDuration).toBe(25);
+    expect(plan.transitions).toEqual([]);
+    expect(plan.clips[0].sound.kind).toBe('file');
+    expect(plan.fades).toEqual([
+      { start: 14, end: 15, kind: 'out' }, { start: 15, end: 16, kind: 'in' }
+    ]);
+    expect(plan.audioFades).toEqual(plan.fades);
+    expect(fadeGainAt(plan.audioFades, 14.5)).toBeCloseTo(0.5);
+    expect(fadeGainAt(plan.fades, 15)).toBe(0);
+    expect(fadeGainAt(plan.audioFades, 15.5)).toBeCloseTo(0.5);
+  });
+
+  it('fades both sides of a text card even when the exact same project music continues', () => {
+    const before = silentClip('before', 10);
+    before.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeOut: true, fadeAudioWithVideo: true };
+    const card = textClip('chapter', 1, 5);
+    card.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeOut: true, fadeAudioWithVideo: true };
+    const after = silentClip('after', 10);
+    after.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeIn: true, fadeAudioWithVideo: true };
+    const music = soundtrack();
+    const plan = buildProjectPlan([before, card, after, silentClip('last', 10)],
+      project({}, { defaultAudio: music, defaultTransition: transitionClip('default', 1).settings }), 'video');
+    expect(plan.fades).toEqual([
+      { start: 9, end: 10, kind: 'out' }, { start: 10, end: 11, kind: 'in' },
+      { start: 15, end: 16, kind: 'out' }, { start: 16, end: 17, kind: 'in' }
+    ]);
+    expect(plan.audioFades).toEqual(plan.fades);
+    expect(plan.clips.every(entry => entry.sound.kind === 'file' && entry.sound.file === music.file)).toBeTrue();
+    expect(plan.clips.map(entry => entry.sound.kind === 'file' ? entry.sound.offset : -1)).toEqual([0, 10, 16, 25]);
+    // Only the unrelated join after the next video keeps the project transition.
+    expect(plan.transitions.map(join => [join.fromIndex, join.toIndex])).toEqual([[2, 3]]);
+    for (const time of [10, 16]) {
+      expect(fadeGainAt(plan.fades, time)).toBe(0);
+      expect(fadeGainAt(plan.audioFades, time)).toBe(0);
+    }
+  });
+
+  it('keeps an explicitly faded soundtrack exit when an ordinary next clip inherits its music', () => {
+    const first = silentClip('a', 10);
+    first.overrides = { ...cloneEdits(DEFAULT_EDITS), fadeOut: true, fadeAudioWithVideo: true };
+    const plan = buildProjectPlan([first, silentClip('b', 10)], project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(plan.audioFades).toEqual([{ start: 9, end: 10, kind: 'out' }]);
+  });
+
+  it('clamps both fades on short consecutive cards and does not fade away the whole card', () => {
+    const cards = [textClip('a', 0, 0.4), textClip('b', 0, 0.4)];
+    const plan = buildProjectPlan(cards, project({ fadeIn: true, fadeOut: true,
+      fadeSeconds: 1, fadeAudioWithVideo: true }, { defaultAudio: soundtrack() }), 'video');
+    expect(plan.audioFades).toEqual(plan.fades);
+    expect(plan.fades.length).toBe(4);
+    expect(fadeGainAt(plan.audioFades, 0.2)).toBe(1);
+    expect(fadeGainAt(plan.audioFades, 0.4)).toBe(0);
+    expect(fadeGainAt(plan.audioFades, 0.6)).toBeCloseTo(1);
+  });
+});
+
+describe('automatic text card fades', () => {
+  it('fades default containers and continuing music through silence without overlapping the card', () => {
+    const before = silentClip('before', 10), card = textClip('card', .5, 5.5), after = silentClip('after', 10);
+    const settings = project({}, { defaultAudio: soundtrack(),
+      defaultTransition: { kind: 'dissolve', seconds: .8, colour: '#000' } });
+    const p = buildProjectPlan([before, transitionClip('join-a'), card, transitionClip('join-b'), after], settings, 'video');
+    expect(p.transitions).toEqual([]);
+    expect(p.fades).toEqual([
+      { start: 9, end: 10, kind: 'out' }, { start: 10, end: 11, kind: 'in' },
+      { start: 15, end: 16, kind: 'out' }, { start: 16, end: 17, kind: 'in' }
+    ]);
+    expect(p.audioFades).toEqual(p.fades);
+    expect(p.clips.map(item => item.outputStart)).toEqual([0, 10, 16]);
+    expect(p.clips[0].edits.fadeOutAudio).toBeTrue();
+    expect(p.clips[1].edits.fadeInAudio).toBeTrue();
+    expect(p.clips[1].edits.fadeOutAudio).toBeTrue();
+    expect(p.clips[2].edits.fadeInAudio).toBeTrue();
+    expect(before.overrides).toBeNull();
+    expect(settings.edits.fadeOut).toBeFalse();
+  });
+
+  it('tracks insertion, reordering and removal without altering unrelated video edges', () => {
+    const a = mediaClip('a', 10), b = mediaClip('b', 10), c = mediaClip('c', 10), card = textClip('card', 0, 6);
+    const settings = project();
+    const order = [a, card, b, c];
+    expect(effectiveEdits(a, settings, order).fadeOutAudio).toBeTrue();
+    expect(effectiveEdits(b, settings, order).fadeInAudio).toBeTrue();
+    const moved = [a, b, card, c];
+    expect(effectiveEdits(a, settings, moved).fadeOut).toBeFalse();
+    expect(effectiveEdits(b, settings, moved).fadeOutAudio).toBeTrue();
+    expect(effectiveEdits(c, settings, moved).fadeInAudio).toBeTrue();
+    expect(textCardFadeEdges(b, [a, b, c])).toEqual({ fadeIn: false, fadeOut: false });
+    expect(buildProjectPlan([a, b, c], settings, 'video').fades).toEqual([]);
+  });
+
+  it('overrides picture-only card edges but preserves the opposite edge and chosen fade lengths', () => {
+    const a = silentClip('a', 10), card = textClip('card', 0, 6), b = silentClip('b', 10), c = silentClip('c', 10);
+    a.overrides = { ...DEFAULT_EDITS, fadeSeconds: .5, fadeOutAudio: false };
+    b.overrides = { ...DEFAULT_EDITS, fadeInAudio: false, fadeOut: true, fadeOutAudio: false };
+    c.overrides = { ...DEFAULT_EDITS, fadeIn: true, fadeInAudio: false };
+    const p = buildProjectPlan([a, card, b, c], project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(p.clips[0].edits.fadeSeconds).toBe(.5);
+    expect(p.clips[0].edits.fadeOutAudio).toBeTrue();
+    expect(p.clips[2].edits.fadeInAudio).toBeTrue();
+    expect(p.clips[2].edits.fadeOutAudio).toBeFalse();
+    expect(fadeGainAt(p.audioFades, 26)).toBe(1);
+    expect(fadeGainAt(p.fades, 26)).toBe(0);
+  });
+
+  it('supports consecutive cards and project edges and substitutes a real fade for zero seconds', () => {
+    const a = textClip('a', 0, .4), b = textClip('b', 0, .4);
+    a.overrides = { ...DEFAULT_EDITS, fadeSeconds: 0 };
+    const p = buildProjectPlan([a, b], project({}, { defaultAudio: soundtrack() }), 'video');
+    expect(p.fades.length).toBe(4);
+    expect(p.audioFades).toEqual(p.fades);
+    expect(p.fades.every(fade => fade.end > fade.start && fade.end - fade.start <= .2 + 1e-9)).toBeTrue();
+    expect(p.totalDuration).toBeCloseTo(.8);
+    expect(fadeGainAt(p.audioFades, 0)).toBe(0);
+    expect(fadeGainAt(p.audioFades, .4)).toBe(0);
+    expect(fadeGainAt(p.audioFades, .8 - 1e-6)).toBeLessThan(.001);
+  });
+});
 
 describe('effectiveEdits', () => {
   it('follows the project until the clip has its own copy', () => {
@@ -1202,12 +1387,12 @@ describe('joining two shots', () => {
   });
 
   /**
-   * The point of the whole design. With a pause at the end of one shot and the
-   * start of the next, the transition is paid for out of silence the cut would
-   * have thrown away — so it costs the edit nothing, and no speech goes under
-   * the animation.
+   * A transition is the next shot laid over the end of the one before, both as
+   * they were cut. The silence the cut removed stays removed: putting it back
+   * under the join played the outgoing shot's dead air, often the last instants
+   * of the file, and read as its last frame freezing.
    */
-  it('pays for itself out of the silence the cut would have removed', () => {
+  it('overlaps the two shots as they were cut, without buying silence back', () => {
     const before = mediaClip('a', 10);
     before.detected = [range(9, 10)];
     const after = mediaClip('b', 10);
@@ -1216,23 +1401,25 @@ describe('joining two shots', () => {
     const clips: EditorClip[] = [before, transitionClip('t', 0.6), after];
     const plan = buildProjectPlan(clips, project({ cutSilence: true }), 'video');
 
-    // 9 + 9 kept, 0.3 of silence bought back at each side, 0.6 of overlap: the
-    // two cancel exactly.
-    expect(plan.totalDuration).toBeCloseTo(18, 5);
-    expect(plan.transitions[0].fromSilence).toBeCloseTo(0.6, 5);
-    expect(plan.transitions[0].overContent).toBe(false);
+    // 9 + 9 kept, overlapping by 0.6.
+    expect(plan.totalDuration).toBeCloseTo(17.4, 5);
+    expect(plan.transitions[0].fromSilence).toBeCloseTo(0, 6);
+    expect(plan.clips[0].keepRanges[plan.clips[0].keepRanges.length - 1].end).toBeCloseTo(9, 5);
+    expect(plan.clips[1].keepRanges[0].start).toBeCloseTo(1, 5);
   });
 
-  it('takes the shortfall from one side when the other has nothing to give', () => {
-    const before = mediaClip('a', 10);
-    before.detected = [range(9, 10)];
-    const after = mediaClip('b', 10);
+  it('hears both sounds across a join', () => {
+    const clips: EditorClip[] = [mediaClip('a', 10), transitionClip('t', 0.6), mediaClip('b', 10)];
+    const plan = buildProjectPlan(clips, project(), 'video');
 
-    const clips: EditorClip[] = [before, transitionClip('t', 0.6), after];
-    const plan = buildProjectPlan(clips, project({ cutSilence: true }), 'video');
+    expect(plan.transitions[0].mixSound).toBe(true);
+  });
 
-    expect(plan.transitions[0].fromSilence).toBeCloseTo(0.6, 5);
-    expect(plan.transitions[0].overContent).toBe(false);
+  it('does not lay a carried soundtrack over itself', () => {
+    const clips: EditorClip[] = [silentClip('a', 10), transitionClip('t', 0.6), silentClip('b', 10)];
+    const plan = buildProjectPlan(clips, project({}, { defaultAudio: soundtrack() }), 'video');
+
+    expect(plan.transitions[0].mixSound).toBe(false);
   });
 
   it('says so when the animation has to play over content', () => {
@@ -1382,13 +1569,7 @@ describe('joining two shots', () => {
     if (third.kind === 'file') expect(third.offset).toBeCloseTo(10, 5);
   });
 
-  /**
-   * When the sound changes hands, and why it is not simply the end of the join.
-   *
-   * The version that always handed over at the end wrote the outgoing clip's
-   * restored room tone over the first syllable of every incoming one.
-   */
-  it('hands the sound over where the incoming shot starts talking', () => {
+  it('starts the incoming sound with the join', () => {
     const before = mediaClip('a', 10);
     before.detected = [range(9, 10)];
     const after = mediaClip('b', 10);
@@ -1398,9 +1579,8 @@ describe('joining two shots', () => {
     const plan = buildProjectPlan(clips, project({ cutSilence: true }), 'video');
     const join = plan.transitions[0];
 
-    // Three tenths of silence were bought back from each side, so the incoming
-    // shot's content begins three tenths into the join.
-    expect(join.soundSwitch).toBeCloseTo(join.start + 0.3, 5);
+    expect(join.soundSwitch).toBeCloseTo(join.start, 6);
+    expect(join.mixSound).toBe(true);
   });
 
   it('hands the sound over at once when the incoming shot plays a file', () => {
@@ -1453,13 +1633,8 @@ describe('joining two shots', () => {
     if (join) expect(transitionProgress(join, 9.5)).toBeCloseTo(0.5, 5);
   });
 
-  /**
-   * The failure this was written for: the silence given back was sized from what
-   * the reader asked for, while the overlap that spends it was clamped to what
-   * the shots could afford. The difference stayed on the timeline as dead air
-   * the silence cut had already removed.
-   */
-  it('gives back only as much silence as the join actually spends', () => {
+  /** No silence comes back, however long the join: the cut stays as it was. */
+  it('gives back no silence, however long the join', () => {
     const before = mediaClip('a', 10);
     before.detected = [range(8, 10)];
     const after = mediaClip('b', 10);
@@ -1470,10 +1645,8 @@ describe('joining two shots', () => {
     const join = plan.transitions[0];
     const spent = join.end - join.start;
 
-    // Whatever the clamp allowed, the silence bought back is the same number —
-    // so the finished length is exactly what it would have been without the join.
-    expect(join.fromSilence).toBeCloseTo(spent, 5);
-    expect(plan.totalDuration).toBeCloseTo(16, 5);
+    expect(join.fromSilence).toBeCloseTo(0, 6);
+    expect(plan.totalDuration).toBeCloseTo(16 - spent, 5);
   });
 
   /**

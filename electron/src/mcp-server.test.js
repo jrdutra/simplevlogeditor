@@ -7,6 +7,16 @@ const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const { startMcpServer, TOOLS, EDIT_OPERATIONS } = require('./mcp-server');
 
+test('MCP exposes plate blur only as a video container operation', () => {
+  const settings = EDIT_OPERATIONS.find(op => op.properties.type.const === 'set_project_settings').properties.settings;
+  assert.equal(settings.properties?.blurLicensePlates, undefined);
+  assert.doesNotMatch(settings.description, /blurLicensePlates/);
+  const operation = EDIT_OPERATIONS.find(op => op.properties.type.const === 'set_license_plate_blur');
+  assert.equal(operation.properties.clipId.type, 'string');
+  assert.equal(operation.properties.enabled.type, 'boolean');
+  assert.deepEqual(operation.required, ['type', 'clipId', 'enabled']);
+});
+
 function harness(callEditor = async (request) => ({ apiVersion: 1, projectRevision: 3, result: request })) {
   const input = new PassThrough();
   const output = new PassThrough();

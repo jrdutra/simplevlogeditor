@@ -26,20 +26,22 @@ class RecoveryCheckpointStore {
     if (Number.isFinite(value)) this.revisions.set(target, Math.max(this.revisions.get(target) ?? -1, value));
   }
 
-  write(document, revision, reason = 'Editor autosave') {
+  async write(document, revision, reason = 'Editor autosave') {
+    // Capture both values at request time, before a queued save or a folder
+    // change can make this operation describe a different project.
+    const target = this.pathFor();
+    if (!document || typeof document !== 'object' || !Array.isArray(document.clips) || !document.settings) {
+      throw Object.assign(new Error('The renderer supplied an invalid recovery project.'), { code: 'invalid_checkpoint' });
+    }
+    const contents = JSON.stringify(document, null, 2) + '\n';
+    if (Buffer.byteLength(contents) > this.maxBytes) {
+      throw Object.assign(new Error('The recovery project is too large to save safely.'), { code: 'checkpoint_too_large' });
+    }
     return this.run(async () => {
-      const target = this.pathFor();
       const numericRevision = Number(revision);
       const previous = this.revisions.get(target);
       if (Number.isFinite(numericRevision) && previous !== undefined && numericRevision <= previous) {
         return { saved: true, skipped: true, path: target, reason, projectRevision: numericRevision };
-      }
-      if (!document || typeof document !== 'object' || !Array.isArray(document.clips) || !document.settings) {
-        throw Object.assign(new Error('The renderer supplied an invalid recovery project.'), { code: 'invalid_checkpoint' });
-      }
-      const contents = JSON.stringify(document, null, 2) + '\n';
-      if (Buffer.byteLength(contents) > this.maxBytes) {
-        throw Object.assign(new Error('The recovery project is too large to save safely.'), { code: 'checkpoint_too_large' });
       }
 
       await this.fs.mkdir(path.dirname(target), { recursive: true });
@@ -57,8 +59,13 @@ class RecoveryCheckpointStore {
   }
 
   remove(revision, reason = 'Project cleared') {
+    const target = this.pathFor();
     return this.run(async () => {
-      const target = this.pathFor();
+      const numericRevision = Number(revision);
+      const previous = this.revisions.get(target);
+      if (Number.isFinite(numericRevision) && previous !== undefined && numericRevision < previous) {
+        return { removed: false, skipped: true, path: target, reason, projectRevision: numericRevision };
+      }
       await this.fs.unlink(target).catch((error) => {
         if (error.code !== 'ENOENT') throw error;
       });

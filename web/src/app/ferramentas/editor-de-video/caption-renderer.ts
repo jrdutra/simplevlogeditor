@@ -12,7 +12,7 @@
 
 import { ClipCaption } from './video-editor.models';
 import { canvasOfSize, sizeCanvas } from './frame-source';
-import { isBackgroundCaption } from './video-editor-defaults';
+import { backgroundCaptionFontWeight, DEFAULT_BACKGROUND_CAPTION_FONT, DEFAULT_BACKGROUND_CAPTION_POSITION, isBackgroundCaption } from './video-editor-defaults';
 
 export type CaptionContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 const behindLayers = new WeakMap<CaptionContext, {
@@ -32,6 +32,30 @@ const FONT_STACKS: Record<NonNullable<ClipCaption['fontFamily']>, string> = {
   slab: 'Rockwell, "Roboto Slab", "Bitstream Vera Serif", Georgia, serif',
   handwritten: '"Segoe Print", "Bradley Hand", "Comic Sans MS", "URW Chancery L", cursive'
 };
+
+const impactAvailability = new WeakMap<CaptionContext, boolean>();
+
+/** Resolve the family first so Arial gets bold without synthesizing bold Impact. */
+export function backgroundCaptionFont(context: CaptionContext, caption: ClipCaption): { family: string; weight: number } {
+  const font = caption.fontFamily ?? DEFAULT_BACKGROUND_CAPTION_FONT.fontFamily;
+  if (font !== 'impact') return { family: FONT_STACKS[font], weight: backgroundCaptionFontWeight(caption) };
+  let impactAvailable = impactAvailability.get(context);
+  if (impactAvailable === undefined) {
+    context.save();
+    const previousFont = context.font;
+    const sample = 'MWil0123456789';
+    context.font = '40px monospace';
+    const fallbackWidth = context.measureText(sample).width;
+    context.font = '40px Impact, monospace';
+    impactAvailable = Math.abs(context.measureText(sample).width - fallbackWidth) > 0.01;
+    impactAvailability.set(context, impactAvailable);
+    context.font = previousFont;
+    context.restore();
+  }
+  return impactAvailable
+    ? { family: 'Impact', weight: 400 }
+    : { family: 'Arial, "Liberation Sans", sans-serif', weight: 700 };
+}
 
 /** Share of the frame width a caption line may occupy before it wraps. */
 const MAX_WIDTH_SHARE = 0.86;
@@ -284,10 +308,9 @@ function backgroundCaptionLayout(
 ): BackgroundCaptionLayout {
   const text = caption.uppercase === false ? caption.text.trim() : caption.text.trim().toUpperCase();
   const requestedSize = frameHeight * Math.min(0.4, Math.max(0.2, caption.fontScale || 0.28));
-  const family = FONT_STACKS[caption.fontFamily ?? 'sans'];
-  const weight = Math.min(900, Math.max(100, caption.fontWeight ?? 600));
-  const x = frameWidth * Math.min(0.92, Math.max(0.08, caption.positionX ?? 0.5));
-  const y = frameHeight * Math.min(0.85, Math.max(0.15, caption.positionY ?? 0.25));
+  const { family, weight } = backgroundCaptionFont(context, caption);
+  const x = frameWidth * Math.min(0.92, Math.max(0.08, caption.positionX ?? DEFAULT_BACKGROUND_CAPTION_POSITION.x));
+  const y = frameHeight * Math.min(0.85, Math.max(0.15, caption.positionY ?? DEFAULT_BACKGROUND_CAPTION_POSITION.y));
   const scales = [envelope.minScale, envelope.maxScale];
   const maxWidth = 2 * safeHalfExtent(x, frameWidth, frameWidth * 0.03, scales, frameWidth * envelope.shiftX);
   const maxHeight = 2 * safeHalfExtent(y, frameHeight, frameHeight * 0.03, scales, frameHeight * envelope.shiftY);

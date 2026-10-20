@@ -88,13 +88,15 @@ import {
   DesktopFileDescriptor, PathBackedFile, imageBitmapForFile, mediaObjectUrl, pathBackedPath, revokeMediaObjectUrl
 } from '../../shared/desktop/path-backed-file';
 import { composeFrame, frameEffectWarning } from './frame-compositor';
+import { applyPlateFrameFade, LicensePlateBlurClient, plateDetectionPlan } from './license-plate-blur';
+import { clipBlursLicensePlates } from './license-plate-scope';
 import { composedFidelity, describeFidelity, editFingerprint } from './composed-fidelity';
 import { captionBox } from './caption-renderer';
 import { editorCapabilities } from './editor-agent-capabilities';
 import { measureTag } from './tag-renderer';
 import { FrameContext, FrameSource } from './frame-source';
 import { SubjectMask, SubjectSegmentationClient } from './subject-segmentation';
-import { captionAt, videoEffectSectionAt } from './video-editor-timeline';
+import { captionAt, fadeGainAt, textCardFadeEdges, videoEffectSectionAt } from './video-editor-timeline';
 import {
   IMAGE_LIMITS,
   IMAGE_RESTRAINED_ROTATION,
@@ -177,10 +179,12 @@ import {
   CAPTION_PRESETS,
   captionPresetIsBackground,
   captionPresetPatch,
+  backgroundCaptionFontWeight,
   clampClipImage,
   clampCaption,
   isBackgroundCaption,
   CAPTION_WEIGHTS,
+  DEFAULT_BACKGROUND_CAPTION_POSITION,
   DEFAULT_CAPTION,
   DEFAULT_EDITS,
   DEFAULT_PROJECT,
@@ -1400,7 +1404,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }));
   readonly captionFonts = CAPTION_FONTS;
   readonly behindSubjectPositions = [
-    { id: 'upper-left', label: 'Upper left', x: 0.3, y: 0.24 },
+    { id: 'upper-left', label: 'Upper left', ...DEFAULT_BACKGROUND_CAPTION_POSITION },
     { id: 'upper-center', label: 'Upper center', x: 0.5, y: 0.25 },
     { id: 'upper-right', label: 'Upper right', x: 0.7, y: 0.24 },
     { id: 'center-left', label: 'Center left', x: 0.34, y: 0.5 },
@@ -1408,6 +1412,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     { id: 'center-right', label: 'Center right', x: 0.66, y: 0.5 },
   ] as const;
   readonly captionWeights = CAPTION_WEIGHTS;
+  readonly backgroundCaptionFontWeight = backgroundCaptionFontWeight;
   readonly tagLimits = TAG_LIMITS;
   readonly tagPositions = TAG_POSITIONS;
   readonly tagPositionLabels = TAG_POSITION_LABELS;
@@ -1862,6 +1867,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.awaitingFile = false;
         clip.info = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
+        void this.correctMediaDuration(clip);
         // Listening moves the revision when it finishes, minutes later and
         // with nothing in the log. A reconnect must not start it: the analysis
         // was saved with the project it is restoring.
@@ -2754,9 +2760,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return this.joinFor(clip) === null;
   }
 
-  /** True when this join could not be paid for out of silence alone. */
+  /**
+   * Whether to warn that a join plays over content. Never, now: a transition is
+   * the next shot laid over the end of the one before, picture and sound, and
+   * playing over content is what it is for rather than a shortfall.
+   */
   transitionOverContent(clip: TransitionClip): boolean {
-    return this.joinFor(clip)?.overContent ?? false;
+    void clip;
+    return false;
   }
 
   /** How long this join actually got, once the planner had clamped it. */
@@ -2977,7 +2988,16 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   /** What this clip actually uses right now. */
   editsFor(clip: EditorClip): ClipEdits {
-    return effectiveEdits(clip, this.project);
+    return effectiveEdits(clip, this.project, this.clips);
+  }
+
+  /** User settings only: automatic text-card fades are resolved when planning. */
+  storedEditsFor(clip: EditorClip): ClipEdits {
+    return isTransitionClip(clip) ? this.project.edits : clip.overrides ?? this.project.edits;
+  }
+
+  textCardFadesFor(clip: EditorClip): { fadeIn: boolean; fadeOut: boolean } {
+    return textCardFadeEdges(clip, this.clips);
   }
 
   follows(clip: EditorClip): boolean {
@@ -3057,7 +3077,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   /** Hands a clip back to the project, or gives it a copy to diverge from. */
   setFollowsProject(clip: EditorClip, follow: boolean): void {
     if (isTransitionClip(clip)) return;
-    clip.overrides = follow ? null : cloneEdits(this.editsFor(clip));
+    clip.overrides = follow ? null : cloneEdits(this.storedEditsFor(clip));
     if (isMediaClip(clip)) this.invalidateAnalysis(clip);
     this.touch();
   }
@@ -6632,7 +6652,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       // Choosing a file plainly means using it, so the mode follows — and the
       // clip takes settings of its own, since one clip's replacement sound is
       // never something the whole project should switch to.
-      const edits = cloneEdits(this.editsFor(clip));
+      const edits = cloneEdits(this.storedEditsFor(clip));
       clip.overrides = { ...edits, audioMode: 'replace' };
       this.touch();
     } catch (error) {
@@ -6644,7 +6664,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       // and marked as such, on the strength of a file that never loaded — so the
       // setting goes back to what it was, exactly as Cancel would have left it.
       if (this.editsFor(clip).audioMode === 'replace' && !clip.replacementAudio) {
-        clip.overrides = { ...cloneEdits(this.editsFor(clip)), audioMode: this.soundChooserPrevious };
+        clip.overrides = { ...cloneEdits(this.storedEditsFor(clip)), audioMode: this.soundChooserPrevious };
       }
     } finally {
       // Letting the preview go belongs here rather than in the try: a file that
@@ -6774,7 +6794,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         edits: { ...cloneEdits(this.project.edits), audioMode: this.soundChooserPrevious }
       };
     } else if (!isTransitionClip(target)) {
-      target.overrides = { ...cloneEdits(this.editsFor(target)), audioMode: this.soundChooserPrevious };
+      target.overrides = { ...cloneEdits(this.storedEditsFor(target)), audioMode: this.soundChooserPrevious };
     }
     this.touch();
     this.resumePreview();
@@ -6908,7 +6928,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   detachAudio(clip: EditorClip): void {
     if (isTransitionClip(clip)) return;
     clip.replacementAudio = null;
-    const edits = this.editsFor(clip);
+    const edits = this.storedEditsFor(clip);
     if (edits.audioMode === 'replace') clip.overrides = { ...cloneEdits(edits), audioMode: 'original' };
     this.touch();
   }
@@ -8128,8 +8148,8 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   }
 
   behindSubjectPositionOf(caption: ClipCaption): string {
-    const x = caption.positionX ?? 0.5;
-    const y = caption.positionY ?? 0.25;
+    const x = caption.positionX ?? DEFAULT_BACKGROUND_CAPTION_POSITION.x;
+    const y = caption.positionY ?? DEFAULT_BACKGROUND_CAPTION_POSITION.y;
     return this.behindSubjectPositions.find((item) => Math.abs(item.x - x) < 0.005 && Math.abs(item.y - y) < 0.005)?.id ?? 'custom';
   }
 
@@ -9988,6 +10008,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     this.touch();
   }
 
+  setClipLicensePlateBlur(clip: MediaClip, enabled: boolean): void {
+    if (clip.summary.kind !== 'video' || enabled === (clip.blurLicensePlates === true)) return;
+    clip.blurLicensePlates = enabled;
+    this.touch('license plate blur changed');
+  }
+
   onTimelapseTarget(value: string | number): void {
     const target = clampTimelapseTarget(Number(value));
     if (target === this.project.timelapseTargetSeconds) return;
@@ -11393,6 +11419,9 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     return {
       revision: this.revision,
       duration: this.plan.totalDuration,
+      plannedFades: { timeSpace: 'output', picture: this.plan.fades, audio: this.plan.audioFades,
+        soundtrack: this.plan.soundFades },
+      plannedTransitions: this.plan.transitions,
       clips: this.clips.map((clip, index) => {
         const entry = planById.get(clip.id);
         const base = {
@@ -11400,7 +11429,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           kind: clip.kind,
           index,
           outputStart: entry?.outputStart ?? null,
-          outputDuration: entry?.outputDuration ?? 0
+          outputDuration: entry?.outputDuration ?? 0,
+          resolvedSound: entry?.sound.kind === 'file'
+            ? { kind: 'file', name: entry.sound.label, offset: entry.sound.offset,
+                projectDefault: entry.sound.file === this.project.defaultAudio?.file }
+            : entry ? { kind: entry.sound.kind } : null,
+          soundShort: entry?.soundShort ?? false
         };
         if (isTransitionClip(clip)) return { ...base, settings: clip.settings };
         if (isTextClip(clip)) return {
@@ -11434,6 +11468,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           manualZooms: clip.manualZooms ?? [],
           pushIns: clip.manualZooms ?? [],
           noiseSuppression: this.noiseSettingsFor(clip),
+          blurLicensePlates: clip.summary.kind === 'video' && clip.blurLicensePlates === true,
           videoEffect: normalizeVideoEffect(clip.videoEffect),
           videoEffects: (clip.videoEffects ?? []).map(effect => ({ ...effect })),
           images: (clip.images ?? []).map(image => this.agentImagePayload(clip, image)),
@@ -11506,6 +11541,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       waiting.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: descriptor.filePath };
       waiting.previewUrl = null;
       this.enqueueThumbnail(waiting);
+      void this.correctMediaDuration(waiting);
       this.queueAutomaticListening([waiting]);
       this.touch();
       this.pushAgentLog('action', `Reconnected ${file.name} from its local path`);
@@ -11602,6 +11638,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         clip.fileRef = { name: file.name, size: file.size, lastModified: file.lastModified, path: at };
         clip.previewUrl = null;
         if (!clip.thumbUrl) this.enqueueThumbnail(clip);
+        void this.correctMediaDuration(clip);
         used = true;
       }
       // Music, matched by the path it was written down with. The reference
@@ -12279,6 +12316,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'set_volume': return `Changing the volume of ${label} to ${operation.volumePercent}%`;
       case 'set_audio_mode': return `Changing the audio mode of ${label} to ${operation.mode}`;
       case 'set_noise_suppression': return `${operation.enabled ? 'Scheduling' : 'Disabling'} noise suppression on ${label}`;
+      case 'set_license_plate_blur': return `${operation.enabled ? 'Enabling' : 'Disabling'} license plate blur on ${label}`;
       case 'set_clip_edits': return `Updating effects on ${label}`;
       case 'clear_clip_overrides': return `Returning ${label} to project defaults`;
       case 'attach_audio': return operation.clipId ? `Adding audio to ${label}` : 'Adding the project soundtrack';
@@ -12315,6 +12353,17 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    */
   private async agentApplyOperation(operation: EditorAgentOperation): Promise<Record<string, string | null> | void> {
     switch (operation.type) {
+      case 'set_license_plate_blur': {
+        const clip = this.agentClip(operation.clipId);
+        if (!isMediaClip(clip) || clip.summary.kind !== 'video') {
+          throw new EditorAgentError('License plate blur requires a video container.', 'invalid_target');
+        }
+        if (typeof operation.enabled !== 'boolean') {
+          throw new EditorAgentError('enabled must be true or false.', 'invalid_arguments');
+        }
+        this.setClipLicensePlateBlur(clip, operation.enabled);
+        return;
+      }
       case 'remove_clip': {
         const clip = this.agentClip(operation.clipId);
         this.remove(this.clips.indexOf(clip));
@@ -12641,7 +12690,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       case 'set_clip_edits': {
         const clip = this.agentClip(operation.clipId);
         if (isTransitionClip(clip)) throw new EditorAgentError('A transition has no clip effects.', 'invalid_target');
-        const before = this.editsFor(clip);
+        const before = this.storedEditsFor(clip);
         clip.overrides = this.agentClipEdits(before, operation.edits);
         if (isMediaClip(clip) && detectionSettingsChanged(before.silence, clip.overrides.silence)) this.invalidateAnalysis(clip);
         this.touch();
@@ -12906,10 +12955,14 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   private agentClipEdits(current: ClipEdits, patch: Record<string, unknown>): ClipEdits {
     if (!patch || typeof patch !== 'object') throw new EditorAgentError('edits must be an object.', 'invalid_arguments');
+    if ('blurLicensePlates' in patch) throw new EditorAgentError('Use set_license_plate_blur with a video clipId.', 'invalid_arguments');
     const next = cloneEdits(current);
     if (patch['cutSilence'] !== undefined) next.cutSilence = Boolean(patch['cutSilence']);
     if (patch['fadeIn'] !== undefined) next.fadeIn = Boolean(patch['fadeIn']);
     if (patch['fadeOut'] !== undefined) next.fadeOut = Boolean(patch['fadeOut']);
+    if (patch['fadeAudioWithVideo'] !== undefined) next.fadeAudioWithVideo = Boolean(patch['fadeAudioWithVideo']);
+    if (patch['fadeInAudio'] !== undefined) next.fadeInAudio = Boolean(patch['fadeInAudio']);
+    if (patch['fadeOutAudio'] !== undefined) next.fadeOutAudio = Boolean(patch['fadeOutAudio']);
     if (patch['fadeSeconds'] !== undefined) {
       const value = finiteNumber(patch['fadeSeconds'], 'fadeSeconds');
       next.fadeSeconds = Math.max(FADE_SECONDS.min, Math.min(FADE_SECONDS.max, value));
@@ -13012,6 +13065,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
 
   private agentSetProjectSettings(patch: EditorAgentProjectPatch): void {
     if (!patch || typeof patch !== 'object') throw new EditorAgentError('settings must be an object.', 'invalid_arguments');
+    if ('blurLicensePlates' in patch) throw new EditorAgentError('License plate blur is per video container. Use set_license_plate_blur with clipId.', 'invalid_arguments');
     const previousEdits = this.project.edits;
     const next = { ...this.project };
     if (patch.aspect !== undefined) {
@@ -13422,14 +13476,22 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
   // ----------------------------------------------------------- video packaging
 
   private cachedSourceTranscript(clip: MediaClip, start: number, end: number, matchOptions = true): Cue[] | undefined {
-    let prefix = `${clip.id}|${this.agentAssetId(clip)}|${clip.sourcePath ?? clip.fileRef?.path ?? ''}|`;
-    if (matchOptions) prefix += `${this.transcriptModelId}|${this.transcriptLanguage || 'auto'}|${
+    let source = `${this.agentAssetId(clip)}|${clip.sourcePath ?? clip.fileRef?.path ?? ''}|`;
+    if (matchOptions) source += `${this.transcriptModelId}|${this.transcriptLanguage || 'auto'}|${
       this.transcriptDenoise ? `${this.transcriptEngine}:${this.transcriptStrength.attenuationDb}` : 'raw'}|`;
-    return [...this.heardByClip.entries()].reverse().find(([key]) => {
-      if (!key.startsWith(prefix)) return false;
+    const covers = (key: string) => {
       const scope = key.split('|').slice(-2).map(Number);
       return scope[0] <= start && scope[1] >= end;
-    })?.[1];
+    };
+    const entries = [...this.heardByClip.entries()].reverse();
+    // This clip's own transcript first. Failing that, one made for another clip
+    // of the same file — the halves of a split, a duplicate, a clip re-added —
+    // because the words are timed on the shared source clock and are just as true
+    // for this clip. Asking for the same file to be transcribed again only
+    // because the clip id changed is what stopped a block analysis halfway
+    // through an edit.
+    return (entries.find(([key]) => key.startsWith(`${clip.id}|${source}`) && covers(key))
+      ?? entries.find(([key]) => key.slice(key.indexOf('|') + 1).startsWith(source) && covers(key)))?.[1];
   }
 
   private agentAnalysisBlocks(args: Record<string, unknown>): unknown {
@@ -13437,14 +13499,30 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     const bounds = clipBounds(clip);
     const cached = this.cachedSourceTranscript(clip, bounds.start, bounds.end, false);
     if (clip.summary.audioUsable && !cached) {
-      throw new EditorAgentError('Transcribe this clip before semantic block analysis.', 'analysis_required');
+      // Not a failure: the read simply has nothing to work from yet. Throwing
+      // here stopped the agent's queue and raised a diagnostic in the middle of
+      // an edit for what is only a missing step — transcripts live in memory,
+      // so a restarted editor or a reopened project needs them made again. The
+      // answer says exactly which command comes first, and no blocks are
+      // invented without the words they are meant to follow.
+      this.pushAgentLog('action', `${clip.summary.fileName} has no transcript in this session yet; transcribe it, then read its blocks.`, 'get_analysis_blocks', 'WARN');
+      return {
+        clipId: clip.id,
+        timeSpace: 'source',
+        maxBlockSeconds: 300,
+        transcriptReady: false,
+        blocks: [],
+        requiredCommand: { name: 'transcribe', arguments: { clipId: clip.id, includeWords: false } },
+        nextStep: 'This clip has no transcript in the current editor session (transcripts are kept in memory and are lost when the editor restarts or a project is reopened). '
+          + 'Call transcribe with this clipId (includeWords: false for long sources), then call get_analysis_blocks again. Do not analyse or cut this clip before that.'
+      };
     }
     const words = cached ?? [];
     const blocks = analysisBlocks(words, bounds);
     const index = args['blockIndex'] === undefined ? undefined : finiteNumber(args['blockIndex'], 'blockIndex');
     const block = index === undefined ? undefined : blocks.find(item => item.index === index);
     if (index !== undefined && !block) throw new EditorAgentError('Analysis block not found.', 'not_found');
-    return { clipId: clip.id, timeSpace: 'source', maxBlockSeconds: 300,
+    return { clipId: clip.id, timeSpace: 'source', maxBlockSeconds: 300, transcriptReady: true,
       blocks: blocks.map(({ text, ...item }) => item),
       ...(block ? { block, words: words.filter(word => (word.start + word.end) / 2 >= block.start &&
         (word.start + word.end) / 2 < block.end), silenceRanges: silenceInBounds(clip.detected, block) } : {}),
@@ -13890,6 +13968,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
     }
 
     let decoder: Awaited<ReturnType<typeof openAgentFrameDecoder>> | null = null;
+    const plateBlur = clipBlursLicensePlates(clip) ? new LicensePlateBlurClient() : null;
     const decodedSource = async (timestamp: number) => {
       if (!decoder) {
         video?.removeAttribute('src');
@@ -13961,8 +14040,12 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
           }
         }
 
-        composeFrame(context, plan, time, width, height, source, null, mask, null);
+        composeFrame(context, plateDetectionPlan(plan, !!plateBlur), time, width, height, source, null, mask, null);
         const effectWarning = frameEffectWarning(context);
+        if (plateBlur) {
+          await plateBlur.redact(context, `${clip.id}:composed`, time, signal);
+          applyPlateFrameFade(context, fadeGainAt(plan.fades, time));
+        }
 
         let faithful = item.fidelity.faithful;
         let unfaithfulReason: string | null = item.fidelity.faithful ? null : item.fidelity.reason;
@@ -14026,6 +14109,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
         assetId: this.agentAssetId(clip),
         timeSpace: 'source',
         composited: true,
+        licensePlateBlurApplied: clipBlursLicensePlates(clip),
         frame: { width: plan.width, height: plan.height },
         allFaithful: frames.every(frame => frame.faithful),
         // True only when every frame that needed the person cut out got it (or
@@ -14036,6 +14120,7 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
       };
     } finally {
       (decoder as Awaited<ReturnType<typeof openAgentFrameDecoder>> | null)?.dispose();
+      plateBlur?.dispose();
       bitmap?.close();
       if (video) {
         video.removeAttribute('src');
@@ -14624,6 +14709,37 @@ export class EditorDeVideoComponent implements OnInit, AfterViewChecked, OnDestr
    * with nothing in the log to say why. Background work — a listening pass
    * finishing, a thumbnail settling — is invisible and moves it just the same.
    */
+  /**
+   * Repairs a clip that was told its file is longer than its picture and sound.
+   *
+   * Imports made before the probe ignored other tracks took the length of the
+   * longest track in the file — on DJI cameras a telemetry subtitle track
+   * rounded up to a whole second. The clip then ran up to 0.8 s past its last
+   * frame, and that stretch played as a frozen picture over silence at the end
+   * of the clip, right before every transition. Checked whenever a clip gets its
+   * file back, so an existing project is mended the next time it is opened.
+   */
+  private async correctMediaDuration(clip: MediaClip): Promise<void> {
+    if (clip.summary.kind === 'image' || !clip.file || clip.file.size === 0) return;
+    const real = await this.probe.contentDuration(clip.file);
+    if (real === null || !this.clips.includes(clip) || clip.awaitingFile) return;
+    if (clip.summary.durationSeconds - real <= 0.02) return;
+
+    const before = clip.summary.durationSeconds;
+    const clampRanges = <T extends { start: number; end: number }>(ranges: T[]): T[] =>
+      ranges.filter((range) => range.start < real - 0.001).map((range) => ({ ...range, end: Math.min(range.end, real) }));
+    clip.summary = { ...clip.summary, durationSeconds: real };
+    if (clip.outPoint !== undefined && clip.outPoint > real) clip.outPoint = real;
+    if (clip.inPoint !== undefined && clip.inPoint >= real) clip.inPoint = undefined;
+    clip.detected = clampRanges(clip.detected);
+    clip.manualCuts = clampRanges(clip.manualCuts);
+    this.pushAgentLog('action',
+      `${clip.summary.fileName}: its picture and sound end at ${real.toFixed(2)}s, not ${before.toFixed(2)}s — the clip no longer runs past its last frame`,
+      'media', 'INFO');
+    this.touch('the clip length was corrected to where its picture and sound end');
+    this.cdr.markForCheck();
+  }
+
   private touch(reason = 'an edit in the editor'): void {
     this.lastRevisionReason = reason;
     this.lastRevisionAt = new Date().toISOString();

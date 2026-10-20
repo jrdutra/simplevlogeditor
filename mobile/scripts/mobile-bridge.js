@@ -9,7 +9,9 @@
   let saving = false;
 
   bridge.onmessage = event => {
-    const reply = JSON.parse(event.data);
+    let reply;
+    try { reply = JSON.parse(event.data); } catch { return; }
+    if (!reply || typeof reply !== 'object') return;
     const call = pending.get(reply.id);
     if (!call) return;
     pending.delete(reply.id);
@@ -26,7 +28,12 @@
         reject(new Error('O Android não respondeu ao salvamento.'));
       }, timeout) : undefined;
       pending.set(id, { resolve, reject, timer });
-      bridge.postMessage(JSON.stringify({ id, action, ...payload }));
+      try { bridge.postMessage(JSON.stringify({ id, action, ...payload })); }
+      catch (error) {
+        pending.delete(id);
+        clearTimeout(timer);
+        reject(error);
+      }
     });
   }
 
@@ -50,6 +57,7 @@
       return;
     }
     saving = true;
+    let opened = false;
     const retained = blobs.get(url);
     try {
       let blob = retained;
@@ -62,6 +70,7 @@
         name: name || 'export', mime: blob.type || 'application/octet-stream'
       }, 0); // The system file picker may remain open for as long as necessary.
       if (ready.canceled) return;
+      opened = true;
 
       // Acknowledge every chunk: memory stays bounded even for large videos.
       const chunkSize = 192 * 1024;
@@ -75,7 +84,7 @@
       }
       await request('finish');
     } catch (error) {
-      await request('abort').catch(() => {});
+      if (opened) await request('abort').catch(() => {});
       window.alert(error.message || 'Não foi possível salvar o arquivo.');
     } finally {
       saving = false;

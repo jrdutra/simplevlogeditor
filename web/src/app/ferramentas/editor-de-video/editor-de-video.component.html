@@ -417,6 +417,9 @@
               <app-clip-edits-panel
                 [id]="'previa-' + clip.id"
                 [edits]="editsFor(clip)"
+                [storedEdits]="storedEditsFor(clip)"
+                [automaticFadeIn]="textCardFadesFor(clip).fadeIn"
+                [automaticFadeOut]="textCardFadesFor(clip).fadeOut"
                 [disabled]="exporting !== null"
                 [showCuts]="isMediaClip(clip) && clip.summary.kind !== 'image'"
                 [hasOwnSound]="isMediaClip(clip)"
@@ -643,9 +646,9 @@
           <legend class="grupo-titulo">
             Transition between every shot
             <app-help-hint label="What the default transition does">
-              Applied at every join that has not been given a transition of its own. It is paid for out of the silence
-              at the end of one shot and the start of the next — the silence a cut would otherwise throw away — so a
-              project of clean takes keeps its length. {{ transitionCount }} animations to choose from.
+              Applied at every join that has not been given a transition of its own. The next shot is laid over the
+              end of the one before for the length of the transition — the picture through the animation and the two
+              sounds crossfading. {{ transitionCount }} animations to choose from.
             </app-help-hint>
           </legend>
 
@@ -903,7 +906,7 @@
                 } @else if (transitionOverContent(join)) {
                   <span class="juncao-aviso">— not enough silence at this join, so the animation plays over the picture</span>
                 } @else {
-                  <span> · paid for out of the silence at the join</span>
+                  <span> · the next shot overlaps this one, picture and sound</span>
                 }
               </span>
             </span>
@@ -1438,7 +1441,7 @@
                       ? ' — a transition needs a shot on each side, so this one does nothing'
                       : transitionOverContent(join)
                         ? ' — not enough silence at this join, so the animation plays over the picture'
-                        : ' · paid for out of the silence at the join')">
+                        : ' · the next shot overlaps this one, picture and sound')">
 
                 <span class="juncao-topo">
                   <mat-icon class="juncao-icone" aria-hidden="true">animation</mat-icon>
@@ -2265,6 +2268,9 @@
         <app-clip-edits-panel
             [id]="'clip-' + clip.id"
             [edits]="editsFor(clip)"
+            [storedEdits]="storedEditsFor(clip)"
+            [automaticFadeIn]="textCardFadesFor(clip).fadeIn"
+            [automaticFadeOut]="textCardFadesFor(clip).fadeOut"
             [disabled]="exporting !== null"
             [showCuts]="clip.summary.kind !== 'image'"
             [speedNote]="speedNoteFor(clip)"
@@ -2326,6 +2332,20 @@
             </div>
         </app-clip-edits-panel>
 
+
+        @if (clip.summary.kind === 'video') {
+          <fieldset class="grupo">
+            <legend class="grupo-titulo">Privacy</legend>
+            <label class="check">
+              <input [id]="'clip-' + clip.id + '-blur-license-plates'" type="checkbox"
+                [checked]="clip.blurLicensePlates === true" [disabled]="exporting !== null"
+                (change)="setClipLicensePlateBlur(clip, $any($event.target).checked)">
+              <span>Blur vehicle license plates</span>
+              <app-help-hint>Detects and blurs plates locally in this video container only, in preview and export. Off by default. Frames are not uploaded; detection adds processing time.</app-help-hint>
+            </label>
+            <p class="ajuda">Only affects this video. Small, obscured or motion-blurred plates may be missed; review the result.</p>
+          </fieldset>
+        }
 
         @if (clip.summary.kind !== 'image') {
           <!-- ------------------------------------------------- manual zooms -->
@@ -2496,8 +2516,8 @@
                   </div>
                 }
                 <div class="linha-campos">
-                  <div class="campo"><label [attr.for]="'caption-font-' + caption.id">Font</label><select [id]="'caption-font-' + caption.id" [value]="caption.fontFamily ?? 'sans'" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontFamily: $any($event.target).value })">@for (font of captionFonts; track font.value) { <option [value]="font.value">{{ font.label }}</option> }</select></div>
-                  <div class="campo"><label [attr.for]="'caption-weight-' + caption.id">Weight</label><select [id]="'caption-weight-' + caption.id" [value]="caption.fontWeight ?? (isBehindSubjectCaption(caption) ? 600 : 700)" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontWeight: +$any($event.target).value })">@for (weight of captionWeights; track weight) { <option [value]="weight">{{ weight }}</option> }</select></div>
+                  <div class="campo"><label [attr.for]="'caption-font-' + caption.id">Font</label><select [id]="'caption-font-' + caption.id" [value]="caption.fontFamily ?? (isBehindSubjectCaption(caption) ? 'impact' : 'sans')" [disabled]="exporting !== null" (change)="updateCaptionStyle(clip, caption, { fontFamily: $any($event.target).value })">@for (font of captionFonts; track font.value) { <option [value]="font.value">{{ font.label }}</option> }</select></div>
+                  <div class="campo"><label [attr.for]="'caption-weight-' + caption.id">Weight</label><select [id]="'caption-weight-' + caption.id" [value]="isBehindSubjectCaption(caption) ? backgroundCaptionFontWeight(caption) : (caption.fontWeight ?? 700)" [disabled]="exporting !== null || (isBehindSubjectCaption(caption) && (caption.fontFamily ?? 'impact') === 'impact')" (change)="updateCaptionStyle(clip, caption, { fontWeight: +$any($event.target).value })">@for (weight of captionWeights; track weight) { <option [value]="weight">{{ weight }}</option> }</select></div>
                   <div class="campo"><label [attr.for]="'caption-size-' + caption.id">Size</label><div class="com-unidade"><input [id]="'caption-size-' + caption.id" type="range" [min]="isBehindSubjectCaption(caption) ? 0.2 : captionLimits.fontScale.min" [max]="isBehindSubjectCaption(caption) ? 0.4 : 0.12" [step]="captionLimits.fontScale.step" [value]="caption.fontScale" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'fontScale', $any($event.target).value)"><span class="unidade">{{ (caption.fontScale * 100).toFixed(1) }}%</span></div></div>
                   @if (!isBehindSubjectCaption(caption)) { <div class="campo"><label [attr.for]="'caption-margin-' + caption.id">Distance from bottom</label><div class="com-unidade"><input [id]="'caption-margin-' + caption.id" type="range" [min]="captionLimits.bottomMargin.min" [max]="captionLimits.bottomMargin.max" [step]="captionLimits.bottomMargin.step" [value]="caption.bottomMargin" [disabled]="exporting !== null" (input)="onCaptionNumber(clip, caption, 'bottomMargin', $any($event.target).value)"><span class="unidade">{{ (caption.bottomMargin * 100).toFixed(1) }}%</span></div></div> }
                   <div class="campo"><label [attr.for]="'caption-fade-' + caption.id">Fade length</label><div class="com-unidade"><input [id]="'caption-fade-' + caption.id" type="number" [min]="captionLimits.fadeSeconds.min" [max]="captionLimits.fadeSeconds.max" [step]="captionLimits.fadeSeconds.step" [value]="caption.fadeSeconds" [disabled]="exporting !== null" (change)="onCaptionNumber(clip, caption, 'fadeSeconds', $any($event.target).value)"><span class="unidade">s</span></div></div>
@@ -3435,6 +3455,9 @@
           <app-clip-edits-panel
             [id]="'text-' + card.id"
             [edits]="editsFor(card)"
+            [storedEdits]="storedEditsFor(card)"
+            [automaticFadeIn]="true"
+            [automaticFadeOut]="true"
             [disabled]="exporting !== null"
             [showCuts]="false"
             [hasOwnSound]="false"

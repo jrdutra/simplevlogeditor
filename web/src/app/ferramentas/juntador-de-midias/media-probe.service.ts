@@ -22,6 +22,29 @@ const IMAGE_EXTENSIONS = /\.(png|jpe?g|gif|webp|bmp|avif|heic|heif|svg)$/i;
  */
 @Injectable({ providedIn: 'root' })
 export class MediaProbeService {
+  /**
+   * How long the picture and the sound of a file really last, or null when it
+   * cannot be read. Used to repair clips imported before the probe ignored
+   * tracks that are neither.
+   */
+  async contentDuration(file: File): Promise<number | null> {
+    if (this.looksLikeImage(file)) return null;
+    const library = await loadMediabunny();
+    const input = new library.Input({ source: new library.BlobSource(file), formats: library.ALL_FORMATS });
+    try {
+      const tracks = [await input.getPrimaryVideoTrack(), await input.getPrimaryAudioTrack()].filter(
+        (track): track is NonNullable<typeof track> => track !== null
+      );
+      if (!tracks.length) return null;
+      const duration = await input.computeDuration(tracks);
+      return Number.isFinite(duration) && duration > 0 ? duration : null;
+    } catch {
+      return null;
+    } finally {
+      input.dispose();
+    }
+  }
+
   async probe(file: File): Promise<MediaSummary> {
     if (this.looksLikeImage(file)) return this.probeImage(file);
 
@@ -46,7 +69,12 @@ export class MediaProbeService {
         throw new MergeError(`"${file.name}" contains no audio or video track.`);
       }
 
-      const duration = await input.computeDuration();
+      // The picture and the sound decide how long a file is. Other tracks do
+      // not: DJI cameras add a telemetry subtitle track rounded up to a whole
+      // second, and counting it made every clip last past its last frame.
+      const duration = await input.computeDuration([videoTrack, audioTrack].filter(
+        (track): track is NonNullable<typeof track> => track !== null
+      ));
       const summary: MediaSummary = {
         fileName: file.name,
         fileSize: file.size,

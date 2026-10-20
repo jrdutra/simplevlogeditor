@@ -335,3 +335,19 @@ test('a revision that keeps racing is retried a few times, then appended without
   assert.equal(lastExpected, undefined, 'the last attempt carries no revision guard');
   assert.equal(service.jobs.get(job.jobId).files[0].status, 'failed');
 });
+
+test('a clip lasts as long as its picture and sound, not a longer telemetry track', () => {
+  // A DJI take: 20.22 s of picture, a subtitle track rounded up to 21 s, and
+  // an FFprobe build that reports the container from the longest track.
+  const { summaryFromProbe } = require('./media-import-service');
+  const summary = summaryFromProbe('DJI_0741.MP4', { size: 1 }, {
+    format: { duration: '21.000000', format_name: 'mov,mp4' },
+    streams: [
+      { codec_type: 'video', codec_name: 'h264', duration: '20.220200', width: 1920, height: 1080, r_frame_rate: '30000/1001' },
+      { codec_type: 'audio', codec_name: 'aac', duration: '20.202667', sample_rate: '48000', channels: 2 },
+      { codec_type: 'data', duration: '0.033333' },
+      { codec_type: 'subtitle', codec_name: 'mov_text', duration: '21.000000' }
+    ]
+  });
+  assert.ok(Math.abs(summary.durationSeconds - 20.2202) < 1e-6);
+});

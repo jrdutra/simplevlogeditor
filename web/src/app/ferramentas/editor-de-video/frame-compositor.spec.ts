@@ -12,6 +12,8 @@ describe('frame compositor subject layering', () => {
       fillFrame: true, zooms: [], fades: [], tags: [], transitions: [],
       captions: [{ start: 0, end: 2, caption: {
         ...DEFAULT_CAPTION, text: 'DEPTH', style: 'behind-subject', fontScale: 0.28,
+        // This fixture straddles the matte boundary; placement defaults are tested separately.
+        positionX: .5, positionY: .5,
         shadowEnabled: false, fadeIn: false, fadeOut: false
       } }]
     } as unknown as ProjectPlan;

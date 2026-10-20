@@ -126,16 +126,28 @@
 
     <div class="linha-checks">
       <label class="check">
-        <input type="checkbox" [checked]="edits.fadeIn" [disabled]="disabled"
+        <input type="checkbox" [checked]="edits.fadeIn" [disabled]="disabled || automaticFadeIn"
           (change)="patch({ fadeIn: $any($event.target).checked })">
         <span>Fade in from black and silence</span>
       </label>
       <label class="check">
-        <input type="checkbox" [checked]="edits.fadeOut" [disabled]="disabled"
+        <input type="checkbox" [checked]="edits.fadeOut" [disabled]="disabled || automaticFadeOut"
           (change)="patch({ fadeOut: $any($event.target).checked })">
         <span>Fade out to black and silence</span>
       </label>
     </div>
+
+    @if (automaticFadeIn || automaticFadeOut) {
+      <p class="ajuda">Text card boundaries automatically fade both picture and sound. Fade length remains adjustable.</p>
+    }
+
+    <label class="check">
+      <input type="checkbox" [checked]="edits.fadeAudioWithVideo === true" [disabled]="disabled"
+        [indeterminate]="(edits.fadeInAudio !== undefined && edits.fadeInAudio !== edits.fadeAudioWithVideo) || (edits.fadeOutAudio !== undefined && edits.fadeOutAudio !== edits.fadeAudioWithVideo)"
+        (change)="patch({ fadeAudioWithVideo: $any($event.target).checked, fadeInAudio: undefined, fadeOutAudio: undefined })">
+      <span>Fade the soundtrack with the picture</span>
+      <app-help-hint>Also fades continuing music to silence. A mixed state means the ends have individual sound settings; changing this resets both ends. Faded edges use a break through black instead of an overlapping transition.</app-help-hint>
+    </label>
 
     <!-- Beside the switches it belongs to, rather than three columns away in a
          row of unrelated fields. -->

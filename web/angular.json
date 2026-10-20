@@ -136,6 +136,7 @@
             "tsConfig": "tsconfig.spec.json",
             "webWorkerTsConfig": "tsconfig.worker.json",
             "assets": [
+              { "glob": "license-plate-sample.png", "input": "tests", "output": "plate-test" },
               "src/favicon.ico",
               "src/assets",
               {
