@@ -1004,3 +1004,42 @@ progress {
   border-color:#db73ff;
   color:#f2ceff;
   background:linear-gradient(#493054, #302036)}
+
+.previa-palco { position: relative; container-type: inline-size; }
+.caption-overlay { position: absolute; top: 70%; transform: translateY(-50%); left: 6%; width: 88%; display: flex; flex-direction: column; align-items: center; font-weight: 400; line-height: 1; pointer-events: none; }
+.caption-overlay span { display: inline-block; }
+.caption-options { display: grid; gap: 12px; margin-top: 12px; }
+.caption-controls { display: grid; grid-template-columns: repeat(auto-fit,minmax(200px,1fr)); gap: 18px; margin: 20px 0; }
+.caption-controls label { display: grid; gap: 8px; }
+.caption-presets { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.caption-presets button { display: flex; flex-direction: column; align-items: stretch; gap: 12px; background: #1a1b28; padding: 14px; border: 1px solid #42404f; border-radius: 12px; text-align: left; color: #f5f3fa; }
+.caption-presets button.selected { border-color: #c477ef; box-shadow: 0 0 0 1px #c477ef; background: #282033; }
+.caption-presets button:focus-visible { outline: 2px solid #e5c1ff; outline-offset: 3px; }
+.caption-preset-name { font-size: 13px; font-weight: 600; }
+.caption-preset-example { display: block; padding: 14px 4px; text-align: center; font-size: 23px; line-height: 1; border-radius: 8px; background: #101723; }
+.caption-preset-description { font-size: 11px; line-height: 1.4; color: #b8b4c6; }
+.caption-controls .caption-bold { display: flex; align-items: center; gap: 10px; }
+.caption-bold input { width: 18px; height: 18px; accent-color: #bd64e4; }
+
+.cut-balloon-frame, .preview-frame { position: relative; container-type: inline-size; }
+
+.short-preview { position: relative; container-type: inline-size; }
+
+.caption-line { display: flex; justify-content: center; gap: .3em; }
+.caption-style-stage { position: relative; container-type: inline-size; width: min(100%, 216px); aspect-ratio: 9 / 16; margin: 20px auto; background: #101010; border: 1px solid #454451; border-radius: 14px; overflow: hidden; }
+
+.caption-style-frame { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; pointer-events: none; }
+
+/* A gentle prompt until caption analysis starts; keep keyboard focus distinct. */
+.caption-analyze.caption-analyze-pending {
+  border-color: #bd79e5;
+  animation: caption-analyze-glow 2.6s ease-in-out infinite;
+}
+.caption-analyze:focus-visible { outline: 2px solid #e5c1ff; outline-offset: 4px; }
+@keyframes caption-analyze-glow {
+  0%, 100% { box-shadow: 0 0 0 1px rgba(189, 121, 229, .24), 0 0 5px rgba(189, 121, 229, .12); }
+  50% { box-shadow: 0 0 0 3px rgba(189, 121, 229, .32), 0 0 16px rgba(189, 121, 229, .30); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .caption-analyze.caption-analyze-pending { animation: none; box-shadow: 0 0 0 2px rgba(189, 121, 229, .35); }
+}

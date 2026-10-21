@@ -168,3 +168,117 @@ test('real media: import, independent shorts, transition/audio renders, cancella
     if (path.dirname(folder) === os.tmpdir() && path.basename(folder).startsWith('sve-short-test-')) await fs.rm(folder, { recursive: true, force: true });
   }
 });
+
+test('opening a project is atomic through validation and disk commit', async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'short-atomic-'));
+  try {
+    let notifications = 0;
+    const statePath = path.join(folder, 'session.json');
+    const editor = new ShortEditor({ admit: value => value, statePath, changed: () => notifications++ });
+    await editor.ready;
+    editor.readSource = async file => ({ path: file, duration: 30, hasAudio: true });
+    await editor.execute('short_import_video', { path: 'original.mp4' });
+    await editor.execute('short_create', { name: 'Keep my work', ranges: [{ start: 1, end: 3 }] });
+    const before = editor.snapshot(), disk = await fs.readFile(statePath, 'utf8'), count = notifications;
+    const file = path.join(folder, 'project.json');
+    const valid = { app: 'simplevlogeditor-short-editor', kind: 'project', version: 1,
+      source: { path: 'new.mp4' }, selection: [], draftSettings: settings(), zoom: 2,
+      shorts: [{ name: 'New', ranges: [{ start: 2, end: 4 }], settings: settings() }] };
+    for (const invalid of [
+      { ...valid, shorts: [...valid.shorts, { name: 'Bad', ranges: [{ start: 31, end: 35 }] }] },
+      { ...valid, selection: [{ start: 5, end: 80 }] },
+      { ...valid, draftSettings: { cropX: 2 } },
+      { ...valid, version: 99 },
+      { ...valid, shorts: null }
+    ]) {
+      await fs.writeFile(file, JSON.stringify(invalid));
+      await assert.rejects(editor.execute('short_open_document', { path: file, replace: true }));
+      assert.deepEqual(editor.snapshot(), before);
+      assert.equal(await fs.readFile(statePath, 'utf8'), disk);
+      assert.equal(notifications, count);
+    }
+    await fs.writeFile(file, JSON.stringify(valid));
+    const blocked = path.join(folder, 'not-a-directory');
+    await fs.writeFile(blocked, 'block');
+    editor.statePath = path.join(blocked, 'state.json');
+    await assert.rejects(editor.execute('short_open_document', { path: file, replace: true }));
+    assert.deepEqual(editor.snapshot(), before);
+    assert.equal(await fs.readFile(statePath, 'utf8'), disk);
+    editor.statePath = statePath;
+    const opened = await editor.execute('short_open_document', { path: file, replace: true });
+    assert.equal(opened.shorts[0].name, 'New');
+    assert.equal(opened.source.path, 'new.mp4');
+    assert.notEqual(opened.analysisToken, before.analysisToken);
+    const restored = new ShortEditor({ admit: value => value, statePath });
+    assert.deepEqual((await restored.execute('short_get_state')).shorts, opened.shorts);
+  } finally { await fs.rm(folder, { recursive: true, force: true }); }
+});
+
+test('analysis commit rejects changed edits, reimports and cancellation, but permits playback changes', async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'short-guard-'));
+  try {
+    const editor = new ShortEditor({ admit: value => value, statePath: path.join(folder, 'state.json') });
+    await editor.ready;
+    editor.readSource = async file => ({ path: file, duration: 30 });
+    await editor.execute('short_import_video', { path: 'a.mp4' });
+    const initial = await editor.execute('short_set_selection', { ranges: [{ start: 0, end: 1 }] });
+    await editor.execute('short_set_view', { playhead: 5, zoom: 2 });
+    await editor.execute('short_set_selection', { ranges: initial.selection, _analysisToken: initial.analysisToken });
+    await editor.execute('short_set_selection', { ranges: [{ start: 2, end: 3 }] });
+    const edited = editor.snapshot();
+    await assert.rejects(editor.execute('short_set_selection', { ranges: initial.selection, _analysisToken: initial.analysisToken }), { code: 'stale_analysis' });
+    assert.deepEqual(editor.snapshot(), edited);
+    await editor.execute('short_import_video', { path: 'a.mp4' });
+    await editor.execute('short_set_selection', { ranges: initial.selection });
+    await assert.rejects(editor.execute('short_set_selection', { ranges: initial.selection, _analysisToken: initial.analysisToken }), { code: 'stale_analysis' });
+
+    const before = editor.snapshot();
+    const validate = editor.validateSettings.bind(editor);
+    let active = true;
+    editor.validateSettings = async value => { const result = await validate(value); active = false; return result; };
+    const check = () => { if (!active) throw Object.assign(new Error('Cancelled'), { code: 'cancelled' }); };
+    await assert.rejects(editor.execute('short_set_selection', { ranges: [{ start: 4, end: 6 }], settings: { cropX: .2 }, _analysisToken: before.analysisToken }, check), { code: 'cancelled' });
+    assert.deepEqual(editor.snapshot(), before);
+    await assert.rejects(editor.execute('short_set_selection', { ranges: [] }, check), { code: 'cancelled' });
+    assert.deepEqual(editor.snapshot(), before);
+  } finally { await fs.rm(folder, { recursive: true, force: true }); }
+});
+
+test('MCP: capabilities, merged captions, transcript, and save/open of documents', async () => {
+  const folder = await fs.mkdtemp(path.join(os.tmpdir(), 'short-mcp-'));
+  try {
+    const editor = new ShortEditor({ admit: value => value, statePath: path.join(folder, 'session.json') });
+    await editor.ready;
+    const caps = await editor.execute('short_get_capabilities');
+    assert.deepEqual(caps.transitions, ['cut', 'fade', 'wipeleft', 'slideright']);
+    assert.equal(caps.captions.presets[0].name, 'Classic');
+    assert.ok(caps.commands.includes('short_track_person') && caps.commands.includes('short_generate_captions'));
+
+    const source = path.join(folder, 'source.mp4');
+    await fs.writeFile(source, '');
+    editor.state.source = { path: source, name: 'source.mp4', duration: 60, hasAudio: true };
+    const words = [{ start: 1, end: 1.4, text: 'Olá' }, { start: 1.5, end: 2, text: 'pessoal.' }, { start: 4, end: 4.5, text: 'Hoje' }];
+    // Only what changes: the words are kept when the style changes later.
+    await editor.execute('short_set_selection', { ranges: [{ start: 1, end: 10 }], settings: { captions: { enabled: true, words } } });
+    let state = await editor.execute('short_set_selection', { ranges: [{ start: 1, end: 10 }], settings: { captions: { preset: 'Impact' } } });
+    assert.equal(state.draftSettings.captions.words.length, 3);
+    assert.equal(state.draftSettings.captions.style.font, 'Impact');
+    await assert.rejects(editor.execute('short_set_selection', { ranges: [{ start: 1, end: 10 }], settings: { captions: { preset: 'Nope' } } }), /Unknown caption preset/);
+    state = await editor.execute('short_create', { name: 'Um', settings: { captions: { style: { positionY: 60 } } } });
+    assert.equal(state.shorts[0].settings.captions.style.positionY, 60);
+    assert.equal(state.shorts[0].settings.captions.words.length, 3);
+
+    const transcript = await editor.execute('short_get_transcript', {});
+    assert.deepEqual(transcript.segments.map(s => s.text), ['Olá pessoal.', 'Hoje']);
+    assert.equal((await editor.execute('short_get_transcript', { from: 3 })).segments.length, 1);
+
+    const saved = path.join(folder, 'project.json');
+    const result = await editor.execute('short_save_document', { path: saved, kind: 'project' });
+    assert.equal(result.document.path, saved);
+    await assert.rejects(editor.execute('short_save_document', { path: saved }), /already exists/);
+    const document = JSON.parse(await fs.readFile(saved, 'utf8'));
+    assert.equal(document.app, 'simplevlogeditor-short-editor');
+    assert.equal(document.shorts[0].name, 'Um');
+    await assert.rejects(editor.execute('short_open_document', { path: saved }), /replace to true/);
+  } finally { await fs.rm(folder, { recursive: true, force: true }); }
+});

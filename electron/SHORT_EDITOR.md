@@ -65,3 +65,24 @@ Times are absolute seconds in the original video, inside the selected cut. `cutI
 Run `electron scripts/smoke-short-tracking.js` after a development build to exercise real desktop range-backed media and bundled detector models in a hidden, isolated application.
 
 Use `--large-media` to generate a larger 1080p video with audio and track a nonzero-time cut while eight read-ahead readers are paused. This reproduces the Electron-only HTTP connection starvation that previously left tracking at 0% until the video-read timeout. Local file streams now finish each bounded 1 MiB response before yielding bytes, so a paused decoder retains buffered data rather than an occupied HTTP connection. Native browser Files keep their existing behavior.
+
+### Everything over MCP
+
+Every Short Editor feature is an MCP tool. In the main process (`short-editor.js`, schemas in `short-editor-tools.js`):
+`short_get_state`, `short_get_capabilities`, `short_get_transcript` (reads, no `requestId`), `short_import_video`,
+`short_set_selection`, `short_create`, `short_update`, `short_delete`, `short_set_focus`, `short_set_view`, `short_clear`,
+`short_render`, `short_cancel_render`, `short_save_document` and `short_open_document` (the same JSON as the window's
+Save/Open; never overwrites; audio that cannot be reached is reported in `document.missingAudio`).
+
+In the window (`web/.../shorts-generator/short-agent.service.ts`, schemas in `short-editor-renderer-tools.js`), because
+they run in the browser engine on this computer exactly like the window's buttons: `short_track_person` ("Follow the
+person" on every cut of a short or of the selection, `restX` where nobody is visible) and `short_generate_captions`
+(speech recognition → captions on the draft and on every short not rendering; returns the transcript). Both go through
+the idempotency ledger, so a retried `requestId` is not run twice.
+
+`settings.captions` accepts partial changes: `enabled`, a `preset` (Classic, Neon, Impact, Minimal, Editorial) and single
+`style` fields; transcribed words are kept when omitted. The assistants' `edit-shorts` skill holds the default brief:
+standalone micro-stories with a hook, progression and payoff, duration serving the story (20–40 s as a vlog starting point), no minimum count, the largest video in the project folder as source, default captions, the frame
+following the person at the centre, and the original sound unless the video has none, is a timelapse or the user asks.
+
+The Codex and Claude skills load references/short-editorial.md for candidate selection, narrative assembly and weighted editorial review before rendering. Scores below 80 trigger revision and re-evaluation; unsupported checks are reported as unverified. Editorial metadata belongs in a separate report, not in the Short Editor project schema.

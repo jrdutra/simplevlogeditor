@@ -1,3 +1,4 @@
+import { ShortCaptions, drawCaptions, validateCaptions, captionWordsInRange } from './short-captions';
 import { loadMediabunny } from '../../services/mediabunny/mediabunny-loader';
 import type { VideoSample } from 'mediabunny';
 
@@ -41,7 +42,7 @@ function checkTrack(track: unknown): { t: number; x: number }[] | undefined {
 }
 /** `volume` is the original sound's level; `musicVolume` the chosen replacement's, mixed over it. */
 /** `audioFadeOut`/`audioFadeIn`: seconds each cut's sound fades where a transition overlaps two cuts; null = a crossfade as long as the overlap; 0 = no fade. */
-export interface ShortSettings { audioPath: string | null; volume: number; musicVolume: number; cropX: number; transition: string; transitionSeconds: number; audioFadeOut?: number | null; audioFadeIn?: number | null; }
+export interface ShortSettings { captions?: ShortCaptions; audioPath: string | null; volume: number; musicVolume: number; cropX: number; transition: string; transitionSeconds: number; audioFadeOut?: number | null; audioFadeIn?: number | null; }
 export interface BrowserShort { id: string; name: string; ranges: ShortCut[]; settings: ShortSettings; status: string; progress: number; outputPath?: string; error?: string; }
 export interface BrowserSession {
   source: { path: string; name: string; duration: number; filmstrip: string; waveformImage?: string; hasAudio: boolean } | null;
@@ -68,6 +69,7 @@ function checkCuts(value: ShortCut[], duration: number): ShortCut[] {
   });
 }
 function checkSettings(value: ShortSettings): ShortSettings {
+  validateCaptions(value.captions);
   if (!['cut', 'fade', 'wipeleft', 'slideright'].includes(value.transition) || !Number.isFinite(value.volume) || value.volume < 0 || value.volume > 2 || !Number.isFinite(value.musicVolume) || value.musicVolume < 0 || value.musicVolume > 2 || !Number.isFinite(value.cropX) || value.cropX < 0 || value.cropX > 1 || !Number.isFinite(value.transitionSeconds) || value.transitionSeconds < .05 || value.transitionSeconds > 2) throw new Error('Invalid audio or transition settings.');
   for (const fade of [value.audioFadeOut, value.audioFadeIn]) {
     if (fade !== undefined && fade !== null && (!Number.isFinite(fade) || fade < 0 || fade > 2)) throw new Error('Invalid audio fade length.');
@@ -75,7 +77,7 @@ function checkSettings(value: ShortSettings): ShortSettings {
   return { ...value };
 }
 interface Segment { cut: ShortCut; begin: number; end: number; }
-function timeline(short: BrowserShort): { segments: Segment[]; duration: number } {
+export function timeline(short: BrowserShort): { segments: Segment[]; duration: number } {
   const segments: Segment[] = [];
   let cursor = 0;
   short.ranges.forEach((cut, i) => {
@@ -95,8 +97,9 @@ function drawCrop(context: CanvasRenderingContext2D, sample: import('mediabunny'
   const drawWidth = sample.displayWidth * factor, drawHeight = sample.displayHeight * factor;
   sample.draw(context, (width - drawWidth) * cropX, (height - drawHeight) / 2, drawWidth, drawHeight);
 }
-function keyframeAt(segments: Segment[], time: number): { current: Segment; previous?: Segment; fraction: number } {
-  const index = Math.max(0, segments.findIndex((segment, i) => time < segment.end || i === segments.length - 1));
+export function keyframeAt(segments: Segment[], time: number): { current: Segment; previous?: Segment; fraction: number } {
+  let index = 0;
+  while (index + 1 < segments.length && time >= segments[index + 1].begin) index++;
   const current = segments[index], previous = index ? segments[index - 1] : undefined;
   const overlap = previous && time < previous.end ? previous.end - current.begin : 0;
   return { current, previous: overlap ? previous : undefined, fraction: overlap ? Math.max(0, Math.min(1, (time - current.begin) / overlap)) : 1 };
@@ -150,7 +153,15 @@ export class ShortBrowserEditor {
       if (!source) throw new Error('Load a video first.');
       if (name === 'short_set_selection') {
         this.state.selection = checkCuts(args.ranges ?? [], source.duration);
-        if (args.settings) this.state.draftSettings = checkSettings({ ...this.state.draftSettings, ...args.settings });
+        if (args.settings) {
+          this.state.draftSettings = checkSettings({ ...this.state.draftSettings, ...args.settings });
+          if (args.settings.captions) for (const short of this.state.shorts) {
+            if (short.status === 'rendering' || JSON.stringify(short.settings.captions) === JSON.stringify(args.settings.captions)) continue;
+            if (short.outputPath) { URL.revokeObjectURL(this.outputUrls[short.outputPath]); delete this.outputUrls[short.outputPath]; }
+            short.settings = { ...short.settings, captions: structuredClone(args.settings.captions) };
+            Object.assign(short, { status: 'idle', outputPath: undefined, error: undefined });
+          }
+        }
       } else if (name === 'short_set_view') {
         const zoom = args.zoom, playhead = args.playhead;
         if (zoom !== undefined) { if (!Number.isFinite(zoom) || zoom < 1 || zoom > 20) throw new Error('Zoom out of range.'); this.state.zoom = zoom; }
@@ -209,11 +220,13 @@ export class ShortBrowserEditor {
   }
 
   private async render(short: BrowserShort, signal: AbortSignal): Promise<{ blob: Blob; extension: string }> {
+    if (short.settings.captions?.enabled && !short.settings.captions.words.length) throw new Error('Generate the transcription before rendering.');
     const library = await loadMediabunny(), { segments, duration } = timeline(short);
     const width = 1080, height = 1920, frameRate = 30;
     const mp4 = await library.canEncodeVideo('avc', { width, height }) && await library.canEncodeAudio('aac', { numberOfChannels: 2, sampleRate: 48000 });
     const codec = mp4 ? { video: 'avc' as const, audio: 'aac' as const } : { video: 'vp9' as const, audio: 'opus' as const };
     if (!mp4 && (!await library.canEncodeVideo(codec.video, { width, height }) || !await library.canEncodeAudio(codec.audio, { numberOfChannels: 2, sampleRate: 48000 }))) throw new Error('This browser cannot encode vertical video. Update the browser or use the desktop app.');
+
     if (!this.videoFile) throw new Error('Load a video first.');
     const input = new library.Input({ source: new library.BlobSource(this.videoFile), formats: library.ALL_FORMATS });
     const readers: AsyncGenerator<VideoSample | null, void, unknown>[] = [];
@@ -250,6 +263,12 @@ export class ShortBrowserEditor {
       const cropOf = (segment: Segment, t: number) => segment.cut.cropTrack?.length
         ? cropAtTime(segment.cut.cropTrack, sourceTime(segment, t))
         : segment.cut.cropX ?? short.settings.cropX;
+      const captionsByCut = new Map(segments.map((segment, i) => {
+        const before = segments[i-1], after = segments[i+1];
+        const start = segment.cut.start + (before ? before.end - segment.begin : 0) / 2;
+        const end = segment.cut.end - (after ? segment.end - after.begin : 0) / 2;
+        return [segment, short.settings.captions ? { ...short.settings.captions, words: captionWordsInRange(short.settings.captions.words, {start,end}) } : undefined];
+      }));
       let shown = -1;
       for (let frame = 0; frame < frames; frame++) {
         if (signal.aborted) throw canceled();
@@ -265,6 +284,8 @@ export class ShortBrowserEditor {
         if (scene.previous && short.settings.transition === 'wipeleft') context.restore();
         if (scene.previous && short.settings.transition === 'slideright') context.setTransform(1, 0, 0, 1, 0, 0);
         context.globalAlpha = 1;
+        const captionOwner = scene.previous && scene.fraction < .5 ? scene.previous : scene.current;
+        drawCaptions(context, captionsByCut.get(captionOwner), sourceTime(captionOwner, t), width, height);
         await pictureSource.add(t, 1 / frameRate);
         // A stretch that will not be drawn again gives its decoder back.
         for (const [segment, last] of lastUse) if (last === frame) await reader(segment).return(undefined);

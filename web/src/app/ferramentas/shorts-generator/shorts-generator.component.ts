@@ -1,3 +1,5 @@
+import { ShortCaptions, CaptionStyle, captionStyle, captionPresets, captionFonts, captionAt, captionLines, captionWordsInRange, captionCenter, captionLineScale, alignedCaptionWords } from './short-captions';
+import { readSpeechAudio, transcribe } from '../transcricao-de-video/speech-recognizer';
 import { CommonModule, isPlatformBrowser } from '@angular/common';
 import { AfterViewChecked, ChangeDetectorRef, Component, ElementRef, HostListener, NgZone, OnDestroy, OnInit, PLATFORM_ID, ViewChild, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -13,7 +15,7 @@ import { PathBackedFile } from '../../shared/desktop/path-backed-file';
 import { HelpHintComponent } from '../editor-de-video/help-hint.component';
 
 interface Cut { start: number; end: number; cropX?: number; cropTrack?: CropKey[]; follow?: FollowOptions; }
-interface Settings { audioPath: string | null; volume: number; musicVolume?: number; cropX: number; transition: string; transitionSeconds: number; audioFadeOut?: number | null; audioFadeIn?: number | null; }
+interface Settings { captions?: ShortCaptions; audioPath: string | null; volume: number; musicVolume?: number; cropX: number; transition: string; transitionSeconds: number; audioFadeOut?: number | null; audioFadeIn?: number | null; }
 interface Short { id: string; name: string; ranges: Cut[]; settings: Settings; status: string; progress: number; outputPath?: string; error?: string; }
 interface Session {
   source: { path: string; name: string; duration: number; filmstrip: string; waveformImage?: string; hasAudio: boolean } | null;
@@ -61,6 +63,61 @@ const defaults = (): Settings => ({ audioPath: null, volume: 1, musicVolume: 1, 
   styleUrl: './shorts-generator.component.css'
 })
 export class ShortsGeneratorComponent implements OnInit, OnDestroy, AfterViewChecked {
+  private captionFrame = 0;
+  startCaptionClock() {
+    if (!this.available || this.destroyed || this.captionFrame) return;
+    const tick = () => {
+      if (this.destroyed) return;
+      this.zone.run(() => this.changeDetector.markForCheck());
+      const videos = [this.previewVideo?.nativeElement, this.balloonVideo?.nativeElement];
+      this.captionFrame = videos.some(v => v && !v.paused) ? requestAnimationFrame(tick) : 0;
+    };
+    this.captionFrame = requestAnimationFrame(tick);
+  }
+  linesFor(settings: Settings, time: number, range?: Cut) { return settings.captions?.enabled ? captionLines(captionAt(captionWordsInRange(settings.captions.words, range), time, settings.captions.style), settings.captions.style.fontSize) : []; }
+  lineScale(line: { text: string }[], settings: Settings) { return captionLineScale(line, settings.captions?.style ?? captionStyle()); }
+  captionTop(settings: Settings, time: number, range?: Cut) { return captionCenter(settings.captions?.style ?? captionStyle(), this.linesFor(settings, time, range).length || 1) / 19.2; }
+  get previewCaptionRange() { return this.previewRanges[this.previewIndex]; }
+  shadowFor(settings: Settings) { const s = settings.captions?.style ?? captionStyle(), n = s.outlineWidth / 3; return n+'px '+n+'px 0 '+s.outline+', -'+n+'px -'+n+'px 0 '+s.outline+', '+n+'px -'+n+'px 0 '+s.outline+', -'+n+'px '+n+'px 0 '+s.outline+', 0 2px 4px '+s.shadow; }
+  captionPreviewTime = 0; captionPreviewCrop = .5;
+  openCaptionStyle() {
+    const duration = this.state.source?.duration ?? 0;
+    const firstCut = this.state.selection[0];
+    const time = this.player?.nativeElement.currentTime || firstCut?.start || Math.min(1, duration / 2);
+    this.captionPreviewTime = Math.max(0, Math.min(time, duration - .001));
+    const cut = this.state.selection.find(range => time >= range.start && time < range.end);
+    this.captionPreviewCrop = cut ? this.cropOf(cut, this.activeSettings, this.captionPreviewTime) : this.activeSettings.cropX;
+    this.captionModal = true;
+  }
+  captionRenderAlert = '';
+  readonly captionFonts = captionFonts;
+  captionModal = false; captionWorking = false; captionProgress = ''; captionError = '';
+  captionLanguage = ''; readonly captionPresets = captionPresets;
+  private readonly captionSampleWords = ['Every', 'word', 'matters', 'in', 'your', 'video.'].map((text, i) => ({ text, start: i * .5, end: i * .5 + .45 }));
+  get captionSampleSettings(): Settings { return { ...this.activeSettings, captions: { ...this.captions, enabled: true, words: this.captionSampleWords } }; }
+  isCaptionPreset(style: CaptionStyle) { const current = { ...captionStyle(), ...this.captions.style }; return Object.entries(style).every(([key, value]) => current[key as keyof CaptionStyle] === value); }
+  presetShadow(style: CaptionStyle) { return this.shadowFor({ ...this.activeSettings, captions: { ...this.captions, style } }); }
+  private captionController?: AbortController;
+  get captions(): ShortCaptions { return this.activeSettings.captions ?? { enabled: false, words: [], style: captionStyle() }; }
+  get captionTextShadow() { return this.shadowFor(this.activeSettings); }
+  async toggleCaptions(enabled: boolean) {
+    await this.setDraft({ captions: { ...this.captions, enabled } }, true);
+  }
+  setCaptionStyle(change: Partial<CaptionStyle>) { void this.setDraft({ captions: { ...this.captions, style: { ...this.captions.style, ...change } } }); }
+  async generateCaptions() {
+    const file = this.mediaFile; if (!file || this.captionWorking) return;
+    const controller = new AbortController(); this.captionController = controller;
+    this.captionWorking = true; this.captionError = '';
+    const report = (p: { stage: string; ratio: number | null }) => this.zone.run(() => { this.captionProgress = p.stage + (p.ratio === null ? '' : ' · ' + Math.round(p.ratio * 100) + '%'); this.changeDetector.markForCheck(); });
+    try {
+      const samples = await readSpeechAudio(file, report, controller.signal);
+      const words = await transcribe(samples, { model: 'onnx-community/whisper-base_timestamped', language: this.captionLanguage }, report, controller.signal);
+      if (controller.signal.aborted || file !== this.mediaFile) return;
+      if (!words.length) throw new Error('No speech was recognized.');
+      await this.setDraft({ captions: { ...this.captions, words: alignedCaptionWords(words) } }, true);
+    } catch (error) { if (!controller.signal.aborted) this.captionError = error instanceof Error ? error.message : String(error); }
+    finally { this.captionWorking = false; this.changeDetector.markForCheck(); }
+  }
   private platform = inject(PLATFORM_ID);
   private changeDetector = inject(ChangeDetectorRef);
   private zone = inject(NgZone);
@@ -337,6 +394,9 @@ export class ShortsGeneratorComponent implements OnInit, OnDestroy, AfterViewChe
     }
   }
   ngOnDestroy() {
+    this.captionController?.abort();
+    if (this.available && this.captionFrame) cancelAnimationFrame(this.captionFrame);
+    this.captionFrame = 0;
     this.closeCut();
     this.confirmation?.answer(false);
     this.destroyed = true; if (this.persistTimer) { clearTimeout(this.persistTimer); this.persistTimer = undefined; const kept = this.projectDocument(); if (kept && !this.desktop?.shortCommand) { try { localStorage.setItem(STORAGE_KEY, JSON.stringify(kept)); } catch { /* storage refused */ } } } if (this.available) document.removeEventListener('fullscreenchange', this.fullscreenChanged); this.closeCutPlayback(false); clearTimeout(this.draftTimer); this.stopPreview(); this.releasePreviewAudio(); clearInterval(this.timer); clearTimeout(this.pickerTimer); if (this.available) window.removeEventListener('focus', this.pickerClosed); clearTimeout(this.zoomTimer); this.frames?.dispose();
@@ -645,6 +705,7 @@ export class ShortsGeneratorComponent implements OnInit, OnDestroy, AfterViewChe
     }
   }
   private async loadFrames(file: File) {
+    this.captionController?.abort();
     this.mediaFile = file;
     this.frames?.dispose(); this.frames = undefined; this.frameSource = undefined;
     const token = this.waveformToken;
@@ -1160,6 +1221,15 @@ export class ShortsGeneratorComponent implements OnInit, OnDestroy, AfterViewChe
     if (!this.error) this.closeSettings();
   }
   async render(short: Short) {
+    // Check before opening the output picker or dispatching a render. The project may
+    // already show the enabled checkbox while its settings are still being saved.
+    if ([this.captions, short.settings.captions].some(captions => captions?.enabled && !captions.words.length)) {
+      this.captionRenderAlert = this.captionWorking
+        ? 'Caption analysis is still in progress. Wait for it to finish before rendering the short.'
+        : 'The video has not been analyzed for captions yet. Choose a language and click “Analyze video” in the Transcription section before rendering the short.';
+      return;
+    }
+    this.captionRenderAlert = '';
     try {
       if (this.desktop?.shortCommand) { const outputPath = await this.desktop.chooseShortOutput!(short.name); if (outputPath) await this.command('short_render', { id: short.id, outputPath }); }
       else await this.command('short_render', { id: short.id });

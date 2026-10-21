@@ -17,7 +17,7 @@ const { contextBridge, ipcRenderer, webUtils } = require('electron');
 const CHANNEL = 'window:state';
 let agentHandler = null;
 let rootStateHandler = null;
-let agentCancelHandler = null;
+const agentCancelHandlers = new Set();
 let beforeCloseHandler = null;
 
 ipcRenderer.on('agent:command', async (_event, envelope) => {
@@ -45,7 +45,7 @@ ipcRenderer.on('agent:command', async (_event, envelope) => {
 });
 
 ipcRenderer.on('agent:cancel', (_event, envelope) => {
-  agentCancelHandler?.(envelope?.operationId);
+  for (const handler of [...agentCancelHandlers]) handler(envelope?.operationId);
 });
 
 ipcRenderer.on('roots:state', (_event, state) => {
@@ -131,8 +131,8 @@ contextBridge.exposeInMainWorld('desktop', {
 
   registerAgentCancelHandler: (handler) => {
     if (typeof handler !== 'function') throw new TypeError('The cancellation handler must be a function.');
-    agentCancelHandler = handler;
-    return () => { if (agentCancelHandler === handler) agentCancelHandler = null; };
+    agentCancelHandlers.add(handler);
+    return () => agentCancelHandlers.delete(handler);
   },
   reportAgentProgress: (progress) => ipcRenderer.send('agent:progress', progress),
 

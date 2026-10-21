@@ -22,6 +22,7 @@ import {
 import { TagStylePickerComponent } from './ferramentas/video-packaging/tag-style-picker.component';
 import { AgentActivityComponent } from './shared/ui/agent-activity.component';
 import { AgentActivityService } from './shared/ui/agent-activity.service';
+import { ShortAgentService } from './ferramentas/shorts-generator/short-agent.service';
 import { EDITOR_AGENT_API_VERSION, EditorAgentRequest } from './ferramentas/editor-de-video/editor-agent-api';
 import CURRENT_VERSION from '../currentversion.json';
 
@@ -72,6 +73,7 @@ export class AppComponent {
     readonly pluginGuide: PluginGuideService,
     private readonly videoPackaging: VideoPackagingService,
     readonly agentActivity: AgentActivityService,
+    shortAgent: ShortAgentService,
     private readonly seo: SeoService,
     private readonly router: Router
   ) {
@@ -102,6 +104,8 @@ export class AppComponent {
       if (!this.desktop.agentControl().active) this.videoPackaging.noteAgentGone();
     }, { allowSignalWrites: true });
     this.desktop.registerAgentHandler((request) => this.handleGlobalAgentRequest(request));
+    // Short Editor work that needs the window (person tracking, captions), on every tab.
+    shortAgent.register();
     this.updateSelectedTool();
 
     /*

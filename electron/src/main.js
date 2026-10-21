@@ -75,7 +75,7 @@ const { startServer } = require('./server');
 const { restoreState, trackWindow } = require('./window-state');
 const { editorEndpoint } = require('./ipc-endpoint');
 const { MediaImportService, ffprobeExecutable, ffmpegExecutable } = require('./media-import-service');
-const { ShortEditor, COMMANDS: SHORT_COMMANDS } = require('./short-editor');
+const { ShortEditor, COMMANDS: SHORT_COMMANDS, READS: SHORT_READS } = require('./short-editor');
 let shortEditor;
 function getShortEditor() {
   return shortEditor ||= new ShortEditor({
@@ -898,6 +898,8 @@ async function executeAgentRequest(request) {
         const hostCommands = [
           'short_get_state', 'short_import_video', 'short_set_selection', 'short_create',
           'short_update', 'short_delete', 'short_render', 'short_cancel_render', 'short_set_view', 'short_clear', 'short_set_focus',
+          'short_get_capabilities', 'short_get_transcript', 'short_save_document', 'short_open_document',
+          'short_track_person', 'short_generate_captions',
           'queue_media_import', 'get_import_status', 'cancel_import', 'resume_import',
           'health_check', 'get_operation_status', 'cancel_operation', 'get_diagnostics',
           'get_recovery_state', 'checkpoint_project', 'close_editor', 'restart_editor',
@@ -942,7 +944,10 @@ const IDEMPOTENT_PROJECT_MUTATIONS = new Set([
   'analyze_noise',
   'suppress_noise',
   'set_video_packaging',
-  'clear_video_packaging'
+  'clear_video_packaging',
+  // Short Editor work done in the window: a retried request must not track or transcribe twice.
+  'short_track_person',
+  'short_generate_captions'
 ]);
 
 /**
@@ -955,7 +960,7 @@ async function routeAgentRequest(request) {
   if (SHORT_COMMANDS.includes(request?.name)) {
     const args = request.arguments || {};
     const execute = async () => agentResponse(await getShortEditor().execute(request.name, args));
-    if (request.name === 'short_get_state') return execute();
+    if (SHORT_READS.has(request.name)) return execute();
     return mutationLedger.run(`${editorSessionId}:short-editor`, args.requestId, {
       name: request.name, arguments: Object.fromEntries(Object.entries(args).filter(([key]) => key !== 'requestId'))
     }, execute);
@@ -1162,7 +1167,16 @@ function wireAgentBridge() {
 
   ipcMain.handle('short:command', (event, name, args) => {
     if (!fromOurApp(event.sender)) throw new Error('Unknown page.');
-    return getShortEditor().execute(name, args || {});
+    // Recheck inside the Short Editor lane, including after asynchronous file
+    // validation: cancellation/timeout may arrive while this commit is queued.
+    const assertActive = () => {
+      if (args?._operationId === undefined) return;
+      const operation = agentOperations.get(args._operationId);
+      if (!operation || !['short_track_person', 'short_generate_captions'].includes(operation.name) || operation.state !== 'processing') {
+        throw Object.assign(new Error('Short Editor analysis was cancelled or is no longer active.'), { code: 'cancelled' });
+      }
+    };
+    return getShortEditor().execute(name, args || {}, assertActive);
   });
   ipcMain.handle('short:choose-output', async (event, name) => {
     if (!fromOurApp(event.sender)) throw new Error('Unknown page.');

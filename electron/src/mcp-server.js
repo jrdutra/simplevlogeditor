@@ -186,6 +186,7 @@ const EDIT_OPERATIONS = [
 
 const TOOLS = [
   ...require('./short-editor-tools'),
+  ...require('./short-editor-renderer-tools'),
   tool('get_editor_capabilities', 'Discover every MCP editing operation and the current catalogues of tags, transitions, text styles and output formats.', {}),
   tool('show_tool', 'Bring one SimpleVlogEditor tool tab to the front. Use this to move between editing and packaging without asking the user to click a tab.', {
     tool: { type: 'string', enum: ['video-editor', 'free-silence-cutter', 'media-merger', 'background-noise-remover', 'video-transcription', 'text-video-maker', 'video-packaging', 'shorts-generator'] }

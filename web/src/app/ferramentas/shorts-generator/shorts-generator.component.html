@@ -47,6 +47,7 @@
         <div class="previa-palco">
 <video #player class="previa-tela" [src]="sourceUrl" preload="metadata" (timeupdate)="cursor = player.currentTime" (play)="playerPlaying = true" (pause)="playerPlaying = false" (ended)="playerPlaying = false" (click)="togglePlayer()">
 </video>
+
 </div>
         <div class="divisor-altura" role="separator" aria-orientation="horizontal" tabindex="0"
           aria-label="Move the bottom edge of the video to resize it" title="Drag to resize the video · double-click to put it back"
@@ -86,6 +87,17 @@
         </p>
         <div id="short-projeto-painel" class="projeto-painel edits" *ngIf="projectOpen">
           <fieldset class="grupo">
+<legend class="grupo-titulo">Transcription</legend>
+<label><input type="checkbox" [checked]="captions.enabled" (change)="toggleCaptions($any($event.target).checked)"> Include captions in the video</label>
+<div *ngIf="captions.enabled" class="caption-options">
+<button type="button" (click)="openCaptionStyle()">Choose style</button>
+<label>Language <select [(ngModel)]="captionLanguage"><option value="">Detect automatically</option><option value="portuguese">Portuguese</option><option value="english">English</option><option value="spanish">Spanish</option></select></label>
+<button type="button" class="caption-analyze" [class.caption-analyze-pending]="captions.enabled && !captions.words.length && !captionWorking && !busy" (click)="generateCaptions()" [disabled]="captionWorking || busy">{{captionWorking ? 'Analyzing…' : captions.words.length ? 'Analyze again' : 'Analyze video'}}</button>
+<p>Speech recognition runs on this device. The model (~82 MB) downloads on first use.</p>
+<p role="status" *ngIf="captionWorking">{{captionProgress}}</p><p role="alert" *ngIf="captionError">{{captionError}}</p>
+<p *ngIf="captions.words.length">{{captions.words.length}} words recognized.</p>
+</div></fieldset>
+<fieldset class="grupo">
             <legend class="grupo-titulo">Sound</legend>
             <div class="linha-campos">
               <div class="campo">
@@ -195,8 +207,9 @@
 <button class="icon-button" (click)="closeCutPlayback()" aria-label="Close the preview" title="Close">×</button>
 </div>
         <div class="cut-balloon-frame" [style.width.px]="playback.frameWidth" [style.height.px]="playback.frameHeight">
-<video #balloonVideo [src]="sourceUrl + '#t=' + playback.start" playsinline preload="auto" [style.object-position]="(playback.cropX * 100) + '% center'">
+<video (playing)="startCaptionClock()" #balloonVideo [src]="sourceUrl + '#t=' + playback.start" playsinline preload="auto" [style.object-position]="(playback.cropX * 100) + '% center'">
 </video>
+<ng-container *ngTemplateOutlet="captionOverlay; context: {settings: activeSettings, at: balloonVideo.currentTime, range: playback}"></ng-container>
 </div>
         <div class="cut-balloon-controls">
 <button class="icon-button" (click)="toggleCutPlayback()" [attr.aria-label]="playback.playing ? 'Pause' : 'Play'"><mat-icon aria-hidden="true">{{playback.playing ? 'pause' : 'play_arrow'}}</mat-icon></button>
@@ -284,8 +297,9 @@
 <div class="settings-layout">
 <div class="short-preview-panel">
 <div class="short-preview">
-<video #previewVideo [src]="sourceUrl + '#t=' + previewStart" playsinline preload="auto" [style.object-position]="(previewCrop * 100) + '% center'" (click)="togglePreview()">
+<video (playing)="startCaptionClock()" #previewVideo [src]="sourceUrl + '#t=' + previewStart" playsinline preload="auto" [style.object-position]="(previewCrop * 100) + '% center'" (click)="togglePreview()">
 </video>
+<ng-container *ngTemplateOutlet="captionOverlay; context: {settings: config, at: previewVideo.currentTime, range: previewCaptionRange}"></ng-container>
 <span class="framing-badge">9:16</span>
 <audio #previewAudio *ngIf="previewAudioUrl" [src]="previewAudioUrl" preload="auto" loop>
 </audio>
@@ -558,3 +572,40 @@ Smoothness
 </div>
 </section>
 </div>
+
+<div class="modal-backdrop" *ngIf="captionModal" (click)="captionModal = false">
+<section class="settings-modal caption-modal" role="dialog" aria-modal="true" aria-labelledby="caption-title" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="captionModal = false">
+<div class="toolbar"><h2 id="caption-title">Caption style</h2><button (click)="captionModal = false" aria-label="Close">×</button></div>
+<div class="caption-presets" aria-label="Caption styles">
+<button type="button" *ngFor="let preset of captionPresets" (click)="setCaptionStyle(preset.style)" [class.selected]="isCaptionPreset(preset.style)" [attr.aria-pressed]="isCaptionPreset(preset.style)">
+<span class="caption-preset-name">{{preset.name}}</span>
+<span class="caption-preset-example" [style.font-family]="preset.style.font" [style.font-weight]="preset.style.font !== 'Impact' || preset.style.bold ? 700 : 400" [style.color]="preset.style.color" [style.text-shadow]="presetShadow(preset.style)">Every <span [style.color]="preset.style.highlight">word</span><br>matters</span>
+<span class="caption-preset-description">{{preset.description}}</span>
+</button></div>
+<div class="caption-style-stage" aria-label="Caption preview over a video frame">
+<video #captionStyleVideo class="caption-style-frame" [src]="sourceUrl" [muted]="true" playsinline preload="auto" aria-hidden="true" [style.object-position]="(captionPreviewCrop * 100) + '% center'" (loadedmetadata)="captionStyleVideo.currentTime = captionPreviewTime"></video>
+<ng-container *ngTemplateOutlet="captionOverlay; context: {settings: captionSampleSettings, at: .6}"></ng-container>
+</div>
+<div class="caption-controls">
+<label>Text color <input type="color" [ngModel]="captions.style.color" (ngModelChange)="setCaptionStyle({color: $event})"></label>
+<label>Highlighted word color <input type="color" [ngModel]="captions.style.highlight" (ngModelChange)="setCaptionStyle({highlight: $event})"></label>
+<label>Shadow color <input type="color" [ngModel]="captions.style.shadow" (ngModelChange)="setCaptionStyle({shadow: $event})"></label>
+<label>Outline color <input type="color" [ngModel]="captions.style.outline" (ngModelChange)="setCaptionStyle({outline: $event})"></label>
+<label>Outline thickness <input type="range" min="0" max="8" step="1" [ngModel]="captions.style.outlineWidth" (ngModelChange)="setCaptionStyle({outlineWidth: +$event})">{{captions.style.outlineWidth}}</label>
+<label>Font <select [ngModel]="captions.style.font" (ngModelChange)="setCaptionStyle({font: $event})"><option *ngFor="let font of captionFonts" [value]="font" [style.font-family]="font">{{font}}</option></select></label>
+<label class="caption-bold"><input type="checkbox" [disabled]="captions.style.font !== 'Impact'" [ngModel]="captions.style.font !== 'Impact' || (captions.style.bold ?? false)" (ngModelChange)="setCaptionStyle({bold: $event})"> Bold</label>
+<label>Font size <input type="range" min="32" max="200" [ngModel]="captions.style.fontSize" (ngModelChange)="setCaptionStyle({fontSize: +$event})">{{captions.style.fontSize}}</label>
+<label>Characters per caption (approximate) <input type="range" min="10" max="120" step="1" [ngModel]="captions.style.charsPerCaption ?? 30" (ngModelChange)="setCaptionStyle({charsPerCaption: +$event})">{{captions.style.charsPerCaption ?? 30}} characters <small>Includes spaces. Keeps words whole and respects pauses and punctuation.</small></label>
+<label>Line spacing <input type="range" min="1" max="2.5" step="0.1" [ngModel]="captions.style.lineHeight ?? 1" (ngModelChange)="setCaptionStyle({lineHeight: +$event})">{{captions.style.lineHeight ?? 1}}×</label>
+<label>Caption vertical position <input type="range" min="10" max="90" step="1" [ngModel]="captions.style.positionY ?? 70" (ngModelChange)="setCaptionStyle({positionY: +$event})">{{captions.style.positionY ?? 70}}% from the top</label>
+<label>Highlighted word scale <input type="range" min="1" max="1.4" step="0.05" [ngModel]="captions.style.highlightScale" (ngModelChange)="setCaptionStyle({highlightScale: +$event})">{{captions.style.highlightScale}}×</label>
+</div><button class="primary" (click)="captionModal = false">Done</button>
+</section></div>
+<ng-template #captionOverlay let-settings="settings" let-at="at" let-range="range"><div class="caption-overlay" *ngIf="settings.captions?.enabled" [style.font-family]="settings.captions.style.font" [style.font-weight]="settings.captions.style.font !== 'Impact' || settings.captions.style.bold ? 700 : 400" [style.font-size.cqw]="settings.captions.style.fontSize / 10.8" [style.text-shadow]="shadowFor(settings)" [style.top.%]="captionTop(settings, at, range)" [style.line-height]="settings.captions.style.lineHeight ?? 1"><div class="caption-line" *ngFor="let line of linesFor(settings, at, range)" [style.transform]="'scale(' + lineScale(line, settings) + ')'"><span *ngFor="let word of line" [style.color]="word.active ? settings.captions.style.highlight : settings.captions.style.color" [style.transform]="word.active ? 'scale(' + settings.captions.style.highlightScale + ')' : ''">{{word.text}}</span></div></div></ng-template>
+
+<div class="modal-backdrop" *ngIf="captionRenderAlert" (click)="captionRenderAlert = ''">
+<section class="settings-modal confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="caption-render-title" aria-describedby="caption-render-message" cdkTrapFocus [cdkTrapFocusAutoCapture]="true" (click)="$event.stopPropagation()" (keydown.escape)="captionRenderAlert = ''">
+<div class="toolbar"><h2 id="caption-render-title">Caption analysis required</h2><button type="button" class="icon-button" (click)="captionRenderAlert = ''" aria-label="Close alert">×</button></div>
+<p id="caption-render-message">{{captionRenderAlert}}</p>
+<div class="actions"><button type="button" class="primary" (click)="captionRenderAlert = ''">Got it</button></div>
+</section></div>
