@@ -2,7 +2,7 @@
   "updateUrl": "https://simplevlogeditor.com/",
   "desktop": "3.0.0",
   "plugins": {
-    "claude": "3.0.0",
-    "codex": "3.0.0"
+    "claude": null,
+    "codex": null
   }
 }
